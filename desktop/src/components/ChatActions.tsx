@@ -118,6 +118,7 @@ async function exportChat(chat: Chat, name: (mid: string) => string) {
           STICKER: "[สติกเกอร์]",
           FILE: `[ไฟล์] ${m.fileName ?? ""}`,
           AUDIO: "[ข้อความเสียง]",
+          CONTACT: `[ผู้ติดต่อ] ${m.metadata.displayName ?? ""}`,
         } as Record<string, string>
       )[m.contentType] ||
       `[${m.contentType.toLowerCase()}]`;

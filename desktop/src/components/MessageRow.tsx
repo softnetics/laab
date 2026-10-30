@@ -1,4 +1,5 @@
 import { Menu } from "@base-ui/react/menu";
+import { useQuery } from "@tanstack/react-query";
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { save } from "@tauri-apps/plugin-dialog";
 import { memo, useState } from "react";
@@ -219,7 +220,9 @@ function ReplyQuote({ id, ctx, mine }: { id: string; ctx: RowContext; mine: bool
           ? "สติกเกอร์"
           : o.contentType === "FILE"
             ? (o.fileName ?? "ไฟล์")
-            : o.text;
+            : o.contentType === "CONTACT"
+              ? `ผู้ติดต่อ: ${o.metadata.displayName ?? ""}`
+              : o.text;
   return (
     <button
       onClick={() => setUi({ focusMessageId: o.id })}
@@ -254,6 +257,30 @@ function PostNotice({ m, tail, chatId }: { m: Message; tail: boolean; chatId: st
         </button>
       )}
     </Bubble>
+  );
+}
+
+/** A shared contact: LINE's card with picture, name and a chevron. Opens
+ *  the profile sheet. */
+function ContactCard({ m }: { m: Message }) {
+  const mid = m.metadata.mid ?? "";
+  const { data } = useQuery({
+    queryKey: ["profile", mid],
+    queryFn: () => api.contactProfile(mid),
+    enabled: !!mid,
+    staleTime: 60_000,
+  });
+  const name = data?.name || m.metadata.displayName || "ผู้ติดต่อ";
+  const picture = data?.picture ?? null;
+  return (
+    <div
+      className="flex max-w-[300px] items-center gap-2.5 rounded-[16.5px] bg-incoming py-2.5 pr-3.5 pl-2.5 text-primary"
+      {...pressable(() => mid && setUi({ profile: { mid, name, picture } }))}
+    >
+      <Avatar id={mid || m.id} name={name} picture={picture} size={40} />
+      <span className="min-w-0 truncate text-[14px]">{name}</span>
+      <span className="ml-2 text-[16px] text-secondary">›</span>
+    </div>
   );
 }
 
@@ -318,6 +345,8 @@ function Content({
           {m.metadata.ALT_TEXT || m.text || "ข้อความ"}
         </Bubble>
       );
+    case "CONTACT":
+      return <ContactCard m={m} />;
     case "POSTNOTIFICATION":
       return <PostNotice m={m} tail={tail} chatId={ctx.chatId} />;
     case "AUDIO":
@@ -361,7 +390,9 @@ function Content({
  *  (แชร์, รายงานปัญหา) are left out. */
 function rowMenu(m: Message, dev: boolean, ctx?: RowContext) {
   const flexAlt = m.contentType === "FLEX" ? m.metadata.ALT_TEXT : null;
-  const copyText = flexAlt || (["IMAGE", "VIDEO", "STICKER", "FILE"].includes(m.contentType) ? "" : m.text);
+  const copyText =
+    flexAlt ||
+    (m.contentType === "CONTACT" ? (m.metadata.displayName ?? "") : ["IMAGE", "VIDEO", "STICKER", "FILE"].includes(m.contentType) ? "" : m.text);
   const text = m.contentType === "NONE" && !!m.text.trim();
   const sent = !m.id.startsWith("local-");
   const run = (p: Promise<unknown>, done?: string) => p.then(() => done && notice(done)).catch((e) => notice(errorText(e)));
@@ -516,7 +547,7 @@ export const MessageRow = memo(function MessageRow({
   const react = (picked: ReactionName) => {
     api.react(ctx.chatId, m.id, nextReaction(myReaction, picked)).catch((e) => notice(errorText(e)));
   };
-  const tail = runStart && !["STICKER", "IMAGE", "VIDEO", "FILE", "FLEX", "RICH"].includes(m.contentType);
+  const tail = runStart && !["STICKER", "IMAGE", "VIDEO", "FILE", "FLEX", "RICH", "CONTACT"].includes(m.contentType);
   const [picking, setPicking] = useState(false);
   // Hovering shows the reaction button beside the read mark and time, not
   // in their place: replacing them made "อ่านแล้ว N" impossible to click.
