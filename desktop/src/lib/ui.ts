@@ -15,7 +15,10 @@ const saved = <T>(key: string, fallback: T): T => {
 
 export interface UiState {
   focusMessageId: string | null;
-  listCollapsed: boolean;
+  /** The conversation pane is folded away and the chat list fills the window. */
+  chatFolded: boolean;
+  /** Fixed pane widths while the window slides between folded and unfolded. */
+  foldFrame: { list: number; chat: number } | null;
   listWidth: number;
   filter: ChatFilter;
   sort: ChatSort;
@@ -61,7 +64,8 @@ export interface UiState {
 
 export const ui = createStore<UiState>({
   focusMessageId: null,
-  listCollapsed: false,
+  chatFolded: false,
+  foldFrame: null,
   listWidth: saved("chatListWidth", 320),
   filter: "all",
   sort: "recent",

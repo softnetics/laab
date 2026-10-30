@@ -5,6 +5,7 @@ import { api, errorText, useChatList, useLoginPage, useSession } from "../lib/ap
 import { adjacentChat } from "../lib/chatList";
 import { openChat } from "../lib/nav";
 import { LAST_CHAT_KEY, notice, setUi, ui, useUi } from "../lib/ui";
+import { foldChat, foldIfNarrow, unfoldChat } from "../lib/fold";
 import { startUpdateChecks } from "../lib/updater";
 import { ChatListColumn } from "./ChatList";
 import { ChatView } from "./ChatView";
@@ -26,15 +27,24 @@ export function MainLayout({ chatId }: { chatId: string | null }) {
   const session = useSession();
   const loginPage = useLoginPage();
   const list = useChatList();
-  const collapsed = useUi((s) => s.listCollapsed);
+  const folded = useUi((s) => s.chatFolded);
+  const frame = useUi((s) => s.foldFrame);
   const page = useUi((s) => s.railPage);
   const savedWidth = useUi((s) => s.listWidth);
   const [windowWidth, setWindowWidth] = useState(window.innerWidth);
+  // While the window slides open or shut, every animation frame is a resize;
+  // re-rendering the layout for each one is what made it stutter. The panes
+  // have fixed widths then, so catch up once the slide ends.
   useEffect(() => {
-    const on = () => setWindowWidth(window.innerWidth);
+    const on = () => {
+      if (!ui.state.foldFrame) setWindowWidth(window.innerWidth);
+    };
     window.addEventListener("resize", on);
     return () => window.removeEventListener("resize", on);
   }, []);
+  useEffect(() => {
+    if (!frame) setWindowWidth(window.innerWidth);
+  }, [frame]);
   const width = Math.min(Math.max(240, savedWidth), Math.max(240, windowWidth - RAIL - MIN_DETAIL));
 
   // Reopen the last chat on launch (demo opens the team chat).
@@ -49,6 +59,7 @@ export function MainLayout({ chatId }: { chatId: string | null }) {
   }, [list, chatId, session?.state]);
 
   useEffect(startUpdateChecks, []);
+  useEffect(foldIfNarrow, []);
 
   // Banners and Raycast deep links open a chat.
   useEffect(() => {
@@ -100,27 +111,32 @@ export function MainLayout({ chatId }: { chatId: string | null }) {
     );
   }
   return (
-    <div className="flex h-full">
+    <div className="flex h-full overflow-hidden">
       <Rail />
       <div className="w-px bg-separator" />
       {/* No width animation: it reflowed the timeline every frame and made
           drag-resizing chase the cursor. */}
-      {!collapsed && (
-        <div style={{ width }} className="relative h-full shrink-0 overflow-hidden">
-          {page === "friends" ? <FriendsPage /> : page === "add" ? <AddFriendPage /> : <ChatListColumn selected={chatId} />}
-        </div>
-      )}
+      <div
+        style={folded && !frame ? undefined : { width: frame?.list ?? width }}
+        className={`relative h-full overflow-hidden ${folded && !frame ? "min-w-0 flex-1" : "shrink-0"} ${frame ? "[contain:strict]" : ""}`}
+      >
+        {page === "friends" ? <FriendsPage /> : page === "add" ? <AddFriendPage /> : <ChatListColumn selected={chatId} />}
+      </div>
       <div className="relative w-px shrink-0 bg-separator">
-        {!collapsed && <ResizeHandle width={width} />}
+        {!folded && !frame && <ResizeHandle width={width} />}
         <button
-          title={collapsed ? "แสดงรายชื่อแชท" : "ซ่อนรายชื่อแชท"}
-          onClick={() => setUi({ listCollapsed: !collapsed })}
+          title={folded ? "แสดงแชท" : "ซ่อนแชท"}
+          disabled={frame != null}
+          onClick={() => (folded ? unfoldChat() : foldChat(RAIL + 2, width)).catch((e) => notice(errorText(e)))}
           className="absolute top-[70px] -left-3.5 z-20 grid h-9 w-3.5 place-items-center rounded-l-md bg-separator/70 text-secondary hover:bg-separator"
         >
-          <ChevronIcon dir={collapsed ? "right" : "left"} size={10} />
+          <ChevronIcon dir={folded ? "left" : "right"} size={10} />
         </button>
       </div>
-      <main className="min-w-0 flex-1">
+      <main
+        className={folded ? "hidden" : frame ? "h-full shrink-0 [contain:strict]" : "min-w-0 flex-1"}
+        style={frame && !folded ? { width: frame.chat } : undefined}
+      >
         {chatId ? (
           <ChatView key={chatId} chatId={chatId} main />
         ) : (

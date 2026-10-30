@@ -1,9 +1,13 @@
 import { router } from "../router";
-import { LAST_CHAT_KEY, setUi } from "./ui";
+import { errorText } from "./api";
+import { unfoldChat } from "./fold";
+import { LAST_CHAT_KEY, notice, setUi } from "./ui";
 
-/** Open a chat in the main window, optionally scrolled to a message. */
+/** Open a chat in the main window, optionally scrolled to a message. Unfolds
+ *  the conversation pane if it was folded. */
 export function openChat(chatId: string, opts: { messageId?: string | null; focusComposer?: boolean } = {}) {
   setUi({ focusMessageId: opts.messageId ?? null, searchOpen: false });
+  unfoldChat().catch((e) => notice(errorText(e)));
   localStorage.setItem(LAST_CHAT_KEY, chatId);
   router.navigate({ to: "/chat/$chatId", params: { chatId } });
   if (opts.focusComposer !== false) setUi({ composerFocus: Date.now() });

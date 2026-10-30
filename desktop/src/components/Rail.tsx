@@ -58,7 +58,7 @@ export function Rail() {
       },
     });
   return (
-    <div className="drag flex h-full w-[62px] flex-col items-center gap-3 bg-rail pt-[44px] pb-3" data-tauri-drag-region>
+    <div className="drag flex h-full w-[62px] flex-col items-center gap-3 bg-rail pt-[44px] pb-3" data-tauri-drag-region data-rail>
       <RailButton title="เพื่อน" active={page === "friends"} onClick={() => setUi({ railPage: "friends" })}>
         <PersonIcon size={23} />
       </RailButton>
