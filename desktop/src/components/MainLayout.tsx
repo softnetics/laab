@@ -63,6 +63,17 @@ export function MainLayout({ chatId }: { chatId: string | null }) {
 
   useHotkey("Mod+K", () => setUi({ searchOpen: true, searchInitial: "" }));
   useHotkey("Mod+R", () => api.refresh(true).catch((e) => notice(errorText(e))));
+  // ⌥⌘L: LIFF DevTools. By key code, since ⌥L types "¬".
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.code === "KeyL" && e.metaKey && e.altKey && !e.shiftKey && !e.ctrlKey) {
+        e.preventDefault();
+        api.openLiffDevtools().catch((err) => notice(errorText(err)));
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
   // ⌥↑ / ⌥↓ walk the chat list in its visible order.
   useHotkey(
     "Alt+ArrowUp",

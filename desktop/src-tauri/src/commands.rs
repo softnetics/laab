@@ -624,6 +624,7 @@ pub async fn open_liff(state: S<'_>, req: LiffOpen) -> R<()> {
             } else {
                 "ไม่ได้อนุญาตสิทธิ์".into()
             }),
+            info: serde_json::json!({ "requestedUrl": req.url }),
         }
     } else {
         crate::liff::issue(
@@ -639,6 +640,72 @@ pub async fn open_liff(state: S<'_>, req: LiffOpen) -> R<()> {
         s.status(format!("เปิดเป็นหน้าเว็บ: {reason}"));
     }
     crate::liff::open_window(&s, &view, req.chat_id).map_err(err)
+}
+
+/// Every LIFF window opened this run, with its log.
+#[tauri::command]
+pub fn liff_dev_sessions() -> Vec<crate::liff_devtools::Session> {
+    crate::liff_devtools::sessions()
+}
+
+/// Run JavaScript in a LIFF window; the result goes to its log.
+#[tauri::command]
+pub fn liff_dev_eval(app: tauri::AppHandle, label: String, code: String) -> R<()> {
+    crate::liff_devtools::eval(&app, &label, &code).map_err(err)
+}
+
+#[tauri::command]
+pub fn open_liff_devtools(app: tauri::AppHandle, focus: Option<String>) -> R<()> {
+    crate::liff_devtools::open(&app, focus.as_deref()).map_err(err)
+}
+
+/// `reload`, `inspect`, `close`, `reopen` (fresh tokens) or `web` (as a
+/// plain page) for the LIFF window `label`.
+#[tauri::command]
+pub fn liff_dev_action(state: S<'_>, label: String, action: String) -> R<()> {
+    let s = state.inner().clone();
+    let session = crate::liff_devtools::session(&label).ok_or("ไม่พบหน้าต่าง LIFF นี้")?;
+    let requested = session.info["requestedUrl"]
+        .as_str()
+        .unwrap_or("")
+        .to_string();
+    let window = || {
+        s.app
+            .get_webview_window(&label)
+            .ok_or_else(|| "หน้าต่างนี้ปิดไปแล้ว".to_string())
+    };
+    match action.as_str() {
+        "reload" => window()?.eval("location.reload()").map_err(err),
+        "close" => window()?.close().map_err(err),
+        "inspect" => {
+            #[cfg(debug_assertions)]
+            {
+                window()?.open_devtools();
+                Ok(())
+            }
+            #[cfg(not(debug_assertions))]
+            {
+                window()?;
+                Err("Web Inspector เปิดได้เฉพาะ dev build".into())
+            }
+        }
+        "reopen" => {
+            crate::liff::open_external_or_liff(&s, &requested, session.chat_id);
+            Ok(())
+        }
+        "web" => {
+            let link = crate::liff::parse_link(&requested).ok_or("invalid_liff_id")?;
+            let view = crate::liff::LiffView {
+                liff_id: link.id.clone(),
+                url: link.web_url(),
+                mode: "web".into(),
+                reason: Some("เปิดจาก LIFF DevTools".into()),
+                info: serde_json::json!({ "requestedUrl": requested }),
+            };
+            crate::liff::open_window(&s, &view, session.chat_id).map_err(err)
+        }
+        _ => Err(format!("unknown action {action}")),
+    }
 }
 
 #[tauri::command]

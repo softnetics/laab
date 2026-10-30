@@ -193,3 +193,31 @@ export interface RichMenu {
   images: { url: string; x: number; y: number; w: number; h: number }[];
   areas: { x: number; y: number; w: number; h: number; action: { type: string; label: string | null; uri: string | null } }[];
 }
+
+/** A LIFF window as LIFF DevTools sees it. */
+export interface LiffDevEvent {
+  t: number;
+  kind: "console" | "network" | "bridge" | "nav" | "error" | "page";
+  level: "debug" | "log" | "info" | "warn" | "error";
+  text: string;
+}
+export interface LiffDevSession {
+  label: string;
+  liffId: string;
+  chatId: string | null;
+  mode: "client" | "web";
+  reason: string | null;
+  url: string;
+  info: {
+    requestedUrl?: string;
+    endpoint?: string;
+    appName?: string | null;
+    viewType?: string | null;
+    scopes?: string[] | null;
+    expiresIn?: number | null;
+    tokens?: Record<string, string>;
+  };
+  openedAt: number;
+  closed: boolean;
+  events: LiffDevEvent[];
+}

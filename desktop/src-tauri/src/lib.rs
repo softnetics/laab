@@ -7,6 +7,7 @@ mod convert;
 mod demo;
 mod keychain;
 mod liff;
+mod liff_devtools;
 mod line;
 mod media;
 mod model;
@@ -228,6 +229,10 @@ pub fn run() {
             commands::raw_message,
             commands::send_postback,
             commands::open_liff,
+            commands::liff_dev_sessions,
+            commands::liff_dev_action,
+            commands::liff_dev_eval,
+            commands::open_liff_devtools,
             commands::liff_share,
             commands::open_chat_window,
             commands::is_demo,
