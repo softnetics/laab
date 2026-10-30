@@ -97,16 +97,29 @@ pub fn client_url(endpoint: &str, link: &LiffLink, tokens: &[(&str, String)]) ->
     if !endpoint.starts_with("https://") {
         return Err(anyhow!("LIFF endpoint is not https"));
     }
-    let mut url = endpoint.split('#').next().unwrap_or(endpoint).to_string();
+    let endpoint = endpoint.split('#').next().unwrap_or(endpoint);
+    // The extra path goes before the endpoint's own query
+    // (`https://app/liff?tenant=x` + `pages/a` is `https://app/liff/pages/a?tenant=x`).
+    let (mut url, endpoint_query) = match endpoint.split_once('?') {
+        Some((base, query)) => (base.to_string(), query),
+        None => (endpoint.to_string(), ""),
+    };
     if !link.path.is_empty() {
         if !url.ends_with('/') {
             url.push('/');
         }
         url.push_str(&link.path);
     }
-    if !link.query.is_empty() {
-        url.push(if url.contains('?') { '&' } else { '?' });
-        url.push_str(&link.query);
+    // Pairs the link repeats from the endpoint are kept once.
+    let mut pairs: Vec<&str> = Vec::new();
+    for pair in endpoint_query.split('&').chain(link.query.split('&')) {
+        if !pair.is_empty() && !pairs.contains(&pair) {
+            pairs.push(pair);
+        }
+    }
+    if !pairs.is_empty() {
+        url.push('?');
+        url.push_str(&pairs.join("&"));
     }
     let fragment: Vec<String> = tokens
         .iter()
@@ -198,6 +211,9 @@ const BRIDGE: &str = r#"(function(){
     window.dispatchEvent(new CustomEvent('liffEvent', {detail: detail}));
   }
   window._liff = {
+    // LIFF SDK 2.x in a LINE app 9.5.0 or newer waits for this list, or for
+    // a "ready" event, before liff.init() goes on.
+    features: ['closeWindow', 'openWindow'],
     postMessage: function(type, featureToken, callbackId, params) {
       try { params = typeof params === 'string' ? JSON.parse(params) : (params || {}); } catch (e) { params = {}; }
       if (type === 'closeWindow') { location.href = 'liff://close'; return; }
@@ -209,6 +225,7 @@ const BRIDGE: &str = r#"(function(){
       reply(type, callbackId, null, {code: 'FORBIDDEN', message: 'LAAB ยังไม่รองรับ ' + type});
     }
   };
+  reply('ready');
 })();"#;
 
 pub fn user_agent(client: bool) -> String {
@@ -454,5 +471,21 @@ mod tests {
         )
         .unwrap();
         assert_eq!(u, "https://app.example/liff/a?b=1#access_token=x%3Dy");
+    }
+
+    #[test]
+    fn puts_the_path_before_the_endpoint_query() {
+        let l =
+            parse_link("https://liff.line.me/1234567-AbCdEf12/pages/p1?tenant=demo&x=1").unwrap();
+        let u = client_url(
+            "https://app.example/liff?tenant=demo",
+            &l,
+            &[("access_token", "t".into())],
+        )
+        .unwrap();
+        assert_eq!(
+            u,
+            "https://app.example/liff/pages/p1?tenant=demo&x=1#access_token=t"
+        );
     }
 }
