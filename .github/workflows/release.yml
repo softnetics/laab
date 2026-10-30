@@ -1,0 +1,170 @@
+# Test, build, sign and notarize LAAB.app, then publish it as a GitHub release
+# with a changelog of the commits since the previous release.
+#
+# Start it with ./scripts/release.sh <version>, or from the Actions tab.
+# A dry run uploads the package as a workflow artifact and publishes nothing;
+# it can run on any branch.
+#
+# Secrets:
+#   DEVELOPER_ID_P12              base64 of the exported "Developer ID Application" certificate and key
+#   DEVELOPER_ID_P12_PASSWORD     password of that .p12
+#   NOTARY_KEY_P8                 contents of the App Store Connect API key (AuthKey_<id>.p8)
+#   NOTARY_KEY_ID                 its key id
+#   NOTARY_ISSUER                 its issuer id
+#   TAURI_SIGNING_PRIVATE_KEY     the in-app updater's private key (tauri signer generate)
+#   TAURI_SIGNING_PRIVATE_KEY_PASSWORD  its password
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Version, like 0.2.0 or 0.2.0-beta.1
+        required: true
+        type: string
+      draft:
+        description: Leave the release as a draft
+        type: boolean
+        default: false
+      zip:
+        description: Ship a .zip instead of a .dmg
+        type: boolean
+        default: false
+      dry_run:
+        description: Build and notarize only; publish nothing
+        type: boolean
+        default: false
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: macos-15
+    timeout-minutes: 60
+    env:
+      INPUT_VERSION: ${{ inputs.version }}
+      DRAFT: ${{ inputs.draft }}
+      ZIP: ${{ inputs.zip }}
+      DRY_RUN: ${{ inputs.dry_run }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Check the version
+        run: |
+          version=${INPUT_VERSION#v}
+          [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$ ]] ||
+            { echo "::error::version must look like 1.2.3 or 1.2.3-beta.1"; exit 1; }
+          if [[ "$DRY_RUN" != true ]]; then
+            [[ "$GITHUB_REF" == refs/heads/main ]] || { echo "::error::releases are cut from main"; exit 1; }
+            ! git rev-parse -q --verify "refs/tags/v$version" >/dev/null ||
+              { echo "::error::tag v$version already exists"; exit 1; }
+          fi
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 12
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: desktop/pnpm-lock.yaml
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: desktop/src-tauri
+
+      - name: Test
+        run: |
+          (cd desktop && pnpm install --frozen-lockfile && pnpm test)
+          (cd desktop/src-tauri && cargo test)
+
+      - name: Set up signing and notarization
+        env:
+          DEVELOPER_ID_P12: ${{ secrets.DEVELOPER_ID_P12 }}
+          DEVELOPER_ID_P12_PASSWORD: ${{ secrets.DEVELOPER_ID_P12_PASSWORD }}
+          NOTARY_KEY_P8: ${{ secrets.NOTARY_KEY_P8 }}
+          NOTARY_KEY_ID: ${{ secrets.NOTARY_KEY_ID }}
+          NOTARY_ISSUER: ${{ secrets.NOTARY_ISSUER }}
+        run: |
+          for name in DEVELOPER_ID_P12 DEVELOPER_ID_P12_PASSWORD NOTARY_KEY_P8 NOTARY_KEY_ID NOTARY_ISSUER; do
+            [[ -n "${!name}" ]] || { echo "::error::secret $name is not set"; exit 1; }
+          done
+          keychain="$RUNNER_TEMP/laab.keychain-db"
+          password=$(openssl rand -hex 24)
+          echo "KEYCHAIN=$keychain" >> "$GITHUB_ENV"
+          security create-keychain -p "$password" "$keychain"
+          security set-keychain-settings -lut 3600 "$keychain"
+          security unlock-keychain -p "$password" "$keychain"
+
+          echo "$DEVELOPER_ID_P12" | base64 --decode > "$RUNNER_TEMP/developer-id.p12"
+          security import "$RUNNER_TEMP/developer-id.p12" -k "$keychain" -P "$DEVELOPER_ID_P12_PASSWORD" -f pkcs12 -T /usr/bin/codesign
+          rm -f "$RUNNER_TEMP/developer-id.p12"
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$password" "$keychain" >/dev/null
+          security list-keychains -d user -s "$keychain" $(security list-keychains -d user | tr -d '"')
+          security default-keychain -d user -s "$keychain"
+          security find-identity -v -p codesigning "$keychain" | grep -q '"Developer ID Application: ' ||
+            { echo "::error::DEVELOPER_ID_P12 has no usable Developer ID Application identity"; exit 1; }
+
+          umask 077
+          printf '%s\n' "$NOTARY_KEY_P8" > "$RUNNER_TEMP/notary.p8"
+          xcrun notarytool store-credentials laab-notary --key "$RUNNER_TEMP/notary.p8" \
+            --key-id "$NOTARY_KEY_ID" --issuer "$NOTARY_ISSUER" --keychain "$keychain"
+          rm -f "$RUNNER_TEMP/notary.p8"
+
+      - name: Build, sign and notarize
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          for name in TAURI_SIGNING_PRIVATE_KEY TAURI_SIGNING_PRIVATE_KEY_PASSWORD; do
+            [[ -n "${!name}" ]] || { echo "::error::secret $name is not set"; exit 1; }
+          done
+          args=("$VERSION")
+          [[ "$ZIP" == true ]] && args+=(--zip)
+          ./scripts/package.sh "${args[@]}"
+
+      - name: Write the changelog
+        run: |
+          args=("$VERSION")
+          [[ "$ZIP" == true ]] && args+=(--zip)
+          ./scripts/release-notes.sh "${args[@]}" > "$RUNNER_TEMP/notes.md"
+          cat "$RUNNER_TEMP/notes.md" >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: LAAB-${{ env.VERSION }}
+          path: |
+            dist/LAAB-${{ env.VERSION }}-macos-*
+            dist/latest.json
+          if-no-files-found: error
+
+      - name: Publish the release
+        if: inputs.dry_run != true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          flags=()
+          [[ "$DRAFT" == true ]] && flags+=(--draft)
+          [[ "$VERSION" == *-* ]] && flags+=(--prerelease)
+          # Creating the tag with the release means a failed run leaves no tag behind.
+          gh release create "v$VERSION" dist/LAAB-"$VERSION"-macos-* dist/latest.json \
+            --target "$GITHUB_SHA" \
+            --title "LAAB $VERSION" \
+            --notes-file "$RUNNER_TEMP/notes.md" \
+            ${flags[@]+"${flags[@]}"}
+
+      - name: Remove the signing keychain
+        if: always()
+        run: |
+          [[ -z "${KEYCHAIN:-}" ]] || security delete-keychain "$KEYCHAIN"

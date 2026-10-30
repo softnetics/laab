@@ -1,0 +1,37 @@
+{
+  "$schema": "https://www.raycast.com/schemas/extension.json",
+  "name": "laab",
+  "title": "LAAB",
+  "description": "Search LAAB chats, messages, and files, then jump straight to the chat.",
+  "icon": "icon.png",
+  "author": "t0ngk",
+  "categories": ["Communication"],
+  "license": "MIT",
+  "commands": [
+    {
+      "name": "search-chats",
+      "title": "Search Chat",
+      "subtitle": "LAAB",
+      "description": "Search chats, messages, and files and open the chat in LAAB.",
+      "mode": "view"
+    }
+  ],
+  "dependencies": {
+    "@raycast/api": "^2.7.3",
+    "@raycast/utils": "^2.3.2"
+  },
+  "devDependencies": {
+    "@raycast/eslint-config": "^2.2.0",
+    "@types/node": "22.13.10",
+    "@types/react": "19.0.10",
+    "eslint": "^9.22.0",
+    "prettier": "^3.5.3",
+    "typescript": "^5.8.2"
+  },
+  "scripts": {
+    "build": "ray build",
+    "dev": "ray develop",
+    "lint": "ray lint",
+    "fix-lint": "ray lint --fix"
+  }
+}

@@ -1,0 +1,109 @@
+@import "tailwindcss";
+
+/* LINE for Mac palette. Dark values are sampled from the real app; light values
+   follow LINE's light theme. */
+@theme {
+  --color-rail: light-dark(#edeef0, #1f1f1f);
+  --color-list: light-dark(#ffffff, #2d2f2f);
+  --color-row-selected: light-dark(#eff0f2, #333536);
+  --color-row-hover: light-dark(#f6f7f8, #303232);
+  --color-field: light-dark(#f0f1f3, #474747);
+  --color-chat: light-dark(#ffffff, #2c2e2f);
+  --color-separator: light-dark(#e3e4e6, #393b3c);
+  --color-incoming: light-dark(#edeef0, #555555);
+  --color-outgoing: #67dd71;
+  --color-outgoing-text: #111a11;
+  --color-date-chip: light-dark(#f0f1f3, #262729);
+  --color-primary: light-dark(#111111, #e6e6e6);
+  --color-secondary: light-dark(#8a8c90, #8e9093);
+  --color-rail-icon: light-dark(#8a8c90, #777777);
+  --color-rail-icon-active: light-dark(#111111, #e6e6e6);
+  --color-line-green: #06c755;
+  --color-badge-red: #ff334b;
+  --color-pin: #6489e5;
+  --color-mention: light-dark(#1f5fd1, #a9ccff);
+  --color-popover: light-dark(#ffffff, #3a3c3d);
+  /* Menus, measured from LINE for Mac. */
+  --color-menu: light-dark(#ffffff, #3f3f3f);
+  --color-menu-hover: light-dark(#ececec, #474747);
+  --color-menu-text: light-dark(#111111, #dfdfdf);
+
+  --font-sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", "Thonburi", sans-serif;
+
+  /* Chat folders: rows of a folder just opened, a folder just made, and the
+     label that follows a dragged chat. */
+  --animate-row-in: row-in 180ms cubic-bezier(0.32, 0.72, 0, 1) both;
+  --animate-folder-in: folder-in 220ms cubic-bezier(0.32, 0.72, 0, 1) both;
+  --animate-ghost-in: ghost-in 120ms ease-out both;
+  @keyframes row-in {
+    from {
+      /* `translate`, not `transform`: the list places rows with transform. */
+      opacity: 0;
+      translate: 0 -6px;
+    }
+  }
+  @keyframes folder-in {
+    from {
+      opacity: 0;
+      scale: 0.96;
+    }
+  }
+  @keyframes ghost-in {
+    from {
+      opacity: 0;
+      scale: 0.9;
+    }
+  }
+}
+
+:root {
+  color-scheme: light dark;
+  font-family: var(--font-sans);
+  font-size: 13px;
+  -webkit-font-smoothing: antialiased;
+  -webkit-user-select: none;
+  user-select: none;
+  cursor: default;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+  background: var(--color-chat);
+  color: var(--color-primary);
+}
+
+/* Date chips and notice rows: LINE draws their text lighter than other
+   secondary text. */
+.chip-text {
+  color: light-dark(#8a8c90, #949494);
+}
+
+.selectable {
+  -webkit-user-select: text;
+  user-select: text;
+  cursor: text;
+}
+
+/* The overlay title bar leaves the traffic lights over the rail. */
+.drag {
+  -webkit-app-region: drag;
+}
+.no-drag {
+  -webkit-app-region: no-drag;
+}
+
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-thumb {
+  background: color-mix(in srgb, var(--color-secondary) 45%, transparent);
+  border-radius: 4px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}

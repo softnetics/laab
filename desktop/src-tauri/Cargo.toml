@@ -1,0 +1,58 @@
+[package]
+name = "laab"
+version = "0.1.0"
+description = "LAAB, a LINE client for the desktop"
+license = "GPL-3.0-or-later"
+edition = "2024"
+
+[lib]
+name = "laab_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-opener = "2"
+tauri-plugin-dialog = "2"
+tauri-plugin-clipboard-manager = "2"
+line-rs = { git = "https://github.com/softnetics/line-rs", rev = "b51276c63ef6d5c7db3ef4e04949da2e6808bca2" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["full"] }
+rusqlite = { version = "0.37", features = ["bundled-sqlcipher"] }
+aes-gcm = "0.10"
+anyhow = "1"
+async-trait = "0.1"
+thiserror = "2"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+base64 = "0.22"
+dirs = "6"
+sha2 = "0.10"
+hex = "0.4"
+mime_guess = "2"
+reqwest = { version = "0.13", default-features = false, features = ["rustls", "json", "form"] }
+tauri-plugin-deep-link = "2.6.2"
+tauri-plugin-window-state = "2.5.0"
+url = "2.5.8"
+tauri-plugin-updater = "2"
+tauri-plugin-process = "2"
+
+[dev-dependencies]
+tempfile = "3"
+
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = 3
+strip = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+mac-notification-sys = "0.6.15"
+objc2-app-kit = "0.3"
+security-framework = "3"
+objc2-foundation = { version = "0.3", features = ["block2", "NSNotification", "NSOperation"] }
+objc2 = "0.6"
+block2 = "0.6"
