@@ -33,7 +33,7 @@ pub fn body(msg: &Message) -> String {
     let base = match msg.content_type.as_str() {
         "CALL" => crate::convert::call_text(msg, "เขา"),
         "IMAGE" | "VIDEO" | "STICKER" | "AUDIO" | "FILE" | "CHATEVENT" | "FLEX" | "RICH"
-        | "POSTNOTIFICATION" => crate::convert::preview_body(msg),
+        | "POSTNOTIFICATION" | "CONTACT" => crate::convert::preview_body(msg),
         _ => {
             let chars: Vec<char> = msg.text.chars().collect();
             if chars.len() > 140 {
