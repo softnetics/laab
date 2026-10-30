@@ -1,6 +1,6 @@
 import { useHotkey } from "@tanstack/react-hotkeys";
 import { listen } from "@tauri-apps/api/event";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { api, errorText, useChatList, useLoginPage, useSession } from "../lib/api";
 import { adjacentChat } from "../lib/chatList";
 import { openChat } from "../lib/nav";
@@ -43,7 +43,10 @@ export function MainLayout({ chatId }: { chatId: string | null }) {
     window.addEventListener("resize", on);
     return () => window.removeEventListener("resize", on);
   }, []);
-  useEffect(() => {
+  // Before paint: with a plain effect, the first frame after the window
+  // slid open could still use the folded width, and the chat list flashed
+  // at its 240 px minimum.
+  useLayoutEffect(() => {
     if (!frame) setWindowWidth(window.innerWidth);
   }, [frame]);
   const width = Math.min(Math.max(240, savedWidth), Math.max(240, windowWidth - RAIL - MIN_DETAIL));
