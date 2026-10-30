@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
-  "identifier": "updater",
-  "description": "Only the main window checks for updates and restarts the app to install one.",
+  "identifier": "main",
+  "description": "What only the main window may do: check for updates and restart to install one.",
   "windows": [
     "main"
   ],

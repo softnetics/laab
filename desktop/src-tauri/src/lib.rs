@@ -5,6 +5,7 @@ mod cache;
 mod commands;
 mod convert;
 mod demo;
+mod fold;
 mod keychain;
 mod liff;
 mod liff_devtools;
@@ -197,6 +198,8 @@ pub fn run() {
             }
         })
         .invoke_handler(tauri::generate_handler![
+            fold::resize_window,
+            fold::release_web_view,
             commands::session,
             commands::login_qr,
             commands::logout,
