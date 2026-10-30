@@ -1,7 +1,8 @@
 import { Menu } from "@base-ui/react/menu";
 import { useQuery } from "@tanstack/react-query";
 import { useState } from "react";
-import { api, errorText, queryClient, useChatList, useSession } from "../lib/api";
+import { setAnalytics } from "../lib/analytics";
+import { api, errorText, q, queryClient, useChatList, useSession } from "../lib/api";
 import { openChat } from "../lib/nav";
 import { notice, setUi, useUi } from "../lib/ui";
 import { BookmarkIcon, BubbleIcon, MoreIcon, PersonIcon, PersonPlusIcon } from "./Icons";
@@ -46,6 +47,7 @@ export function Rail() {
   const me = session?.profile?.mid;
   const sync = () => api.refresh(true).catch((e) => notice(errorText(e)));
   const [menuOpen, setMenuOpen] = useState(false);
+  const { data: analytics } = useQuery(q.analytics);
   const { data: cacheBytes } = useQuery({ queryKey: ["cache-size"], queryFn: api.cacheSize, enabled: menuOpen, staleTime: 0 });
   const clearCache = () =>
     setUi({
@@ -102,10 +104,25 @@ export function Rail() {
                   <span className="ml-auto text-secondary">⌥⌘L</span>
                 </Menu.Item>
               )}
+              {analytics && analytics !== "unavailable" && (
+                <Menu.CheckboxItem
+                  className={itemClass}
+                  checked={analytics === "on"}
+                  onCheckedChange={(v) => setAnalytics(v).catch((e) => notice(errorText(e)))}
+                >
+                  <span className="w-4 text-center">{analytics === "on" ? "✓" : ""}</span>
+                  ส่งสถิติการใช้งาน
+                </Menu.CheckboxItem>
+              )}
               <Menu.Item className={itemClass} onClick={clearCache}>
                 ล้าง cache
                 {cacheBytes != null && <span className="ml-auto text-secondary">{megabytes(cacheBytes)}</span>}
               </Menu.Item>
+              {analytics && analytics !== "unavailable" && (
+                <Menu.Item className={itemClass} onClick={() => setUi({ sheet: { kind: "report", messageId: null } })}>
+                  รายงานปัญหา…
+                </Menu.Item>
+              )}
               <Separator />
               {signedIn && (
                 <Menu.Item className={itemClass} onClick={() => api.logout()}>

@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { api, errorText } from "../lib/api";
 import { openChat } from "../lib/nav";
 import { notice, setUi, useUi } from "../lib/ui";
@@ -14,6 +14,10 @@ export function ConfirmDialog() {
   const [busy, setBusy] = useState(false);
   const cancel = useRef<HTMLButtonElement>(null);
   const close = () => setUi({ confirm: null });
+  const dismiss = () => {
+    c?.dismiss?.();
+    close();
+  };
   const go = async () => {
     if (!c) return;
     setBusy(true);
@@ -29,7 +33,7 @@ export function ConfirmDialog() {
   // LINE for Mac: centred title and text, a wide green button, "ปิด" under it.
   return (
     // Focus starts on "ปิด", so a stray Return does not unsend or delete.
-    <Sheet open={!!c} onClose={close} initialFocus={cancel} className="w-[280px] rounded-[12px]! bg-menu!">
+    <Sheet open={!!c} onClose={dismiss} initialFocus={cancel} className="w-[280px] rounded-[12px]! bg-menu!">
       <div className="flex flex-col items-center gap-3 px-6 pt-6 pb-3 text-center">
         <div className="text-[15px] font-bold text-menu-text">{c?.title}</div>
         {c?.body && <p className="text-[12.5px] leading-[1.45] whitespace-pre-line text-secondary">{c.body}</p>}
@@ -40,8 +44,8 @@ export function ConfirmDialog() {
         >
           {busy ? "…" : c?.action}
         </button>
-        <button ref={cancel} className="h-9 text-[13.5px] font-semibold text-menu-text" onClick={close}>
-          ปิด
+        <button ref={cancel} className="h-9 text-[13.5px] font-semibold text-menu-text" onClick={dismiss}>
+          {c?.dismissLabel ?? "ปิด"}
         </button>
       </div>
     </Sheet>
@@ -119,13 +123,82 @@ function AddFriend() {
   );
 }
 
-/** The sheet for adding friends, notes or albums, whichever is open. */
+/** "รายงานปัญหา": the user describes the problem, sees everything that will
+ *  be sent in an editable box, and sends exactly that. */
+function Report({ messageId, onDone }: { messageId: string | null; onDone: () => void }) {
+  const [what, setWhat] = useState("");
+  const [content, setContent] = useState(false);
+  const [log, setLog] = useState(false);
+  const [data, setData] = useState("");
+  const [busy, setBusy] = useState(false);
+  useEffect(() => {
+    api.reportPreview({ messageId, content, log }).then(setData, (e) => setData(errorText(e)));
+  }, [messageId, content, log]);
+  const send = async () => {
+    setBusy(true);
+    try {
+      await api.sendReport(`${what.trim()}\n\n---\n${data}`);
+      notice("ส่งรายงานแล้ว ขอบคุณครับ");
+      onDone();
+    } catch (e) {
+      notice(errorText(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+  const check = (label: string, value: boolean, set: (v: boolean) => void, hint: string) => (
+    <label className="flex items-start gap-2 text-[13px]">
+      <input type="checkbox" className="mt-[3px]" checked={value} onChange={(e) => set(e.target.checked)} />
+      <span>
+        {label}
+        <span className="block text-[12px] text-secondary">{hint}</span>
+      </span>
+    </label>
+  );
+  return (
+    <div className="flex min-h-0 flex-1 flex-col gap-3 px-5 pt-3 pb-4">
+      <textarea
+        autoFocus
+        rows={3}
+        value={what}
+        onChange={(e) => setWhat(e.target.value)}
+        placeholder="เกิดอะไรขึ้น ทำอะไรอยู่ตอนนั้น"
+        className="selectable resize-none rounded-md bg-field px-3 py-2 text-[14px] outline-none placeholder:text-secondary"
+      />
+      {messageId &&
+        check("แนบเนื้อหาของข้อความ", content, setContent, "ปกติส่งแค่โครงของข้อความ (ชื่อ field และชนิดข้อมูล) ไม่มีเนื้อหา")}
+      {check("แนบ log ล่าสุด", log, setLog, "200 บรรทัดสุดท้ายของ log ในเครื่อง อาจมีชื่อแชทหรือข้อความ error")}
+      <div className="text-[12px] font-medium text-secondary">ข้อมูลที่จะส่ง แก้หรือลบได้</div>
+      <textarea
+        value={data}
+        onChange={(e) => setData(e.target.value)}
+        spellCheck={false}
+        className="selectable min-h-[160px] flex-1 resize-none rounded-md bg-field px-3 py-2 font-mono text-[11.5px] leading-[1.45] outline-none"
+      />
+      <div className="flex justify-end gap-2">
+        <button className={buttonClass()} onClick={onDone}>
+          ยกเลิก
+        </button>
+        <button className={buttonClass(true)} disabled={busy || !what.trim()} onClick={send}>
+          {busy ? "…" : "ส่งรายงาน"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/** The sheet for adding friends or reporting a problem, whichever is open. */
 export function Sheets() {
   const sheet = useUi((s) => s.sheet);
   const close = () => setUi({ sheet: null });
   return (
-    <Sheet open={sheet?.kind === "add-friend"} onClose={close} className="w-[440px]" title="ค้นหาเพื่อน">
-      <AddFriend />
-    </Sheet>
+    <>
+      <Sheet open={sheet?.kind === "add-friend"} onClose={close} className="w-[440px]" title="ค้นหาเพื่อน">
+        <AddFriend />
+      </Sheet>
+      <Sheet open={sheet?.kind === "report"} onClose={close} className="h-[min(600px,calc(100vh-48px))] w-[520px]" title="รายงานปัญหา">
+        {sheet?.kind === "report" && <Report messageId={sheet.messageId} onDone={close} />}
+      </Sheet>
+    </>
   );
 }

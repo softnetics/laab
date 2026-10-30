@@ -4,6 +4,7 @@ import { RouterProvider } from "@tanstack/react-router";
 import { MotionConfig } from "motion/react";
 import React from "react";
 import ReactDOM from "react-dom/client";
+import { reportUncaughtErrors } from "./lib/analytics";
 import { queryClient, useBackendEvents } from "./lib/api";
 import { router } from "./router";
 import "./index.css";
@@ -12,6 +13,8 @@ function App() {
   useBackendEvents();
   return <RouterProvider router={router} />;
 }
+
+reportUncaughtErrors();
 
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
   <React.StrictMode>

@@ -1,26 +1,31 @@
 //! LAAB, a LINE client for the desktop. Tauri shell around line-rs.
 
 mod actions;
+mod analytics;
 mod cache;
 mod commands;
 mod convert;
+mod crash;
 mod demo;
 mod fold;
 mod keychain;
 mod liff;
 mod liff_devtools;
 mod line;
+mod logfile;
 mod media;
 mod model;
 mod notify;
 mod paths;
 mod reads;
+mod report;
 mod richmenu;
 mod session;
 mod state;
 mod stickers;
 mod store;
 mod traffic_lights;
+mod usage;
 mod vault;
 
 use std::sync::Arc;
@@ -48,6 +53,7 @@ fn open_deep_link(app: &tauri::AppHandle, url: &str) {
         .find(|(k, _)| k == "message")
         .map(|(_, v)| v.to_string())
         .filter(|v| !v.is_empty());
+    usage::hit(usage::Action::OpenedDeepLink);
     show_in_main(app, &chat, message.as_deref());
 }
 
@@ -62,6 +68,10 @@ pub(crate) fn show_in_main(app: &tauri::AppHandle, chat: &str, message: Option<&
         serde_json::json!({ "chatId": chat, "messageId": message }),
     );
 }
+
+/// Set when the database couldn't be opened and was moved aside, to report
+/// once the user's choice about statistics can be read.
+static SET_ASIDE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// Open the encrypted database (demo data stays unencrypted) and move any
 /// plain session files into it.
@@ -79,6 +89,7 @@ fn open_store(paths: &paths::Paths, demo: bool) -> anyhow::Result<store::Store> 
             // the key comes back and start empty; chats sync again from LINE.
             let aside = db.with_extension(format!("sqlite.unreadable-{}", state::now_ms() as u64));
             tracing::warn!("database key does not match; moved it to {}", aside.display());
+            SET_ASIDE.store(true, std::sync::atomic::Ordering::Relaxed);
             std::fs::rename(&db, &aside)?;
             for suffix in ["-wal", "-shm"] {
                 let mut side = db.as_os_str().to_owned();
@@ -111,10 +122,18 @@ fn alert(message: &str, info: &str) {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "laab_lib=info,line_rs=warn".into()),
+    use tracing_subscriber::prelude::*;
+    let filter = || {
+        tracing_subscriber::EnvFilter::try_from_default_env()
+            .unwrap_or_else(|_| "laab_lib=info,line_rs=warn".into())
+    };
+    tracing_subscriber::registry()
+        .with(tracing_subscriber::fmt::layer().with_filter(filter()))
+        .with(
+            tracing_subscriber::fmt::layer()
+                .with_ansi(false)
+                .with_writer(logfile::Writer)
+                .with_filter(filter()),
         )
         .init();
     tracing::info!("LAAB starting");
@@ -140,6 +159,8 @@ pub fn run() {
         })
         .setup(move |app| {
             let paths = paths::Paths::resolve(demo)?;
+            logfile::start(&paths.root);
+            crash::install(&paths.root);
             let mut store = match open_store(&paths, demo) {
                 Ok(store) => store,
                 Err(e) => {
@@ -152,6 +173,10 @@ pub fn run() {
             }
             let state = AppState::new(app.handle().clone(), paths, demo, store);
             app.manage(state.clone());
+            analytics::startup(&state);
+            if SET_ASIDE.load(std::sync::atomic::Ordering::Relaxed) {
+                analytics::failed(&state, analytics::Failure::DatabaseUnreadable, "");
+            }
             notify::setup(&app.config().identifier);
             if let Some(w) = app.get_webview_window("main") {
                 traffic_lights::place(&w.as_ref().window());
@@ -239,6 +264,11 @@ pub fn run() {
             commands::liff_share,
             commands::open_chat_window,
             commands::is_demo,
+            commands::analytics_status,
+            commands::set_analytics,
+            commands::report_preview,
+            commands::send_report,
+            commands::report_js_error,
             commands::open_path,
             commands::reveal_path,
             commands::cache_size,

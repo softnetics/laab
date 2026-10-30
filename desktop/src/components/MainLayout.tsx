@@ -6,6 +6,7 @@ import { adjacentChat } from "../lib/chatList";
 import { openChat } from "../lib/nav";
 import { LAST_CHAT_KEY, notice, setUi, ui, useUi } from "../lib/ui";
 import { foldChat, foldIfNarrow, unfoldChat } from "../lib/fold";
+import { askAboutAnalytics } from "../lib/analytics";
 import { startUpdateChecks } from "../lib/updater";
 import { ChatListColumn } from "./ChatList";
 import { ChatView } from "./ChatView";
@@ -59,6 +60,11 @@ export function MainLayout({ chatId }: { chatId: string | null }) {
   }, [list, chatId, session?.state]);
 
   useEffect(startUpdateChecks, []);
+  useEffect(() => {
+    // Dev builds also ask in demo mode, where nothing is sent anyway.
+    const asks = session?.state === "signed_in" || (import.meta.env.DEV && session?.state === "demo");
+    if (asks) askAboutAnalytics().catch(() => {});
+  }, [session?.state]);
   useEffect(foldIfNarrow, []);
 
   // Banners and Raycast deep links open a chat.

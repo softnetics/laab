@@ -6,6 +6,7 @@ import { setUi } from "./ui";
 import type { ViewerPayload } from "./viewer";
 import type {
   Album,
+  AnalyticsStatus,
   AlbumPhoto,
   ChatList,
   ChatMember,
@@ -83,6 +84,11 @@ export const api = {
     invoke<{ sent: number; failed: string[] }>("liff_share", { window, liffId, ott, chatIds, messages }),
   openChatWindow: (chatId: string, title: string) => invoke<void>("open_chat_window", { chatId, title }),
   isDemo: () => invoke<boolean>("is_demo"),
+  analyticsStatus: () => invoke<AnalyticsStatus>("analytics_status"),
+  setAnalytics: (on: boolean) => invoke<void>("set_analytics", { on }),
+  reportPreview: (req: { messageId: string | null; content: boolean; log: boolean }) => invoke<string>("report_preview", { req }),
+  sendReport: (report: string) => invoke<void>("send_report", { report }),
+  reportJsError: (name: string, stack: string) => invoke<void>("report_js_error", { name, stack }),
   announcements: (chatId: string) =>
     invoke<{ seq: string; text: string; link: string | null; creator: string | null; createdTime: number }[]>("announcements", { chatId }),
   richMenu: (chatId: string) => invoke<RichMenu | null>("rich_menu", { chatId }),
@@ -148,6 +154,7 @@ export const q = {
   members: (chatId: string) => queryOptions({ queryKey: ["members", chatId], queryFn: () => api.members(chatId), staleTime: 5 * 60_000 }),
   stickers: queryOptions({ queryKey: ["stickers"], queryFn: api.stickers, staleTime: 10 * 60_000 }),
   isDemo: queryOptions({ queryKey: ["demo"], queryFn: api.isDemo }),
+  analytics: queryOptions({ queryKey: ["analytics"], queryFn: api.analyticsStatus }),
 };
 
 export const useSession = () => useQuery(q.session).data;

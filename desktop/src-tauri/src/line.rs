@@ -18,6 +18,7 @@ use serde_json::Value as Json;
 use tokio::sync::broadcast::error::RecvError;
 use tokio::task::AbortHandle;
 
+use crate::analytics;
 use crate::convert::{self, num_of, str_of};
 use crate::model::{Chat, ChatMember, Message, Profile};
 use crate::reads;
@@ -151,6 +152,7 @@ async fn check_session(state: Arc<AppState>, line: Arc<Line>) {
         && token_dead(&e.to_string())
     {
         tracing::warn!("session expired: {e}");
+        analytics::failed(&state, analytics::Failure::SessionEnded { kicked: false }, "");
         session_ended(state, line, EXPIRED).await;
     }
 }
@@ -183,6 +185,7 @@ pub async fn start(state: Arc<AppState>) {
                 clear_auth(&state);
             }
             tracing::warn!("token login failed: {e:?}");
+            analytics::failed(&state, analytics::Failure::Login(analytics::Login::Saved), &format!("{e:?} {e}"));
             state.update_session(|s| {
                 s.state = "signed_out".into();
                 s.status = if auth_error(&e) {
@@ -229,10 +232,12 @@ pub async fn login_qr(state: Arc<AppState>) -> Result<()> {
     .await;
     match result {
         Ok(client) => {
-            connected(state, client, DEFAULT_DEVICE).await;
+            connected(state.clone(), client, DEFAULT_DEVICE).await;
+            analytics::send(&state, analytics::Event::SignedIn(analytics::Login::Qr));
             Ok(())
         }
         Err(e) => {
+            analytics::failed(&state, analytics::Failure::Login(analytics::Login::Qr), &format!("{e:?} {e}"));
             state.update_session(|s| {
                 s.state = "signed_out".into();
                 s.qr_url = None;
@@ -276,10 +281,12 @@ pub async fn login_password(
     .await;
     match result {
         Ok(client) => {
-            connected(state, client, Device::DesktopWin).await;
+            connected(state.clone(), client, Device::DesktopWin).await;
+            analytics::send(&state, analytics::Event::SignedIn(analytics::Login::Password));
             Ok(())
         }
         Err(e) => {
+            analytics::failed(&state, analytics::Failure::Login(analytics::Login::Password), &format!("{e:?} {e}"));
             state.update_session(|s| {
                 s.state = "signed_out".into();
                 s.pin = None;
@@ -297,6 +304,7 @@ pub async fn logout(state: Arc<AppState>) {
     }
     clear_auth(&state);
     let _ = state.store().session_clear();
+    crate::analytics::signed_out(&state);
     if let Err(e) = crate::cache::clear(&state) {
         tracing::warn!("clearing the cache on logout failed: {e:?}");
     }
@@ -460,6 +468,7 @@ fn spawn_forwarders(state: &Arc<AppState>, line: &Arc<Line>) {
                 // `session_ended` stops this task, so it runs in its own.
                 Ok(line_rs::ClientEvent::KickedOut(reason)) => {
                     tracing::warn!("kicked out: {reason:?}");
+                    analytics::failed(&s, analytics::Failure::SessionEnded { kicked: true }, "");
                     if let Some(line) = l.upgrade() {
                         tokio::spawn(session_ended(s.clone(), line, "ถูกออกจากระบบ เข้าสู่ระบบใหม่"));
                     }
@@ -470,6 +479,7 @@ fn spawn_forwarders(state: &Arc<AppState>, line: &Arc<Line>) {
                     let error = data["error"].as_str().unwrap_or("");
                     if kind == "RefreshError" && token_dead(error) {
                         tracing::warn!("session expired: {error}");
+                        analytics::failed(&s, analytics::Failure::SessionEnded { kicked: false }, "");
                         tokio::spawn(session_ended(s.clone(), line, EXPIRED));
                         break;
                     }
