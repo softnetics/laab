@@ -23,6 +23,13 @@ fn err(e: impl std::fmt::Display) -> String {
     e.to_string()
 }
 
+/// Reports a failed send (its kind only) and returns the error text.
+fn send_failed(state: &AppState, action: crate::usage::Action, e: impl std::fmt::Display) -> String {
+    let text = e.to_string();
+    crate::analytics::failed(state, crate::analytics::Failure::Send(action), &text);
+    text
+}
+
 #[tauri::command]
 pub fn session(state: S<'_>) -> Session {
     state.session()
@@ -124,6 +131,7 @@ pub fn set_focus(state: S<'_>, chat_id: Option<String>, active: bool) {
 /// read status and members in the background.
 #[tauri::command]
 pub async fn open_chat(state: S<'_>, chat_id: String) -> R<()> {
+    crate::usage::hit(crate::usage::Action::OpenedChat);
     let s = state.inner().clone();
     let had_unread = s
         .store()
@@ -175,13 +183,18 @@ pub async fn mark_read(state: S<'_>, chat_id: String) -> R<()> {
 
 #[tauri::command]
 pub async fn refresh(state: S<'_>, full: Option<bool>) -> R<()> {
+    crate::usage::hit(crate::usage::Action::Refreshed);
     let s = state.inner().clone();
     if s.demo {
         return Ok(());
     }
     line::refresh_chats(&s, full.unwrap_or(true))
         .await
-        .map_err(err)
+        .map_err(|e| {
+            let text = e.to_string();
+            crate::analytics::failed(&s, crate::analytics::Failure::Sync, &text);
+            text
+        })
 }
 
 #[tauri::command]
@@ -244,7 +257,12 @@ pub async fn send_text(
     if let Some(meta) = convert::mention_metadata(&mentions) {
         input = input.metadata("MENTION", meta);
     }
-    let sent = l.client.send_message(&chat_id, input).await.map_err(err)?;
+    let sent = l
+        .client
+        .send_message(&chat_id, input)
+        .await
+        .map_err(|e| send_failed(&s, crate::usage::Action::SentText, e))?;
+    crate::usage::hit(crate::usage::Action::SentText);
     let mut m = convert::message_from_json(&sent.raw.to_json(), &l.me, true)
         .unwrap_or_else(|| local_message(&s, &chat_id, &text, mentions.clone()));
     // The send response may omit what we sent.
@@ -277,13 +295,14 @@ pub async fn send_sticker(state: S<'_>, chat_id: String, sticker: Sticker) -> R<
     let input =
         MessageInput::sticker(&sticker.package_id, &sticker.sticker_id, &version).e2ee(false);
     let sent = l.client.send_message(&chat_id, input).await.map_err(|e| {
-        let text = e.to_string();
+        let text = send_failed(&s, crate::usage::Action::SentSticker, e);
         if text.contains("USER_NOT_STICKER_OWNER") {
             "sticker_not_owned".to_string()
         } else {
             text
         }
     })?;
+    crate::usage::hit(crate::usage::Action::SentSticker);
     crate::stickers::remember(&s, &sticker);
     if let Some(mut m) = convert::message_from_json(&sent.raw.to_json(), &l.me, true) {
         m.chat_id = chat_id;
@@ -337,7 +356,11 @@ pub async fn send_files(state: S<'_>, chat_id: String, paths: Vec<String>) -> R<
             "mp4" | "mov" | "m4v" => chat.send_video(data, Some(&name), None).await,
             _ => chat.send_file(data, &name).await,
         };
-        result.map_err(|e| format!("ส่ง {name} ไม่สำเร็จ: {e}"))?;
+        result.map_err(|e| {
+            let text = send_failed(&s, crate::usage::Action::SentFile, e);
+            format!("ส่ง {name} ไม่สำเร็จ: {text}")
+        })?;
+        crate::usage::hit(crate::usage::Action::SentFile);
     }
     s.status("เชื่อม LINE แล้ว");
     let _ = line::fetch_history(&s, &chat_id).await;
@@ -384,6 +407,7 @@ pub async fn react(
     message_id: String,
     reaction: Option<String>,
 ) -> R<()> {
+    crate::usage::hit(crate::usage::Action::Reacted);
     let s = state.inner().clone();
     let me = s.my_mid();
     let previous = s.store().message(&message_id).ok().flatten().and_then(|m| {
@@ -487,6 +511,7 @@ pub fn add_workspace(state: S<'_>, name: String) -> R<Workspace> {
 
 #[tauri::command]
 pub fn create_folder(state: S<'_>, name: String, chat_ids: Vec<String>, from: Option<String>) -> R<Workspace> {
+    crate::usage::hit(crate::usage::Action::CreatedFolder);
     let w = state
         .store()
         .create_folder(name.trim(), &chat_ids, from.as_deref())
@@ -521,6 +546,7 @@ pub fn delete_folder(state: S<'_>, id: String) -> R<()> {
 
 #[tauri::command]
 pub fn search(state: S<'_>, query: String, kinds: Vec<SearchKind>) -> R<Vec<SearchHit>> {
+    crate::usage::hit(crate::usage::Action::Searched);
     state.store().search(&query, &kinds).map_err(err)
 }
 
@@ -612,6 +638,7 @@ pub struct LiffOpen {
 /// Open a LIFF link. Errors with `liff_consent_required` until the user agrees.
 #[tauri::command]
 pub async fn open_liff(state: S<'_>, req: LiffOpen) -> R<()> {
+    crate::usage::hit(crate::usage::Action::OpenedLiff);
     let s = state.inner().clone();
     let link = crate::liff::parse_link(&req.url).ok_or("invalid_liff_id")?;
     let view = if s.demo || req.web.unwrap_or(false) {
@@ -760,6 +787,37 @@ pub fn open_chat_window(app: tauri::AppHandle, chat_id: String, title: String) -
 #[tauri::command]
 pub fn is_demo(state: S<'_>) -> bool {
     state.demo
+}
+
+#[tauri::command]
+pub fn analytics_status(state: S<'_>) -> crate::analytics::Status {
+    crate::analytics::status(&state)
+}
+
+#[tauri::command]
+pub fn set_analytics(state: S<'_>, on: bool) -> R<()> {
+    crate::analytics::set(&state, on).map_err(err)
+}
+
+/// The problem report as it would be sent, for the user to read and edit.
+#[tauri::command]
+pub fn report_preview(state: S<'_>, req: crate::report::Request) -> String {
+    crate::report::preview(&state, &req)
+}
+
+#[tauri::command]
+pub fn send_report(state: S<'_>, report: String) -> R<()> {
+    crate::analytics::send_report(&state, report).map_err(err)
+}
+
+/// An uncaught webview error. Only `name` and the frames of `stack` that
+/// point into LAAB's scripts are kept; see `crash::from_js`.
+#[tauri::command]
+pub fn report_js_error(state: S<'_>, name: String, stack: String) {
+    crate::analytics::send(
+        &state,
+        crate::analytics::Event::Exception(crate::crash::from_js(&name, &stack)),
+    );
 }
 
 fn inside_data(state: &AppState, path: &str) -> R<std::path::PathBuf> {
@@ -947,6 +1005,7 @@ pub async fn edit_message(
 
 #[tauri::command]
 pub async fn translate(state: S<'_>, text: String, target: String) -> R<String> {
+    crate::usage::hit(crate::usage::Action::Translated);
     let s = live!(state);
     crate::actions::translate(&s, &text, &target)
         .await

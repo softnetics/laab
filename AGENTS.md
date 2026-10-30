@@ -22,4 +22,5 @@ Building and releasing need macOS (`codesign`, `hdiutil`). On Linux, check scrip
 - To check it without a LINE account, run `LAAB_DEMO=1 pnpm tauri dev` in `desktop/`. Demo data lives in a temporary folder.
 - Do not point a dev build at the user's real data folder unless they ask. Use `LAAB_DATA_DIR` for a scratch folder.
 - Run `pnpm test` and `cargo test` (in `desktop/src-tauri`) after changes.
+- Usage statistics and crash reports (`src-tauri/src/analytics.rs`, `usage.rs`, `crash.rs`) are opt-in. Never add an event property that holds data from LINE or from the user (text, names, mids, chat ids, URLs, file names, error or panic messages). Add new properties to the test's list in `analytics.rs`. Only a problem report the user previews and confirms (`report.rs`) may carry content.
 - `laab.sqlite` is encrypted with SQLCipher; the key is in the login keychain (`tech.softnetics.laab` / `database-key`). Do not read that key or decrypt the user's real database unless they ask. Reading it from a shell opens a keychain prompt on their screen.

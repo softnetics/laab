@@ -9,10 +9,25 @@ The macOS app.
 
 Data lives in `~/Library/Application Support/Laab/`.
 
+- `logs/laab.log` (and `laab.1.log`) is the app's log, kept under 2 MB. `crashes/` holds panic reports until the next launch sends or deletes them.
 - `laab.sqlite` is encrypted with SQLCipher. The key is 32 random bytes in the Keychain (`tech.softnetics.laab` / `database-key`, see `src-tauri/src/keychain.rs`). The LINE session is in its `session` and `kv` tables.
 - Files in `cache/media` and `cache/avatars` are encrypted with AES-256-GCM in 64 KB chunks (`src-tauri/src/vault.rs`), so `media://` can decrypt just the range a `<video>` asks for. Files left over from before encryption get encrypted in the background at launch. `cache/stickers` isn't encrypted, and neither is anything in demo mode.
 - `cache/media` is capped at 2 GB (`src-tauri/src/cache.rs`). Past that, LAAB deletes the full files used least recently, before any thumbnail, until it's down to 80%, and clears the database paths that pointed at them. Signing out, or **ล้าง cache** (Clear cache) in the ⋯ menu, deletes the whole cache.
 - An unencrypted database from an older build is encrypted on first launch, and the old session files (`linejs-rs-storage.json`, `auth-token.txt`, `auth-device.txt`) are moved into it and deleted. If the Keychain key can't open the database, LAAB renames it to `laab.sqlite.unreadable-<time>` and starts fresh, and you have to sign in again.
+
+## Usage statistics and problem reports
+
+LAAB asks once, after you sign in, whether to send anonymous usage statistics and crash reports to PostHog. Nothing is sent until you agree, and **ส่งสถิติการใช้งาน** (Send usage statistics) in the ⋯ menu turns it off again. Everything that can be sent is defined in Rust (`src-tauri/src/analytics.rs`, `usage.rs`, `crash.rs`), and the webview's CSP blocks PostHog.
+
+- **Events**: `app_opened`, `app_updated` (with the previous version), `signed_in` (QR or password), `signed_out`, and once a day `daily_usage`: how many times each feature was used (`n_sent_text`, `n_opened_liff`, …) and the number of chats as a range. Each event carries the app version, the macOS version and the CPU architecture.
+- **Errors**: `login_failed`, `session_ended`, `sync_failed`, `send_failed` and `database_unreadable`, each with a category (`network`, `auth`, `rate_limited`, `server`, `other`) worked out on your Mac from the error text, which isn't sent, plus the names of your last 20 actions (breadcrumbs).
+- **Crashes** (`$exception`): Rust panics, saved to `crashes/` and sent at the next launch; native crashes from macOS's `~/Library/Logs/DiagnosticReports/laab-*.ips` since the last launch; and uncaught webview errors. They carry the error type, function names, source files and line numbers, never the error or panic message.
+- Events go out under a random id that isn't tied to your LINE account. Signing out replaces it, and turning statistics off deletes it. PostHog is asked not to create a person profile or look up a location.
+- Messages, names, LINE ids, chat lists, links and files are never sent automatically.
+
+**รายงานปัญหา…** (Report a problem), in the ⋯ menu and a message's right-click menu, sends a report you write. It shows everything it will send in a box you can edit. A message is attached as its shape (field names and value types) unless you tick its content; the last 200 lines of the local log (`logs/laab.log`, never sent otherwise) only if you tick that. Reports can be sent with statistics off.
+
+Release builds send only if `LAAB_POSTHOG_KEY` (and optionally `LAAB_POSTHOG_HOST`) was set at build time; otherwise the menu items don't show. Debug builds log events instead of sending them, also in demo mode, so the whole flow can be tried with `LAAB_DEMO=1`.
 
 ## Developing
 

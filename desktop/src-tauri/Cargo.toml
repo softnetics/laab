@@ -47,12 +47,13 @@ tempfile = "3"
 codegen-units = 1
 lto = true
 opt-level = 3
-strip = true
+# Keep function names so crash reports are readable; debug info still goes.
+strip = "debuginfo"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 mac-notification-sys = "0.6.15"
 objc2-app-kit = "0.3"
 security-framework = "3"
-objc2-foundation = { version = "0.3", features = ["block2", "NSNotification", "NSOperation"] }
+objc2-foundation = { version = "0.3", features = ["block2", "NSNotification", "NSOperation", "NSProcessInfo"] }
 objc2 = "0.6"
 block2 = "0.6"

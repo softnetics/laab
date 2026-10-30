@@ -76,6 +76,9 @@ export interface ChatList {
 
 export type SearchKind = "chat" | "message" | "file";
 
+/** Usage statistics: `unavailable` in demo mode and in builds without a PostHog key. */
+export type AnalyticsStatus = "unavailable" | "unasked" | "on" | "off";
+
 export interface SearchHit {
   kind: SearchKind;
   chatId: string;

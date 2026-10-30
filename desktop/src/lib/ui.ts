@@ -45,9 +45,19 @@ export interface UiState {
   /** Translations shown under messages, by message id. */
   translations: Record<string, string>;
   /** A confirmation dialog. */
-  confirm: { title: string; body?: string; action: string; danger?: boolean; run: () => Promise<unknown> } | null;
+  confirm: {
+    title: string;
+    body?: string;
+    action: string;
+    danger?: boolean;
+    run: () => Promise<unknown>;
+    /** Called when the dialog closes without `run`. */
+    dismiss?: () => void;
+    /** The label of the close button, "ปิด" by default. */
+    dismissLabel?: string;
+  } | null;
   /** Open sheets: add friend, notes and albums of a chat. */
-  sheet: { kind: "add-friend" } | null;
+  sheet: { kind: "add-friend" } | { kind: "report"; messageId: string | null } | null;
   /** Someone's profile card; name and picture show while it loads. */
   profile: { mid: string; name?: string; picture?: string | null } | null;
   /** What the column next to the left bar shows: chats, friends, add friend. */

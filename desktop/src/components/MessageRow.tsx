@@ -3,7 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { save } from "@tauri-apps/plugin-dialog";
 import { memo, useState } from "react";
-import { api, errorText, mediaUrl, queryClient } from "../lib/api";
+import { api, errorText, mediaUrl, q, queryClient } from "../lib/api";
 import { performFlexAction } from "../lib/flexActions";
 import { callBubbleLabel, isBlank, noticeFor, readCall } from "../lib/notices";
 import { nextReaction } from "../lib/reactions";
@@ -386,8 +386,8 @@ function Content({
   );
 }
 
-/** LINE for Mac's message menu, in its order. Items LAAB cannot do
- *  (แชร์, รายงานปัญหา) are left out. */
+/** LINE for Mac's message menu, in its order. Items LAAB cannot do (แชร์)
+ *  are left out. รายงานปัญหา reports to LAAB, not to LINE. */
 function rowMenu(m: Message, dev: boolean, ctx?: RowContext) {
   const flexAlt = m.contentType === "FLEX" ? m.metadata.ALT_TEXT : null;
   const copyText =
@@ -405,6 +405,8 @@ function rowMenu(m: Message, dev: boolean, ctx?: RowContext) {
     return dev ? item("ดูข้อมูลดิบ", () => setUi({ inspectMessageId: m.id })) : null;
   }
   const live = sent && m.unsent === 0;
+  const status = queryClient.getQueryData(q.analytics.queryKey);
+  const reportable = !!status && status !== "unavailable";
   return (
     <>
       {live && item("ตอบกลับ", () => setUi({ composerMode: { chatId: ctx.chatId, kind: "reply", message: m }, composerFocus: Date.now() }))}
@@ -467,12 +469,13 @@ function rowMenu(m: Message, dev: boolean, ctx?: RowContext) {
           )}
         </>
       )}
-      {dev && (
+      {reportable && (
         <>
           <Separator />
-          {item("ดูข้อมูลดิบ", () => setUi({ inspectMessageId: m.id }))}
+          {item("รายงานปัญหา…", () => setUi({ sheet: { kind: "report", messageId: m.id } }))}
         </>
       )}
+      {dev && item("ดูข้อมูลดิบ", () => setUi({ inspectMessageId: m.id }))}
     </>
   );
 }
