@@ -16,7 +16,9 @@ import type {
   NoteDetail,
   NotePost,
   Person,
+  LiffDevSession,
   ReactionName,
+  RichMenu,
   SearchHit,
   SearchKind,
   Session,
@@ -72,12 +74,18 @@ export const api = {
   sendPostback: (chatId: string, messageId: string, data: string, displayText: string | null) =>
     invoke<void>("send_postback", { chatId, messageId, data, displayText }),
   openLiff: (req: { url: string; chatId?: string | null; consent?: boolean; web?: boolean }) => invoke<void>("open_liff", { req }),
+  liffDevSessions: () => invoke<LiffDevSession[]>("liff_dev_sessions"),
+  liffDevAction: (label: string, action: "reload" | "inspect" | "close" | "reopen" | "web") =>
+    invoke<void>("liff_dev_action", { label, action }),
+  liffDevEval: (label: string, code: string) => invoke<void>("liff_dev_eval", { label, code }),
+  openLiffDevtools: (focus: string | null = null) => invoke<void>("open_liff_devtools", { focus }),
   liffShare: (window: string, liffId: string, ott: string, chatIds: string[], messages: unknown) =>
     invoke<{ sent: number; failed: string[] }>("liff_share", { window, liffId, ott, chatIds, messages }),
   openChatWindow: (chatId: string, title: string) => invoke<void>("open_chat_window", { chatId, title }),
   isDemo: () => invoke<boolean>("is_demo"),
   announcements: (chatId: string) =>
     invoke<{ seq: string; text: string; link: string | null; creator: string | null; createdTime: number }[]>("announcements", { chatId }),
+  richMenu: (chatId: string) => invoke<RichMenu | null>("rich_menu", { chatId }),
   loginPassword: (identifier: string, password: string) => invoke<void>("login_password", { identifier, password }),
   unsend: (messageId: string) => invoke<void>("unsend", { messageId }),
   editMessage: (chatId: string, messageId: string, text: string) => invoke<void>("edit_message", { chatId, messageId, text }),

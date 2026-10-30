@@ -96,6 +96,12 @@ export function Rail() {
                 <span className="w-4 text-center">{dev ? "✓" : ""}</span>
                 เครื่องมือนักพัฒนา
               </Menu.CheckboxItem>
+              {dev && (
+                <Menu.Item className={itemClass} onClick={() => api.openLiffDevtools().catch((e) => notice(errorText(e)))}>
+                  LIFF DevTools
+                  <span className="ml-auto text-secondary">⌥⌘L</span>
+                </Menu.Item>
+              )}
               <Menu.Item className={itemClass} onClick={clearCache}>
                 ล้าง cache
                 {cacheBytes != null && <span className="ml-auto text-secondary">{megabytes(cacheBytes)}</span>}

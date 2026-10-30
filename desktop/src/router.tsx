@@ -10,6 +10,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useEffect } from "react";
 import { AlbumsNotesWindow, MediaWindow } from "./components/AuxWindows";
 import { ChatWindow } from "./components/ChatWindow";
+import { LiffDevTools } from "./components/LiffDevTools";
 import { MainLayout } from "./components/MainLayout";
 import { buttonClass } from "./components/Sheet";
 import { Viewer } from "./components/Viewer";
@@ -85,6 +86,8 @@ const media = createRoute({
 
 const viewer = createRoute({ getParentRoute: () => root, path: "/viewer", component: Viewer });
 
+const liffDevtools = createRoute({ getParentRoute: () => root, path: "/liff-devtools", component: LiffDevTools });
+
 // Keep query values as strings. The default parses them as JSON, which turns
 // LINE's 19-digit note ids into floats and loses their last digits.
 const parseSearch = (search: string) => Object.fromEntries(new URLSearchParams(search.replace(/^\?/, "")));
@@ -112,7 +115,7 @@ function RenderError({ error }: ErrorComponentProps) {
 }
 
 export const router = createRouter({
-  routeTree: root.addChildren([home, chat, detached, albums, media, viewer]),
+  routeTree: root.addChildren([home, chat, detached, albums, media, viewer, liffDevtools]),
   defaultErrorComponent: RenderError,
   history: createHashHistory(),
   parseSearch,

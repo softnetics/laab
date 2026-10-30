@@ -14,6 +14,7 @@ import { dismissTop, notice, ui } from "../lib/ui";
 import { Announcements } from "./Announcements";
 import { HeaderMenu } from "./ChatActions";
 import { Composer, type ComposerHandle } from "./Composer";
+import { RichMenu } from "./RichMenu";
 import { BellSlashIcon, ChevronIcon, CloseIcon, ExternalIcon, MoreVIcon, NoteIcon, SearchIcon, SpeakerIcon } from "./Icons";
 import { popupClass } from "./kit";
 import type { RowContext } from "./MessageRow";
@@ -330,6 +331,7 @@ export function ChatView({ chatId, main }: { chatId: string; main: boolean }) {
             : undefined
         }
       />
+      {chat?.kind === "bot" && <RichMenu key={chatId} chatId={chatId} />}
       <AnimatePresence>
         {dragging && (
           <motion.div

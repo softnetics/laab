@@ -91,22 +91,38 @@ pub struct LiffView {
     /// `client` (tokens issued) or `web` (plain page).
     pub mode: String,
     pub reason: Option<String>,
+    /// For LIFF DevTools: the requested link, what LINE returned, the tokens.
+    #[serde(skip)]
+    pub info: Json,
 }
 
 pub fn client_url(endpoint: &str, link: &LiffLink, tokens: &[(&str, String)]) -> Result<String> {
     if !endpoint.starts_with("https://") {
         return Err(anyhow!("LIFF endpoint is not https"));
     }
-    let mut url = endpoint.split('#').next().unwrap_or(endpoint).to_string();
+    let endpoint = endpoint.split('#').next().unwrap_or(endpoint);
+    // The extra path goes before the endpoint's own query
+    // (`https://app/liff?tenant=x` + `pages/a` is `https://app/liff/pages/a?tenant=x`).
+    let (mut url, endpoint_query) = match endpoint.split_once('?') {
+        Some((base, query)) => (base.to_string(), query),
+        None => (endpoint.to_string(), ""),
+    };
     if !link.path.is_empty() {
         if !url.ends_with('/') {
             url.push('/');
         }
         url.push_str(&link.path);
     }
-    if !link.query.is_empty() {
-        url.push(if url.contains('?') { '&' } else { '?' });
-        url.push_str(&link.query);
+    // Pairs the link repeats from the endpoint are kept once.
+    let mut pairs: Vec<&str> = Vec::new();
+    for pair in endpoint_query.split('&').chain(link.query.split('&')) {
+        if !pair.is_empty() && !pairs.contains(&pair) {
+            pairs.push(pair);
+        }
+    }
+    if !pairs.is_empty() {
+        url.push('?');
+        url.push_str(&pairs.join("&"));
     }
     let fragment: Vec<String> = tokens
         .iter()
@@ -137,12 +153,14 @@ pub async fn issue(
     chat: Option<String>,
     consent: bool,
 ) -> Result<LiffView> {
+    let url_requested = url;
     let link = parse_link(url).ok_or_else(|| anyhow!("invalid_liff_id"))?;
     let web = |reason: &str| LiffView {
         liff_id: link.id.clone(),
         url: link.web_url(),
         mode: "web".into(),
         reason: Some(reason.into()),
+        info: serde_json::json!({ "requestedUrl": url }),
     };
     let Some(line) = state.line().await else {
         return Ok(web("ยังไม่ได้เข้าสู่ระบบ"));
@@ -183,11 +201,26 @@ pub async fn issue(
             ("client_id", channel),
         ],
     )?;
+    let info = serde_json::json!({
+        "requestedUrl": url_requested,
+        "endpoint": endpoint,
+        "appName": v["view"]["appName"],
+        "viewType": v["view"]["type"],
+        "scopes": v["scopes"],
+        "expiresIn": v["accessTokenExpiresIn"],
+        "tokens": {
+            "access_token": token,
+            "id_token": s("idToken"),
+            "context_token": s("contextToken"),
+            "feature_token": s("featureToken"),
+        },
+    });
     Ok(LiffView {
         liff_id: link.id,
         url,
         mode: "client".into(),
         reason: None,
+        info,
     })
 }
 
@@ -198,8 +231,16 @@ const BRIDGE: &str = r#"(function(){
     window.dispatchEvent(new CustomEvent('liffEvent', {detail: detail}));
   }
   window._liff = {
+    // LIFF SDK 2.x in a LINE app 9.5.0 or newer waits for this list, or for
+    // a "ready" event, before liff.init() goes on.
+    features: ['closeWindow', 'openWindow'],
     postMessage: function(type, featureToken, callbackId, params) {
       try { params = typeof params === 'string' ? JSON.parse(params) : (params || {}); } catch (e) { params = {}; }
+      if (window.__laabDev) {
+        var shown; try { shown = JSON.stringify(params); } catch (e) { shown = '?'; }
+        window.__laabDev.push('bridge', type === 'closeWindow' || type === 'openWindow' ? 'info' : 'warn',
+          type + ' ' + shown + (type === 'closeWindow' || type === 'openWindow' ? '' : ' → FORBIDDEN (LAAB ยังไม่รองรับ)'));
+      }
       if (type === 'closeWindow') { location.href = 'liff://close'; return; }
       if (type === 'openWindow') {
         reply(type, callbackId, {});
@@ -209,6 +250,7 @@ const BRIDGE: &str = r#"(function(){
       reply(type, callbackId, null, {code: 'FORBIDDEN', message: 'LAAB ยังไม่รองรับ ' + type});
     }
   };
+  reply('ready');
 })();"#;
 
 pub fn user_agent(client: bool) -> String {
@@ -237,6 +279,11 @@ pub fn open_window(state: &Arc<AppState>, view: &LiffView, chat: Option<String>)
     let client = view.mode == "client";
     let current = view.liff_id.clone();
     let (nav_app, nav_label, nav_state) = (app.clone(), label.clone(), state.clone());
+    let (nav_app2, nav_label2) = (app.clone(), label.clone());
+    let chat_for_log = chat.clone();
+    let log = move |level: &str, text: String| {
+        crate::liff_devtools::push(&nav_app, &nav_label, "nav", level, text)
+    };
     let mut builder = WebviewWindowBuilder::new(&app, &label, WebviewUrl::External(url))
         .title("LIFF")
         .inner_size(420.0, 760.0)
@@ -244,36 +291,47 @@ pub fn open_window(state: &Arc<AppState>, view: &LiffView, chat: Option<String>)
         .user_agent(&user_agent(client))
         .on_navigation(move |u| {
             let s = u.as_str();
+            let bare = s.split('#').next().unwrap_or(s).to_string();
             match u.scheme() {
+                "laab-devtools" => {
+                    let _ = crate::liff_devtools::open(&nav_app2, Some(&nav_label2));
+                    false
+                }
                 "liff" if u.host_str() == Some("close") => {
-                    close(&nav_app, &nav_label);
+                    log("info", "liff.closeWindow()".into());
+                    close(&nav_app2, &nav_label2);
                     false
                 }
                 // The SDK reports the running app this way after init; reloading
                 // on it would lose the login.
-                "liff" => false,
+                "liff" => {
+                    log("debug", format!("ข้าม {bare}"));
+                    false
+                }
                 "laab-open" => {
                     let target = u
                         .query_pairs()
                         .find(|(k, _)| k == "url")
                         .map(|(_, v)| v.to_string())
                         .unwrap_or_default();
+                    log("info", format!("liff.openWindow → {target}"));
                     open_external_or_liff(&nav_state, &target, chat.clone());
                     false
                 }
                 "line" if u.host_str() == Some("picker") => {
                     let q: std::collections::HashMap<String, String> =
                         u.query_pairs().map(|(k, v)| (k.into(), v.into())).collect();
+                    log("info", "shareTargetPicker".into());
                     if client && q.get("liffId").map(String::as_str) == Some(current.as_str()) {
                         let data = q
                             .get("data")
                             .and_then(|d| serde_json::from_str(d).ok())
                             .unwrap_or(Json::Null);
-                        let _ = nav_app.emit_to(
+                        let _ = nav_app2.emit_to(
                             "main",
                             "liff-picker",
                             PickerRequest {
-                                window: nav_label.clone(),
+                                window: nav_label2.clone(),
                                 liff_id: current.clone(),
                                 ott: q.get("ott").cloned().unwrap_or_default(),
                                 data,
@@ -283,6 +341,7 @@ pub fn open_window(state: &Arc<AppState>, view: &LiffView, chat: Option<String>)
                     false
                 }
                 "line" => {
+                    log("info", format!("เปิด {bare}"));
                     if parse_link(s).is_some() {
                         open_external_or_liff(&nav_state, s, chat.clone());
                     }
@@ -292,23 +351,30 @@ pub fn open_window(state: &Arc<AppState>, view: &LiffView, chat: Option<String>)
                     // A different LIFF app gets fresh tokens.
                     match parse_link(s) {
                         Some(link) if link.id != current && client => {
+                            log("info", format!("LIFF อื่น เปิดหน้าต่างใหม่ {bare}"));
                             open_external_or_liff(&nav_state, s, chat.clone());
                             false
                         }
-                        _ => true,
+                        _ => {
+                            log("info", format!("ไปที่ {bare}"));
+                            true
+                        }
                     }
                 }
                 "about" | "data" | "blob" => true,
                 _ => {
+                    log("info", format!("เปิดนอกแอป {bare}"));
                     let _ = tauri_plugin_opener::open_url(s, None::<&str>);
                     false
                 }
             }
         });
+    builder = builder.initialization_script(crate::liff_devtools::CAPTURE);
     if client {
         builder = builder.initialization_script(BRIDGE);
     }
     builder.build()?;
+    crate::liff_devtools::opened(&app, &label, view, chat_for_log);
     Ok(())
 }
 
@@ -454,5 +520,21 @@ mod tests {
         )
         .unwrap();
         assert_eq!(u, "https://app.example/liff/a?b=1#access_token=x%3Dy");
+    }
+
+    #[test]
+    fn puts_the_path_before_the_endpoint_query() {
+        let l =
+            parse_link("https://liff.line.me/1234567-AbCdEf12/pages/p1?tenant=demo&x=1").unwrap();
+        let u = client_url(
+            "https://app.example/liff?tenant=demo",
+            &l,
+            &[("access_token", "t".into())],
+        )
+        .unwrap();
+        assert_eq!(
+            u,
+            "https://app.example/liff/pages/p1?tenant=demo&x=1#access_token=t"
+        );
     }
 }
