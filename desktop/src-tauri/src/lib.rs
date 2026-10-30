@@ -13,6 +13,7 @@ mod model;
 mod notify;
 mod paths;
 mod reads;
+mod richmenu;
 mod session;
 mod state;
 mod stickers;
@@ -235,6 +236,7 @@ pub fn run() {
             commands::cache_size,
             commands::clear_cache,
             commands::announcements,
+            commands::rich_menu,
             commands::login_password,
             commands::unsend,
             commands::edit_message,

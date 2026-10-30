@@ -184,3 +184,12 @@ export interface ContactProfile {
   friend: boolean;
   blocked: boolean;
 }
+
+/** An official account's rich menu, in canvas pixels. */
+export interface RichMenu {
+  label: string;
+  width: number;
+  height: number;
+  images: { url: string; x: number; y: number; w: number; h: number }[];
+  areas: { x: number; y: number; w: number; h: number; action: { type: string; label: string | null; uri: string | null } }[];
+}

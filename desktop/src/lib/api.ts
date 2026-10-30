@@ -17,6 +17,7 @@ import type {
   NotePost,
   Person,
   ReactionName,
+  RichMenu,
   SearchHit,
   SearchKind,
   Session,
@@ -78,6 +79,7 @@ export const api = {
   isDemo: () => invoke<boolean>("is_demo"),
   announcements: (chatId: string) =>
     invoke<{ seq: string; text: string; link: string | null; creator: string | null; createdTime: number }[]>("announcements", { chatId }),
+  richMenu: (chatId: string) => invoke<RichMenu | null>("rich_menu", { chatId }),
   loginPassword: (identifier: string, password: string) => invoke<void>("login_password", { identifier, password }),
   unsend: (messageId: string) => invoke<void>("unsend", { messageId }),
   editMessage: (chatId: string, messageId: string, text: string) => invoke<void>("edit_message", { chatId, messageId, text }),

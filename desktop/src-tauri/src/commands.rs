@@ -791,6 +791,47 @@ pub async fn announcements(state: S<'_>, chat_id: String) -> R<Vec<Announcement>
     Ok(out)
 }
 
+/// The rich menu of an official account, or `None` if it has none.
+#[tauri::command]
+pub async fn rich_menu(state: S<'_>, chat_id: String) -> R<Option<crate::richmenu::RichMenu>> {
+    let s = state.inner().clone();
+    if s.demo {
+        return Ok((chat_id == "b_parcel").then(crate::richmenu::demo));
+    }
+    let Some(l) = s.line().await else {
+        return Ok(None);
+    };
+    let buddy = l.client.base.buddy();
+    // The menu can differ per user; the personal detail names ours.
+    let detail = buddy
+        .get_buddy_detail_with_personal(
+            line_rs::tv!({ "buddyMid": chat_id.clone(), "attributeSet": [0] }),
+        )
+        .await
+        .map_err(|e| {
+            tracing::warn!("buddy detail {chat_id}: {e:?}");
+            err(e)
+        })?
+        .to_json();
+    let Some(menu_id) = detail["personalDetail"]["richMenuId"]
+        .as_str()
+        .filter(|id| !id.is_empty())
+    else {
+        return Ok(None);
+    };
+    let bar = buddy
+        .call(
+            "getBuddyChatBarV2",
+            line_rs::tv!({ "request": { "buddyMid": chat_id.clone(), "chatBarRevision": 0, "richMenuId": menu_id } }),
+        )
+        .await
+        .map_err(|e| {
+            tracing::warn!("chat bar {chat_id}: {e:?}");
+            err(e)
+        })?;
+    Ok(crate::richmenu::from_chat_bar(&bar.to_json()))
+}
+
 // ---------------------------------------------------------------- line-rs extras
 
 macro_rules! live {
