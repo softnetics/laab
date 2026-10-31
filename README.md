@@ -17,8 +17,9 @@ Download the latest `.dmg` from
 drag LAAB.app into Applications. It needs macOS 11 or later on Apple silicon.
 Releases are signed with a Developer ID and notarized by Apple.
 
-LAAB checks for a new version at launch and every 6 hours, downloads it in
-the background, and then shows a bar under the chat list. Click **รีสตาร์ต**
+LAAB checks for a new version at launch, every 30 minutes, and when you come
+back to it after a while, downloads it in the background, and then shows a
+bar under the chat list. Click **รีสตาร์ต**
 (Restart) to install it. This only works once LAAB is in Applications: run it
 from the mounted `.dmg` or straight from Downloads and macOS starts it from a
 read-only copy that can't be replaced.
