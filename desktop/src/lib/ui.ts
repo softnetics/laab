@@ -33,11 +33,13 @@ export interface UiState {
   inspectMessageId: string | null;
   /** Bumped to move keyboard focus to the composer. */
   composerFocus: number;
+  /** A group member selected from a message sender label for @-mentioning. */
+  mentionRequest: { chatId: string; mid: string; name: string } | null;
   /** The "new folder" dialog; `chatId` is added to the folder once made.
    *  With `rename`, it renames that folder instead. */
   folderDialog: { chatId: string | null; rename?: Workspace } | null;
-  /** Folders open in the chat list. */
-  openFolders: string[];
+  /** Folders collapsed this session; all others start expanded. */
+  collapsedFolders: string[];
   /** The folder whose name is being typed in the chat list. */
   renamingFolder: string | null;
   /** The composer is replying to, or editing, a message. */
@@ -87,8 +89,9 @@ export const ui = createStore<UiState>({
   notice: null,
   inspectMessageId: null,
   composerFocus: 0,
+  mentionRequest: null,
   folderDialog: null,
-  openFolders: saved("openFolders", []),
+  collapsedFolders: [],
   renamingFolder: null,
   liffConsent: null,
   sharePicker: null,
@@ -107,7 +110,6 @@ export const useUi = <T>(select: (s: UiState) => T) => useStore(ui, select);
 export function setUi(patch: Partial<UiState>) {
   ui.setState((s) => ({ ...s, ...patch }));
   if (patch.listWidth != null) localStorage.setItem("chatListWidth", JSON.stringify(patch.listWidth));
-  if (patch.openFolders != null) localStorage.setItem("openFolders", JSON.stringify(patch.openFolders));
   if (patch.developerMode != null) localStorage.setItem("developerMode", JSON.stringify(patch.developerMode));
 }
 

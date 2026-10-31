@@ -50,8 +50,9 @@ export const api = {
   reads: (chatId: string) => invoke<Record<string, string>>("reads", { chatId }),
   members: (chatId: string, force = false) => invoke<ChatMember[]>("members", { chatId, force }),
   setFocus: (chatId: string | null, active: boolean) => invoke<void>("set_focus", { chatId, active }),
-  openChat: (chatId: string) => invoke<void>("open_chat", { chatId }),
+  openChat: (chatId: string) => invoke<string | null>("open_chat", { chatId }),
   markRead: (chatId: string) => invoke<void>("mark_read", { chatId }),
+  markUnread: (chatId: string) => invoke<void>("mark_unread", { chatId }),
   refresh: (full = true) => invoke<void>("refresh", { full }),
   reloadChat: (chatId: string) => invoke<void>("reload_chat", { chatId }),
   sendText: (chatId: string, text: string, mentions: MentionSpan[], replyTo: string | null = null) =>
@@ -59,6 +60,9 @@ export const api = {
   sendSticker: (chatId: string, sticker: Sticker) => sent(invoke<void>("send_sticker", { chatId, sticker })),
   stickers: () => invoke<StickerPack[]>("stickers"),
   sendFiles: (chatId: string, paths: string[]) => sent(invoke<void>("send_files", { chatId, paths })),
+  sendImageBytes: (chatId: string, bytes: Uint8Array, fileName: string) =>
+    sent(invoke<void>("send_image_bytes", bytes, { headers: { "chat-id": chatId, "file-name": encodeURIComponent(fileName) } })),
+  messageBytes: (chatId: string, messageId: string) => invoke<ArrayBuffer>("message_bytes", { chatId, messageId }),
   download: (chatId: string, messageId: string, fileName: string | null) => invoke<string>("download", { chatId, messageId, fileName }),
   react: (chatId: string, messageId: string, reaction: ReactionName | null) => invoke<void>("react", { chatId, messageId, reaction }),
   setMuted: (chatId: string, muted: boolean) => invoke<void>("set_muted", { chatId, muted }),

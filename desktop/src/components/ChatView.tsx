@@ -10,7 +10,7 @@ import { api, errorText, messageLimit, q, queryClient, setMessageLimit, useChatL
 import { adjacentChat, isGroup, isKeepMemo } from "../lib/chatList";
 import { findHits } from "../lib/inChatSearch";
 import { closeChat, openChat } from "../lib/nav";
-import { dismissTop, notice, ui } from "../lib/ui";
+import { dismissTop, notice, setUi, ui } from "../lib/ui";
 import { Announcements } from "./Announcements";
 import { HeaderMenu } from "./ChatActions";
 import { Composer, type ComposerHandle } from "./Composer";
@@ -81,10 +81,21 @@ export function ChatView({ chatId, main }: { chatId: string; main: boolean }) {
   // settles on a chat for 150 ms, so arrow-key browsing stays fast.
   useEffect(() => {
     if (main) api.setFocus(chatId, document.hasFocus());
-    const t = setTimeout(() => api.openChat(chatId).catch(() => {}), 150);
+    let cancelled = false;
+    const explicitTarget = ui.state.focusMessageId;
+    const t = setTimeout(() => {
+      api.openChat(chatId).then((target) => {
+        if (!cancelled && target && !explicitTarget && !ui.state.focusMessageId) {
+          setUi({ focusMessageId: target });
+        }
+      }).catch(() => {});
+    }, 150);
     setStickers(false);
     setSearch({ open: false, query: "", debounced: "", index: 0 });
-    return () => clearTimeout(t);
+    return () => {
+      cancelled = true;
+      clearTimeout(t);
+    };
   }, [chatId, main]);
   useEffect(() => {
     if (!main) return;

@@ -47,7 +47,7 @@ export function ReactButton({
           }}
           className={`grid h-[38px] w-[38px] place-items-center rounded-full text-[24px] transition-transform hover:scale-115 ${mine === r.name ? "bg-field" : ""}`}
         >
-          {r.emoji}
+          {emojiFor(r.name)}
         </button>
       ))}
     </Popover>

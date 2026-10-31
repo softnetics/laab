@@ -8,6 +8,7 @@ import { linkify, liffId } from "../links";
 import { adjacentChat, filterChats, folderName, groupRows, listPreview } from "../chatList";
 import { nextReaction, topTypes } from "../reactions";
 import { dayHeader, fullStamp, listLabel } from "../time";
+import { lineEmoji, splitLineEmoji } from "../lineEmoji";
 import type { ChatList, Message } from "../types";
 
 const msg = (p: Partial<Message>): Message => ({
@@ -231,5 +232,18 @@ describe("reactions and time", () => {
     expect(dayHeader(new Date(2026, 9, 19).getTime(), now)).toBe("19 ต.ค.");
     expect(dayHeader(new Date(2025, 9, 19).getTime(), now)).toBe("19 ต.ค. 2025");
     expect(fullStamp(new Date(2026, 9, 29, 7, 40).getTime())).toBe("29 ต.ค. 2026 7.40 น.");
+  });
+});
+
+describe("LINE basic emoji", () => {
+  it("accepts LINE name casing and common aliases", () => {
+    expect(lineEmoji("Excited")).toBe("😆");
+    expect(lineEmoji("happy")).toBe("😊");
+    expect(lineEmoji(" BIG SMILE ")).toBe("😆");
+    expect(splitLineEmoji("hello (Happy)!")).toEqual([
+      { text: "hello " },
+      { text: "(Happy)", emoji: "😊" },
+      { text: "!" },
+    ]);
   });
 });

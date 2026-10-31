@@ -117,7 +117,7 @@ impl Store {
         )?;
         let count: i64 = db.query_row("SELECT COUNT(*) FROM workspaces", [], |r| r.get(0))?;
         if count == 0 {
-            db.execute("INSERT INTO workspaces VALUES ('main', 'หลัก', 0)", [])?;
+            db.execute("INSERT INTO workspaces (id,name,position) VALUES ('main', 'หลัก', 0)", [])?;
         }
         Ok(())
     }
@@ -575,6 +575,15 @@ impl Store {
         Ok(None)
     }
 
+    /// The latest available message to show when reopening an unread chat.
+    pub fn unread_open_target(&self, chat_id: &str) -> Result<Option<String>> {
+        Ok(self.db.query_row(
+            "SELECT id FROM messages WHERE chat_id=? AND unsent=0 ORDER BY created DESC LIMIT 1",
+            [chat_id],
+            |r| r.get(0),
+        ).optional()?)
+    }
+
     /// The newest `limit` messages of a chat, oldest first.
     pub fn messages(&self, chat_id: &str, limit: usize) -> Result<Vec<Message>> {
         let sql = format!(
@@ -846,7 +855,7 @@ impl Store {
                 .as_nanos()
         );
         self.db.execute(
-            "INSERT INTO workspaces VALUES (?,?,?)",
+            "INSERT INTO workspaces (id,name,position) VALUES (?,?,?)",
             params![id, name, position],
         )?;
         Ok(Workspace {
@@ -1159,6 +1168,27 @@ mod tests {
             s.search("report", &[SearchKind::File]).unwrap()[0].title,
             "report.pdf"
         );
+    }
+
+    #[test]
+    fn unread_open_skips_all_trailing_unsends() {
+        let mut s = Store::memory().unwrap();
+        s.upsert_messages(&[
+            msg("1", "u1", "available", 1.0),
+            msg("2", "u1", "unsent", 2.0),
+            msg("3", "u1", "silent", 3.0),
+            msg("4", "other", "another chat", 4.0),
+        ]).unwrap();
+        s.mark_unsent("2").unwrap();
+        s.db.execute("UPDATE messages SET unsent=2 WHERE id='3'", []).unwrap();
+        assert_eq!(s.unread_open_target("u1").unwrap().as_deref(), Some("1"));
+        s.mark_unsent("1").unwrap();
+        assert_eq!(s.unread_open_target("u1").unwrap(), None);
+        assert_eq!(s.unread_open_target("empty").unwrap(), None);
+        let mut image = msg("5", "u1", "", 5.0);
+        image.content_type = "IMAGE".into();
+        s.upsert_messages(&[image]).unwrap();
+        assert_eq!(s.unread_open_target("u1").unwrap().as_deref(), Some("5"));
     }
 
     #[test]

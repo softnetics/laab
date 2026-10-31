@@ -79,6 +79,7 @@ export function ChatActions({ chat }: { chat: Chat }) {
       <Item onClick={() => confirmDelete(chat)}>ลบ</Item>
       <Separator />
       <Item onClick={() => run(api.setMuted(chat.id, !chat.muted))}>{chat.muted ? "เปิดแจ้งเตือน" : "ปิดแจ้งเตือน"}</Item>
+      <Item onClick={() => run(api.markUnread(chat.id))}>ทำเครื่องหมายว่ายังไม่ได้อ่าน</Item>
       <FolderMenu chat={chat} />
       <LeaveFolder chat={chat} />
     </>

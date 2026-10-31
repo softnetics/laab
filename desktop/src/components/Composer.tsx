@@ -1,6 +1,7 @@
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState } from "react";
 import { api, errorText } from "../lib/api";
+import { readClipboardPng } from "../lib/clipboardImage";
 import {
   ALL_MEMBER,
   backspaceMention,
@@ -52,8 +53,13 @@ export const Composer = forwardRef<
   const [pickIndex, setPickIndex] = useState(0);
   const [dismissedAt, setDismissedAt] = useState<string | null>(null);
   const [sending, setSending] = useState(false);
+  const [pendingImage, setPendingImage] = useState<{ bytes: Uint8Array; name: string; preview: string } | null>(null);
+  useEffect(() => () => {
+    if (pendingImage) URL.revokeObjectURL(pendingImage.preview);
+  }, [pendingImage]);
   const pickerOpenedAt = useRef(0);
   const focusRequest = useUi((s) => s.composerFocus);
+  const mentionRequest = useUi((s) => s.mentionRequest);
   // Replying to or editing a message (from its right-click menu).
   const modeAll = useUi((s) => s.composerMode);
   const mode = modeAll?.chatId === chatId ? modeAll : null;
@@ -101,6 +107,30 @@ export const Composer = forwardRef<
     if (focusRequest) area.current?.focus();
   }, [focusRequest]);
 
+  useEffect(() => {
+    if (!mentionRequest || mentionRequest.chatId !== chatId || !group || disabled) return;
+    const member: ChatMember = { mid: mentionRequest.mid, name: mentionRequest.name };
+    const at = area.current?.selectionStart ?? caret;
+    const r = insertMention(text, at, member, mentions);
+    if (r) {
+      update(r.text, r.caret, r.mentions);
+    } else {
+      // A sender label is not necessarily being typed after an @ query, so
+      // insert a complete mention at the current caret when needed.
+      const label = `@${mentionRequest.name}`;
+      const needSpace = at > 0 && !/\s/.test(text[at - 1]!);
+      const inserted = `${needSpace ? " " : ""}${label} `;
+      update(text.slice(0, at) + inserted + text.slice(at), at + inserted.length, [
+        ...mentions,
+        { mid: member.mid, all: false, label },
+      ]);
+    }
+    area.current?.focus();
+    setUi({ mentionRequest: null });
+    // The request is a one-shot event; draft values are read at click time.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mentionRequest]);
+
   const query = group && !disabled ? composingQuery(text, caret, mentions) : null;
   const pickerOpen = query != null && dismissedAt !== `${caret}:${query}`;
   useEffect(() => {
@@ -140,6 +170,27 @@ export const Composer = forwardRef<
   };
 
   const send = async () => {
+    if (pendingImage && !sending && !disabled) {
+      const image = pendingImage;
+      const caption = text.replace(/\s+$/, "");
+      const captionMentions = targets(caption, mentions);
+      setSending(true);
+      setText("");
+      setMentions([]);
+      try {
+        await api.sendImageBytes(chatId, image.bytes, image.name);
+        if (caption.trim()) await api.sendText(chatId, caption, captionMentions);
+        URL.revokeObjectURL(image.preview);
+        setPendingImage(null);
+      } catch (e) {
+        setText(caption);
+        setMentions(mentions);
+        notice(`ส่งรูปไม่สำเร็จ: ${errorText(e)}`);
+      } finally {
+        setSending(false);
+      }
+      return;
+    }
     const body = text.replace(/\s+$/, "");
     if (!body.trim() || sending || disabled) return;
     const spans = targets(body, mentions);
@@ -168,6 +219,25 @@ export const Composer = forwardRef<
     if (!files) return;
     const paths = Array.isArray(files) ? files : [files];
     api.sendFiles(chatId, paths).catch((e) => notice(errorText(e)));
+  };
+
+  const onPaste = (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
+    if (disabled || mode?.kind === "edit") return;
+    const data = e.clipboardData;
+    const file = Array.from(data.files).find((f) => f.type.startsWith("image/"));
+    const hasImage = !!file || Array.from(data.items).some((item) => item.kind === "file" && item.type.startsWith("image/")) || Array.from(data.types).some((type) => type.startsWith("image/"));
+    if (!hasImage && data.types.includes("text/plain")) return;
+    e.preventDefault();
+    const stage = async () => {
+      const bytes = file ? new Uint8Array(await file.arrayBuffer()) : await readClipboardPng();
+      if (!bytes) return;
+      const name = file?.name || "paste.png";
+      setPendingImage((old) => {
+        if (old) URL.revokeObjectURL(old.preview);
+        return { bytes, name, preview: URL.createObjectURL(new Blob([new Uint8Array(bytes).buffer as ArrayBuffer], { type: "image/png" })) };
+      });
+    };
+    stage().catch((err) => notice(errorText(err)));
   };
 
   const onKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -287,6 +357,26 @@ export const Composer = forwardRef<
           </button>
         </div>
       )}
+      {pendingImage && (
+        <div className="mb-2 flex items-center gap-2 rounded-lg bg-field p-2">
+          <img src={pendingImage.preview} alt="รูปที่วาง" className="max-h-20 max-w-28 rounded object-contain" />
+          <span className="min-w-0 flex-1 truncate text-[12px] text-secondary">{pendingImage.name}</span>
+          <button
+            type="button"
+            title="เอารูปออก"
+            onClick={() => {
+              URL.revokeObjectURL(pendingImage.preview);
+              setPendingImage(null);
+            }}
+            className="px-2 text-secondary hover:text-primary"
+          >
+            ลบ
+          </button>
+          <button type="button" onClick={send} disabled={sending} className="rounded bg-line-green px-3 py-1 text-[12px] text-white disabled:opacity-50">
+            ส่งรูป
+          </button>
+        </div>
+      )}
       <div className="relative" style={{ height }}>
         <div
           ref={mirror}
@@ -309,6 +399,7 @@ export const Composer = forwardRef<
             if (mirror.current) mirror.current.scrollTop = e.currentTarget.scrollTop;
           }}
           onKeyDown={onKeyDown}
+          onPaste={onPaste}
           className="selectable absolute inset-0 w-full resize-none bg-transparent text-[14px] text-transparent caret-primary outline-none placeholder:text-secondary/70 disabled:opacity-50"
           style={{ lineHeight: `${LINE_HEIGHT}px` }}
         />
