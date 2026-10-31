@@ -5,6 +5,7 @@ import { setAnalytics } from "../lib/analytics";
 import { api, errorText, q, queryClient, useChatList, useSession } from "../lib/api";
 import { openChat } from "../lib/nav";
 import { notice, setUi, useUi } from "../lib/ui";
+import { checkNow } from "../lib/updater";
 import { BookmarkIcon, BubbleIcon, MoreIcon, PersonIcon, PersonPlusIcon } from "./Icons";
 import { itemClass, popupClass, Separator } from "./kit";
 
@@ -117,6 +118,9 @@ export function Rail() {
               <Menu.Item className={itemClass} onClick={clearCache}>
                 ล้าง cache
                 {cacheBytes != null && <span className="ml-auto text-secondary">{megabytes(cacheBytes)}</span>}
+              </Menu.Item>
+              <Menu.Item className={itemClass} onClick={() => checkNow(notice)}>
+                ตรวจหาอัปเดต
               </Menu.Item>
               {analytics && analytics !== "unavailable" && (
                 <Menu.Item className={itemClass} onClick={() => setUi({ sheet: { kind: "report", messageId: null } })}>

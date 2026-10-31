@@ -291,7 +291,7 @@ fn post(mut body: Value) {
     }
     let Some(key) = KEY else { return };
     body["api_key"] = json!(key);
-    let url = format!("{}/i/v0/e/", HOST.unwrap_or(DEFAULT_HOST).trim_end_matches('/'));
+    let url = endpoint(HOST);
     tauri::async_runtime::spawn(async move {
         let client = reqwest::Client::builder()
             .timeout(Duration::from_secs(10))
@@ -301,6 +301,14 @@ fn post(mut body: Value) {
             let _ = client.post(url).json(&body).send().await;
         }
     });
+}
+
+/// The capture URL. An empty host counts as unset: the release workflow
+/// passes `LAAB_POSTHOG_HOST` even when the repo variable is missing, and
+/// `option_env!` reads that as `Some("")`.
+fn endpoint(host: Option<&str>) -> String {
+    let host = host.filter(|h| !h.is_empty()).unwrap_or(DEFAULT_HOST);
+    format!("{}/i/v0/e/", host.trim_end_matches('/'))
 }
 
 fn random_id() -> String {
@@ -360,6 +368,13 @@ mod tests {
     /// Guards against an event growing a property by accident: everything
     /// sent is listed here.
     use crate::crash::Frame;
+
+    #[test]
+    fn empty_host_falls_back_to_default() {
+        assert_eq!(endpoint(None), "https://us.i.posthog.com/i/v0/e/");
+        assert_eq!(endpoint(Some("")), "https://us.i.posthog.com/i/v0/e/");
+        assert_eq!(endpoint(Some("https://eu.i.posthog.com/")), "https://eu.i.posthog.com/i/v0/e/");
+    }
 
     /// Guards against an event growing a property by accident: everything
     /// sent is listed here.
