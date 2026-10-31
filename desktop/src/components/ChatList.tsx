@@ -30,7 +30,7 @@ export function ChatListColumn({ selected }: { selected: string | null }) {
   const filter = useUi((s) => s.filter);
   const sort = useUi((s) => s.sort);
   const query = useUi((s) => s.listQuery);
-  const openFolders = useUi((s) => s.openFolders);
+  const collapsedFolders = useUi((s) => s.collapsedFolders);
   const chats = useMemo(() => (list ? filterChats(list, filter, sort, query) : []), [list, filter, sort, query]);
   // Folders group their chats in "ทั้งหมด"; a search or another tab lists
   // chats flat.
@@ -38,9 +38,9 @@ export function ChatListColumn({ selected }: { selected: string | null }) {
   const rows = useMemo<ListRow[]>(
     () =>
       list && grouped
-        ? groupRows(list, chats, new Set(openFolders))
+        ? groupRows(list, chats, new Set(list.workspaces.filter((w) => !collapsedFolders.includes(w.id)).map((w) => w.id)))
         : chats.map((chat) => ({ kind: "chat", chat, folder: null })),
-    [list, grouped, chats, openFolders],
+    [list, grouped, chats, collapsedFolders],
   );
   const visible = useMemo(() => rows.flatMap((r) => (r.kind === "chat" ? [r.chat] : [])), [rows]);
   const pinned = useMemo(() => new Set(list?.pins.main ?? []), [list]);
@@ -63,7 +63,7 @@ export function ChatListColumn({ selected }: { selected: string | null }) {
   // A chat opened from search or a notification shows inside its folder.
   useEffect(() => {
     const f = list && selected && grouped ? folderOf(list).get(selected) : undefined;
-    if (f && !ui.state.openFolders.includes(f)) setUi({ openFolders: [...ui.state.openFolders, f] });
+    if (f && ui.state.collapsedFolders.includes(f)) setUi({ collapsedFolders: ui.state.collapsedFolders.filter((id) => id !== f) });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selected]);
   useEffect(() => {
@@ -325,8 +325,8 @@ function deleteFolder(id: string) {
 
 const toggleFolder = (id: string) => {
   markRecent(id);
-  const open = ui.state.openFolders;
-  setUi({ openFolders: open.includes(id) ? open.filter((f) => f !== id) : [...open, id] });
+  const collapsed = ui.state.collapsedFolders;
+  setUi({ collapsedFolders: collapsed.includes(id) ? collapsed.filter((f) => f !== id) : [...collapsed, id] });
 };
 
 /** A folder in the list, as Discord shows one: the first chats' pictures

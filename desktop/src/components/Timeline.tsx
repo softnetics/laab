@@ -144,6 +144,13 @@ export function Timeline({
 
   // ⌘K or a deep link asked for a message; in-chat search steps through hits.
   const target = currentHit ?? focusId;
+  // The target may precede a full page of unsent messages.
+  useEffect(() => {
+    if (target && !loading && !failed && !messages.some((m) => m.id === target) && older.state === "idle") {
+      loadOlder();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [target, loading, failed, messages, older.state]);
   useLayoutEffect(() => {
     if (!target) return;
     const node = scroller.current?.querySelector(`[data-message="${CSS.escape(target)}"]`);
@@ -155,7 +162,10 @@ export function Timeline({
       node.animate([{ background: "color-mix(in srgb, var(--color-line-green) 18%, transparent)" }, { background: "transparent" }], {
         duration: 1400,
       });
-      setTimeout(() => setUi({ focusMessageId: null }), 1500);
+      const timer = setTimeout(() => {
+        if (ui.state.focusMessageId === focusId) setUi({ focusMessageId: null });
+      }, 1500);
+      return () => clearTimeout(timer);
     }
   }, [target, focusId, rows.length]);
 

@@ -131,7 +131,7 @@ pub fn set_focus(state: S<'_>, chat_id: Option<String>, active: bool) {
 /// Opening a chat: clear unread, acknowledge, then fetch fresh history,
 /// read status and members in the background.
 #[tauri::command]
-pub async fn open_chat(state: S<'_>, chat_id: String) -> R<()> {
+pub async fn open_chat(state: S<'_>, chat_id: String) -> R<Option<String>> {
     crate::usage::hit(crate::usage::Action::OpenedChat);
     let s = state.inner().clone();
     let had_unread = s
@@ -140,12 +140,17 @@ pub async fn open_chat(state: S<'_>, chat_id: String) -> R<()> {
         .ok()
         .flatten()
         .is_some_and(|c| c.unread > 0);
+    let target = if had_unread {
+        s.store().unread_open_target(&chat_id).map_err(err)?
+    } else {
+        None
+    };
     if had_unread {
         s.store().set_unread(&chat_id, 0).map_err(err)?;
         s.chats_changed();
     }
     if s.demo {
-        return Ok(());
+        return Ok(target);
     }
     tokio::spawn(async move {
         let _ = line::fetch_history(&s, &chat_id).await;
@@ -155,7 +160,7 @@ pub async fn open_chat(state: S<'_>, chat_id: String) -> R<()> {
             let _ = line::load_members(&s, &chat_id, false).await;
         }
     });
-    Ok(())
+    Ok(target)
 }
 
 async fn acknowledge(state: &Arc<AppState>, chat_id: &str) {
