@@ -4,6 +4,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use line_rs::client::{MessageInput, ReactionType};
+use line_rs::obs::{ObjType, ObsFile};
 use serde::{Deserialize, Serialize};
 use tauri::{Manager, State, WebviewUrl, WebviewWindowBuilder};
 
@@ -178,6 +179,14 @@ pub async fn mark_read(state: S<'_>, chat_id: String) -> R<()> {
         acknowledge(&s, &chat_id).await;
         let _ = line::read_status(&s, &chat_id).await;
     }
+    Ok(())
+}
+
+/// Keep a chat visibly unread until the user opens it again.
+#[tauri::command]
+pub fn mark_unread(state: S<'_>, chat_id: String) -> R<()> {
+    state.store().set_unread(&chat_id, 1).map_err(err)?;
+    state.chats_changed();
     Ok(())
 }
 
@@ -361,6 +370,34 @@ pub async fn send_files(state: S<'_>, chat_id: String, paths: Vec<String>) -> R<
             format!("ส่ง {name} ไม่สำเร็จ: {text}")
         })?;
         crate::usage::hit(crate::usage::Action::SentFile);
+    }
+    s.status("เชื่อม LINE แล้ว");
+    let _ = line::fetch_history(&s, &chat_id).await;
+    Ok(())
+}
+
+/// Sends an image supplied as raw IPC bytes, such as a pasted clipboard image.
+#[tauri::command]
+pub async fn send_image_bytes(state: S<'_>, request: tauri::ipc::Request<'_>) -> R<()> {
+    let s = state.inner().clone();
+    if s.demo { return Err("ต้องเข้าสู่ระบบ LINE ก่อนส่งรูป".into()); }
+    let tauri::ipc::InvokeBody::Raw(data) = request.body() else { return Err("ไม่พบรูปในคลิปบอร์ด".into()); };
+    let header = |key: &str| request.headers().get(key).and_then(|v| v.to_str().ok());
+    let chat_id = header("chat-id").ok_or("missing chat id")?.to_string();
+    let name = header("file-name")
+        .map(|n| url::form_urlencoded::parse(format!("n={n}").as_bytes()).next().map(|(_, v)| v.into_owned()).unwrap_or_default())
+        .filter(|n| !n.is_empty()).unwrap_or_else(|| "paste.png".to_string());
+    let l = s.line().await.ok_or("not_logged_in")?;
+    s.status(format!("กำลังส่ง {name}"));
+    let chat = l.chat(&chat_id);
+    if let Err(e) = chat.send_image(data.clone(), Some(&name)).await {
+        let text = e.to_string();
+        if !text.to_ascii_lowercase().contains("e2ee") {
+            return Err(text);
+        }
+        chat.send_media(ObjType::Image, ObsFile::new(data.clone()).name(&name), None, false)
+            .await
+            .map_err(err)?;
     }
     s.status("เชื่อม LINE แล้ว");
     let _ = line::fetch_history(&s, &chat_id).await;
@@ -1378,6 +1415,14 @@ pub async fn add_comment(state: S<'_>, chat_id: String, post_id: String, text: S
     crate::actions::add_comment(&s, &chat_id, &post_id, &text)
         .await
         .map_err(|e| format!("แสดงความคิดเห็นไม่สำเร็จ: {e}"))
+}
+
+/// Returns an attachment's bytes for copying a photo to the clipboard.
+#[tauri::command]
+pub async fn message_bytes(state: S<'_>, chat_id: String, message_id: String) -> R<tauri::ipc::Response> {
+    let path = download(state, chat_id, message_id, None).await?;
+    let data = tokio::fs::read(path).await.map_err(err)?;
+    Ok(tauri::ipc::Response::new(data))
 }
 
 #[cfg(test)]

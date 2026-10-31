@@ -1,6 +1,7 @@
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState } from "react";
 import { api, errorText } from "../lib/api";
+import { readClipboardPng } from "../lib/clipboardImage";
 import {
   ALL_MEMBER,
   backspaceMention,
@@ -54,6 +55,7 @@ export const Composer = forwardRef<
   const [sending, setSending] = useState(false);
   const pickerOpenedAt = useRef(0);
   const focusRequest = useUi((s) => s.composerFocus);
+  const mentionRequest = useUi((s) => s.mentionRequest);
   // Replying to or editing a message (from its right-click menu).
   const modeAll = useUi((s) => s.composerMode);
   const mode = modeAll?.chatId === chatId ? modeAll : null;
@@ -100,6 +102,30 @@ export const Composer = forwardRef<
   useEffect(() => {
     if (focusRequest) area.current?.focus();
   }, [focusRequest]);
+
+  useEffect(() => {
+    if (!mentionRequest || mentionRequest.chatId !== chatId || !group || disabled) return;
+    const member: ChatMember = { mid: mentionRequest.mid, name: mentionRequest.name };
+    const at = area.current?.selectionStart ?? caret;
+    const r = insertMention(text, at, member, mentions);
+    if (r) {
+      update(r.text, r.caret, r.mentions);
+    } else {
+      // A sender label is not necessarily being typed after an @ query, so
+      // insert a complete mention at the current caret when needed.
+      const label = `@${mentionRequest.name}`;
+      const needSpace = at > 0 && !/\s/.test(text[at - 1]!);
+      const inserted = `${needSpace ? " " : ""}${label} `;
+      update(text.slice(0, at) + inserted + text.slice(at), at + inserted.length, [
+        ...mentions,
+        { mid: member.mid, all: false, label },
+      ]);
+    }
+    area.current?.focus();
+    setUi({ mentionRequest: null });
+    // The request is a one-shot event; draft values are read at click time.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mentionRequest]);
 
   const query = group && !disabled ? composingQuery(text, caret, mentions) : null;
   const pickerOpen = query != null && dismissedAt !== `${caret}:${query}`;
@@ -168,6 +194,21 @@ export const Composer = forwardRef<
     if (!files) return;
     const paths = Array.isArray(files) ? files : [files];
     api.sendFiles(chatId, paths).catch((e) => notice(errorText(e)));
+  };
+
+  const onPaste = (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
+    if (disabled || mode?.kind === "edit") return;
+    const data = e.clipboardData;
+    const file = Array.from(data.files).find((f) => f.type.startsWith("image/"));
+    const hasImage = !!file || Array.from(data.items).some((item) => item.kind === "file" && item.type.startsWith("image/")) || Array.from(data.types).some((type) => type.startsWith("image/"));
+    if (!hasImage && data.types.includes("text/plain")) return;
+    e.preventDefault();
+    const send = async () => {
+      if (file) return api.sendImageBytes(chatId, new Uint8Array(await file.arrayBuffer()), file.name || "paste.png");
+      const png = await readClipboardPng();
+      if (png) await api.sendImageBytes(chatId, png, "paste.png");
+    };
+    send().catch((err) => notice(errorText(err)));
   };
 
   const onKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -309,6 +350,7 @@ export const Composer = forwardRef<
             if (mirror.current) mirror.current.scrollTop = e.currentTarget.scrollTop;
           }}
           onKeyDown={onKeyDown}
+          onPaste={onPaste}
           className="selectable absolute inset-0 w-full resize-none bg-transparent text-[14px] text-transparent caret-primary outline-none placeholder:text-secondary/70 disabled:opacity-50"
           style={{ lineHeight: `${LINE_HEIGHT}px` }}
         />

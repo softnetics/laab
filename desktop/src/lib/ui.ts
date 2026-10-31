@@ -33,6 +33,8 @@ export interface UiState {
   inspectMessageId: string | null;
   /** Bumped to move keyboard focus to the composer. */
   composerFocus: number;
+  /** A group member selected from a message sender label for @-mentioning. */
+  mentionRequest: { chatId: string; mid: string; name: string } | null;
   /** The "new folder" dialog; `chatId` is added to the folder once made.
    *  With `rename`, it renames that folder instead. */
   folderDialog: { chatId: string | null; rename?: Workspace } | null;
@@ -87,6 +89,7 @@ export const ui = createStore<UiState>({
   notice: null,
   inspectMessageId: null,
   composerFocus: 0,
+  mentionRequest: null,
   folderDialog: null,
   openFolders: saved("openFolders", []),
   renamingFolder: null,
