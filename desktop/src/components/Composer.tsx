@@ -172,12 +172,19 @@ export const Composer = forwardRef<
   const send = async () => {
     if (pendingImage && !sending && !disabled) {
       const image = pendingImage;
+      const caption = text.replace(/\s+$/, "");
+      const captionMentions = targets(caption, mentions);
       setSending(true);
+      setText("");
+      setMentions([]);
       try {
         await api.sendImageBytes(chatId, image.bytes, image.name);
+        if (caption.trim()) await api.sendText(chatId, caption, captionMentions);
         URL.revokeObjectURL(image.preview);
         setPendingImage(null);
       } catch (e) {
+        setText(caption);
+        setMentions(mentions);
         notice(`ส่งรูปไม่สำเร็จ: ${errorText(e)}`);
       } finally {
         setSending(false);
