@@ -53,6 +53,10 @@ export const Composer = forwardRef<
   const [pickIndex, setPickIndex] = useState(0);
   const [dismissedAt, setDismissedAt] = useState<string | null>(null);
   const [sending, setSending] = useState(false);
+  const [pendingImage, setPendingImage] = useState<{ bytes: Uint8Array; name: string; preview: string } | null>(null);
+  useEffect(() => () => {
+    if (pendingImage) URL.revokeObjectURL(pendingImage.preview);
+  }, [pendingImage]);
   const pickerOpenedAt = useRef(0);
   const focusRequest = useUi((s) => s.composerFocus);
   const mentionRequest = useUi((s) => s.mentionRequest);
@@ -166,6 +170,20 @@ export const Composer = forwardRef<
   };
 
   const send = async () => {
+    if (pendingImage && !sending && !disabled) {
+      const image = pendingImage;
+      setSending(true);
+      try {
+        await api.sendImageBytes(chatId, image.bytes, image.name);
+        URL.revokeObjectURL(image.preview);
+        setPendingImage(null);
+      } catch (e) {
+        notice(`ส่งรูปไม่สำเร็จ: ${errorText(e)}`);
+      } finally {
+        setSending(false);
+      }
+      return;
+    }
     const body = text.replace(/\s+$/, "");
     if (!body.trim() || sending || disabled) return;
     const spans = targets(body, mentions);
@@ -203,12 +221,16 @@ export const Composer = forwardRef<
     const hasImage = !!file || Array.from(data.items).some((item) => item.kind === "file" && item.type.startsWith("image/")) || Array.from(data.types).some((type) => type.startsWith("image/"));
     if (!hasImage && data.types.includes("text/plain")) return;
     e.preventDefault();
-    const send = async () => {
-      if (file) return api.sendImageBytes(chatId, new Uint8Array(await file.arrayBuffer()), file.name || "paste.png");
-      const png = await readClipboardPng();
-      if (png) await api.sendImageBytes(chatId, png, "paste.png");
+    const stage = async () => {
+      const bytes = file ? new Uint8Array(await file.arrayBuffer()) : await readClipboardPng();
+      if (!bytes) return;
+      const name = file?.name || "paste.png";
+      setPendingImage((old) => {
+        if (old) URL.revokeObjectURL(old.preview);
+        return { bytes, name, preview: URL.createObjectURL(new Blob([new Uint8Array(bytes).buffer as ArrayBuffer], { type: "image/png" })) };
+      });
     };
-    send().catch((err) => notice(errorText(err)));
+    stage().catch((err) => notice(errorText(err)));
   };
 
   const onKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -325,6 +347,26 @@ export const Composer = forwardRef<
             className="grid h-6 w-6 shrink-0 place-items-center self-start text-secondary hover:text-primary"
           >
             <CloseIcon size={15} />
+          </button>
+        </div>
+      )}
+      {pendingImage && (
+        <div className="mb-2 flex items-center gap-2 rounded-lg bg-field p-2">
+          <img src={pendingImage.preview} alt="รูปที่วาง" className="max-h-20 max-w-28 rounded object-contain" />
+          <span className="min-w-0 flex-1 truncate text-[12px] text-secondary">{pendingImage.name}</span>
+          <button
+            type="button"
+            title="เอารูปออก"
+            onClick={() => {
+              URL.revokeObjectURL(pendingImage.preview);
+              setPendingImage(null);
+            }}
+            className="px-2 text-secondary hover:text-primary"
+          >
+            ลบ
+          </button>
+          <button type="button" onClick={send} disabled={sending} className="rounded bg-line-green px-3 py-1 text-[12px] text-white disabled:opacity-50">
+            ส่งรูป
           </button>
         </div>
       )}
