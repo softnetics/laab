@@ -77,14 +77,14 @@ export function RichText({
   const emojiText = (value: string, keyPrefix: string, base: number): ReactNode[] => {
     const ranges = emojiResources.filter((r) => r.end > base && r.start < base + value.length);
     if (!ranges.length) return splitLineEmoji(value).map((part, i) =>
-      part.emoji ? <span key={`${keyPrefix}e${i}`} role="img" aria-label={part.text} title={part.text} className={singleEmoji ? "inline-block text-[96px] leading-none" : "inline-block text-[1.15em] align-[-0.12em]"}>{part.emoji}</span> : <Fragment key={`${keyPrefix}t${i}`}>{part.text}</Fragment>,
+      part.emoji ? <span key={`${keyPrefix}e${i}`} role="img" aria-label={part.text} title={part.text} className={singleEmoji ? "inline-block text-[80px] leading-none" : "inline-block text-[1.15em] align-[-0.12em]"}>{part.emoji}</span> : <Fragment key={`${keyPrefix}t${i}`}>{part.text}</Fragment>,
     );
     const out: ReactNode[] = [];
     let at = 0;
     ranges.forEach((r, i) => {
       const a = Math.max(0, r.start - base), b = Math.min(value.length, r.end - base);
       if (a > at) out.push(<Fragment key={`${keyPrefix}t${at}`}>{value.slice(at, a)}</Fragment>);
-      out.push(<img key={`${keyPrefix}e${i}`} src={r.url} alt={value.slice(a, b)} className={singleEmoji ? "inline-block max-h-[140px] max-w-[140px] object-contain" : "inline-block h-[1.35em] w-[1.35em] align-[-0.2em]"} />);
+      out.push(<img key={`${keyPrefix}e${i}`} src={r.url} alt={value.slice(a, b)} className={singleEmoji ? "inline-block max-h-[120px] max-w-[120px] object-contain" : "inline-block h-[1.35em] w-[1.35em] align-[-0.2em]"} />);
       at = b;
     });
     if (at < value.length) out.push(<Fragment key={`${keyPrefix}t${at}`}>{value.slice(at)}</Fragment>);
