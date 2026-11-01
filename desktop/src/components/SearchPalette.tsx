@@ -2,7 +2,8 @@ import { useQuery } from "@tanstack/react-query";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api, errorText, useChatList } from "../lib/api";
 import { openChat } from "../lib/nav";
-import type { SearchKind } from "../lib/types";
+import { phone, useWide } from "../lib/platform";
+import type { Chat, SearchHit, SearchKind } from "../lib/types";
 import { setUi, useUi } from "../lib/ui";
 import { Avatar } from "./Avatar";
 import { DocIcon, SearchIcon } from "./Icons";
@@ -14,6 +15,14 @@ const KINDS: { id: SearchKind; label: string }[] = [
   { id: "message", label: "ข้อความ" },
   { id: "file", label: "ไฟล์" },
 ];
+
+export const searchQuery = (query: string, kinds: SearchKind[], enabled = true) => ({
+  queryKey: ["search", query, kinds],
+  queryFn: () => api.search(query, kinds),
+  enabled,
+  placeholderData: (prev: SearchHit[] | undefined) => prev,
+  staleTime: 0,
+});
 
 /** ⌘K: search chats, synced messages and file names. */
 export function SearchPalette() {
@@ -31,13 +40,10 @@ export function SearchPalette() {
       setIndex(0);
     }
   }, [open, initial]);
-  const { data: hits = [], isFetching, error } = useQuery({
-    queryKey: ["search", query, kinds],
-    queryFn: () => api.search(query, kinds),
-    enabled: open,
-    placeholderData: (prev) => prev,
-    staleTime: 0,
-  });
+  const { data: hits = [], isFetching, error } = useQuery(searchQuery(query, kinds, open));
+  // On the unfolded iPhone Duo the results stay in the list column and the
+  // hit opens beside them, so the next one is a tap away.
+  const wide = useWide();
   useEffect(() => setIndex(0), [query, kinds]);
   // Only ↑/↓ scroll the list, and only as far as the selected row needs.
   // Selecting by hover must not scroll: the list would move under the
@@ -59,7 +65,9 @@ export function SearchPalette() {
   const close = () => setUi({ searchOpen: false });
   const pick = (i: number) => {
     const h = hits[i];
-    if (h) openChat(h.chatId, { messageId: h.messageId });
+    if (!h) return;
+    if (phone && wide && query.trim()) setUi({ searchDock: { query, kinds, index: i } });
+    openChat(h.chatId, { messageId: h.messageId });
   };
   return (
     // ⌘K is used many times a day: no animation, like Spotlight.
@@ -105,31 +113,17 @@ export function SearchPalette() {
         <span className="ml-auto text-[12px] text-secondary">{query.trim() ? `${hits.length} ผลลัพธ์` : "แชทล่าสุด"}</span>
       </div>
       <div ref={listRef} className="min-h-0 flex-1 overflow-y-auto pb-2">
-        {hits.map((h, i) => {
-          const chat = byId.get(h.chatId);
-          return (
-            <div
-              key={`${h.kind}:${h.chatId}:${h.messageId ?? ""}`}
-              data-i={i}
-              onMouseMove={(e) => hover(e, i)}
-              onClick={() => pick(i)}
-              className={`mx-2 flex items-center gap-3 rounded-lg px-3 py-2 ${i === index ? "bg-row-selected" : ""}`}
-            >
-              {h.kind === "file" ? (
-                <div className="grid h-10 w-10 place-items-center rounded-lg bg-field text-secondary">
-                  <DocIcon size={20} />
-                </div>
-              ) : (
-                <Avatar id={h.chatId} name={chat?.name ?? h.title} size={40} picture={chat?.picture} local={chat?.avatar} />
-              )}
-              <div className="min-w-0 flex-1">
-                <div className="truncate text-[14px] font-medium">{h.title}</div>
-                <div className="line-clamp-2 text-[12px] text-secondary">{h.detail}</div>
-              </div>
-              <span className="text-[11px] text-secondary">{KINDS.find((k) => k.id === h.kind)?.label}</span>
-            </div>
-          );
-        })}
+        {hits.map((h, i) => (
+          <HitRow
+            key={`${h.kind}:${h.chatId}:${h.messageId ?? ""}`}
+            hit={h}
+            chat={byId.get(h.chatId)}
+            index={i}
+            selected={i === index}
+            onMouseMove={(e) => hover(e, i)}
+            onClick={() => pick(i)}
+          />
+        ))}
         {query.trim() && hits.length === 0 && (
           <div className="grid place-items-center pt-16 text-center text-[13px] text-secondary">
             {error ? `ค้นหาไม่สำเร็จ: ${errorText(error)}` : isFetching ? <Spinner size={18} /> : "ไม่พบผลลัพธ์"}
@@ -137,5 +131,44 @@ export function SearchPalette() {
         )}
       </div>
     </Sheet>
+  );
+}
+
+/** One result: a chat, a message in a chat, or a file. */
+export function HitRow({
+  hit: h,
+  chat,
+  index,
+  selected,
+  onMouseMove,
+  onClick,
+}: {
+  hit: SearchHit;
+  chat?: Chat;
+  index: number;
+  selected: boolean;
+  onMouseMove?: (e: React.MouseEvent) => void;
+  onClick: () => void;
+}) {
+  return (
+    <div
+      data-i={index}
+      onMouseMove={onMouseMove}
+      onClick={onClick}
+      className={`mx-2 flex items-center gap-3 rounded-lg px-3 py-2 ${selected ? "bg-row-selected" : ""}`}
+    >
+      {h.kind === "file" ? (
+        <div className="grid h-10 w-10 place-items-center rounded-lg bg-field text-secondary">
+          <DocIcon size={20} />
+        </div>
+      ) : (
+        <Avatar id={h.chatId} name={chat?.name ?? h.title} size={40} picture={chat?.picture} local={chat?.avatar} />
+      )}
+      <div className="min-w-0 flex-1">
+        <div className="truncate text-[14px] font-medium">{h.title}</div>
+        <div className="line-clamp-2 text-[12px] text-secondary">{h.detail}</div>
+      </div>
+      <span className="text-[11px] text-secondary">{KINDS.find((k) => k.id === h.kind)?.label}</span>
+    </div>
   );
 }

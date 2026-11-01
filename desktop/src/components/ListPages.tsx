@@ -3,7 +3,9 @@ import { useChatList, useSession } from "../lib/api";
 import { isKeepMemo } from "../lib/chatList";
 import { openChat } from "../lib/nav";
 import type { Chat } from "../lib/types";
+import { phone } from "../lib/platform";
 import { setUi } from "../lib/ui";
+import { PhoneHeader } from "./PhoneHeader";
 import { Avatar } from "./Avatar";
 import { BookmarkIcon, ChevronIcon, PersonPlusIcon, SearchIcon } from "./Icons";
 import { Spinner } from "./kit";
@@ -59,8 +61,11 @@ export function FriendsPage() {
   );
   return (
     <div className="flex h-full flex-col bg-list">
-      <div className="drag px-4 pt-[34px] pb-2" data-tauri-drag-region>
-        <label className="no-drag flex h-8 items-center gap-2 rounded-md bg-field px-2.5 text-secondary">
+      {phone && <PhoneHeader title="เพื่อน" />}
+      <div className={phone ? "px-4 pb-2" : "drag px-4 pt-[34px] pb-2"} data-tauri-drag-region={!phone || undefined}>
+        <label
+          className={`no-drag flex items-center gap-2 bg-field px-2.5 text-secondary ${phone ? "h-[38px] rounded-[10px]" : "h-8 rounded-md"}`}
+        >
           <SearchIcon size={14} />
           <input
             value={query}
@@ -70,7 +75,7 @@ export function FriendsPage() {
           />
         </label>
       </div>
-      <div className="min-h-0 flex-1 overflow-y-auto pb-4">
+      <div className="min-h-0 flex-1 overflow-y-auto" style={{ paddingBottom: "calc(16px + env(safe-area-inset-bottom))" }}>
         {me && !q && (
           <div className="flex items-center gap-3 px-4 py-2.5">
             <Avatar id={me.mid} name={me.displayName} picture={me.picture} size={52} />
@@ -108,7 +113,8 @@ export function FriendsPage() {
  *  groups by invite link (creating groups and OpenChat are not supported). */
 export function AddFriendPage() {
   return (
-    <div className="flex h-full flex-col bg-list pt-[38px]">
+    <div className={`flex h-full flex-col bg-list ${phone ? "" : "pt-[38px]"}`}>
+      {phone && <PhoneHeader title="เพิ่มเพื่อน" />}
       <button
         onClick={() => setUi({ sheet: { kind: "add-friend" } })}
         className="flex h-[50px] items-center gap-3 px-4 text-left text-[13.5px] hover:bg-row-hover"

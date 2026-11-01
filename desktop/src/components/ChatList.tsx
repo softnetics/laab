@@ -5,16 +5,19 @@ import { api, errorText, useChatList, useSession } from "../lib/api";
 import { clickEndsDrag, isRecent, markRecent, moving, pressChat, useChatDrag } from "../lib/chatDrag";
 import { filterChats, folderName, folderOf, groupRows, isKeepMemo, type ListRow, listPreview } from "../lib/chatList";
 import { openChat } from "../lib/nav";
+import { phone } from "../lib/platform";
 import { listLabel } from "../lib/time";
 import type { Chat, ChatList, Workspace } from "../lib/types";
 import { type ChatFilter, notice, setUi, ui, useUi } from "../lib/ui";
 import { installAndRestart, useReadyVersion } from "../lib/updater";
 import { Avatar } from "./Avatar";
 import { ChatActions } from "./ChatActions";
+import { ChatPreview, hoverPreview, leavePreview, showPreview, stayInPreview } from "./ChatPreview";
 import {
   BellSlashIcon,
   BookmarkIcon,
   ChevronIcon,
+  EyeIcon,
   FolderIcon,
   PhoneOutlineIcon,
   PinIcon,
@@ -30,16 +33,15 @@ export function ChatListColumn({ selected }: { selected: string | null }) {
   const filter = useUi((s) => s.filter);
   const sort = useUi((s) => s.sort);
   const query = useUi((s) => s.listQuery);
+  const sideBar = useUi((s) => s.sideBar);
+  const corner = useUi((s) => s.statusCorner);
   const openFolders = useUi((s) => s.openFolders);
   const chats = useMemo(() => (list ? filterChats(list, filter, sort, query) : []), [list, filter, sort, query]);
   // Folders group their chats in "ทั้งหมด"; a search or another tab lists
   // chats flat.
   const grouped = filter === "all" && !query.trim();
   const rows = useMemo<ListRow[]>(
-    () =>
-      list && grouped
-        ? groupRows(list, chats, new Set(openFolders))
-        : chats.map((chat) => ({ kind: "chat", chat, folder: null })),
+    () => (list && grouped ? groupRows(list, chats, new Set(openFolders)) : chats.map((chat) => ({ kind: "chat", chat, folder: null }))),
     [list, grouped, chats, openFolders],
   );
   const visible = useMemo(() => rows.flatMap((r) => (r.kind === "chat" ? [r.chat] : [])), [rows]);
@@ -88,17 +90,31 @@ export function ChatListColumn({ selected }: { selected: string | null }) {
 
   return (
     <div className="flex h-full flex-col bg-list">
+      {phone && (
+        // LINE for iPhone: a large "แชท" title over the folder tabs. Beside a
+        // corner status bar the title fills the row level with it, so the
+        // tabs share the next row with the chat's header.
+        <div className={`flex shrink-0 px-4 ${corner ? "h-[var(--safe-top)] items-center pt-2" : "safe-top-clear items-end pt-2"}`}>
+          <h1 className={`font-bold ${corner ? "text-[32px]" : "text-[24px]"}`}>แชท</h1>
+        </div>
+      )}
       <Tabs />
       <div className="flex items-center gap-2 px-4 pt-[8px] pb-2">
-        <label className="flex h-[35px] flex-1 items-center gap-2 rounded-[6px] bg-field px-2.5 text-secondary">
+        <label
+          className={`flex flex-1 items-center gap-2 bg-field px-2.5 text-secondary ${phone ? "h-[38px] rounded-[10px]" : "h-[35px] rounded-[6px]"}`}
+        >
           <SearchIcon size={14} />
           <input
             className="selectable min-w-0 flex-1 bg-transparent text-[13px] text-primary outline-none placeholder:text-secondary"
             placeholder="ค้นหาข้อความและห้องแชท"
+            enterKeyHint="search"
             value={query}
             onChange={(e) => setUi({ listQuery: e.target.value })}
             onKeyDown={(e) => {
-              if (e.key === "Enter" && !e.nativeEvent.isComposing) setUi({ searchOpen: true, searchInitial: query });
+              if (e.key === "Enter" && !e.nativeEvent.isComposing) {
+                setUi({ searchOpen: true, searchInitial: query });
+                if (phone) e.currentTarget.blur();
+              }
               if (e.key === "Escape") setUi({ listQuery: "" });
             }}
           />
@@ -146,6 +162,8 @@ export function ChatListColumn({ selected }: { selected: string | null }) {
         onKeyDown={onKey}
         aria-label="รายชื่อแชท"
         data-drop="list"
+        onMouseEnter={stayInPreview}
+        onMouseLeave={leavePreview}
         className="relative min-h-0 flex-1 overflow-y-auto outline-none focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-secondary"
       >
         {query.trim() && chats.length > 0 && (
@@ -201,27 +219,34 @@ export function ChatListColumn({ selected }: { selected: string | null }) {
             })}
           </div>
         )}
-        <button
-          className="sticky bottom-4 left-full mr-4 grid h-13 w-13 place-items-center rounded-full bg-line-green text-white shadow-[0_3px_12px_rgba(0,0,0,0.25)] transition-transform duration-150 ease-out active:scale-[0.96]"
-          style={{ marginTop: -52 }}
-          title="แชทใหม่"
-          onClick={() => setUi({ searchOpen: true, searchInitial: "" })}
-        >
-          <PlusBubbleIcon size={24} />
-        </button>
+        {/* With iOS's vertical bar, "new chat" is a button in that column. */}
+        {!sideBar && (
+          <button
+            className="sticky left-full mr-4 grid h-13 w-13 place-items-center rounded-full bg-line-green text-white shadow-[0_3px_12px_rgba(0,0,0,0.25)] transition-transform duration-150 ease-out active:scale-[0.96]"
+            // Over the iOS tab bar, which the list scrolls under and which
+            // the bottom inset includes.
+            style={{ marginTop: -52, bottom: "calc(16px + env(safe-area-inset-bottom))" }}
+            title="แชทใหม่"
+            onClick={() => setUi({ searchOpen: true, searchInitial: "" })}
+          >
+            <PlusBubbleIcon size={24} />
+          </button>
+        )}
+        <div style={{ height: "env(safe-area-inset-bottom)" }} />
       </div>
       <UpdateBar />
       <StatusBar />
       <DragGhost list={list} />
+      <ChatPreview anchor={scroller} />
     </div>
   );
 }
 
 function Empty({ filter, query }: { filter: ChatFilter; query: string }) {
   const text = query
-    ? "ไม่พบแชท… กด Return เพื่อค้นหาในข้อความ"
+    ? `ไม่พบแชท… กด ${phone ? "ค้นหา" : "Return"} เพื่อค้นหาในข้อความ`
     : filter.startsWith("folder:")
-      ? "คลิกขวาที่แชทแล้วเลือก “เพิ่มในโฟลเดอร์” เพื่อใส่แชทในโฟลเดอร์นี้"
+      ? `${phone ? "กดค้าง" : "คลิกขวา"}ที่แชทแล้วเลือก “เพิ่มในโฟลเดอร์” เพื่อใส่แชทในโฟลเดอร์นี้`
       : "ไม่มีแชท";
   return <div className="px-8 pt-16 text-center text-[13px] leading-relaxed text-secondary">{text}</div>;
 }
@@ -229,6 +254,7 @@ function Empty({ filter, query }: { filter: ChatFilter; query: string }) {
 function Tabs() {
   const list = useChatList();
   const filter = useUi((s) => s.filter);
+  const corner = useUi((s) => s.statusCorner);
   const folders = (list?.workspaces ?? []).filter((w) => w.id !== "main");
   const current = filter.startsWith("folder:") ? folders.find((f) => f.id === filter.slice(7)) : undefined;
   const tabs: { id: ChatFilter; label: string }[] = [
@@ -262,28 +288,35 @@ function Tabs() {
       }
     >
       {/* LINE for Mac: tabs in the title-bar row; the search box under them
-          lines up with the chat header. */}
+          lines up with the chat header. Under a corner status bar they are
+          as tall as the chat's header, their underline on its border. */}
       <div
-        className="drag flex h-[60px] items-start gap-[18px] overflow-x-auto px-4 pt-[16px] [scrollbar-width:none]"
+        className={`flex gap-[18px] overflow-x-auto px-4 [scrollbar-width:none] ${
+          corner
+            ? "h-[52px] items-stretch border-b border-separator"
+            : phone
+              ? "h-[42px] items-start pt-[12px]"
+              : "drag h-[60px] items-start pt-[16px]"
+        }`}
         data-tauri-drag-region
       >
         {tabs.map((t) => (
           <button
             key={t.id}
             onClick={() => setUi({ filter: t.id })}
-            className={`no-drag relative shrink-0 pb-1 text-[13.5px] ${filter === t.id ? "font-bold text-primary" : "text-secondary"}`}
+            className={`no-drag relative flex shrink-0 items-center ${corner ? "" : "pb-1"} ${phone ? "text-[15px]" : "text-[13.5px]"} ${filter === t.id ? "font-bold text-primary" : "text-secondary"}`}
           >
-            {t.label}
-            {unreadIn(t.id) && <span className="absolute -top-0.5 -right-2 h-[5px] w-[5px] rounded-full bg-line-green" />}
-            {filter === t.id && (
-              <span className="absolute right-0 bottom-0 left-0 h-0.5 rounded bg-primary" />
-            )}
+            <span className="relative">
+              {t.label}
+              {unreadIn(t.id) && <span className="absolute -top-0.5 -right-2 h-[5px] w-[5px] rounded-full bg-line-green" />}
+            </span>
+            {filter === t.id && <span className="absolute right-0 bottom-0 left-0 h-0.5 rounded bg-primary" />}
           </button>
         ))}
         <button
           title="จัดการโฟลเดอร์แชท"
           onClick={() => setUi({ folderDialog: { chatId: null } })}
-          className="no-drag shrink-0 pt-0.5 text-secondary hover:text-primary"
+          className={`no-drag shrink-0 text-secondary hover:text-primary ${corner ? "self-center" : "pt-0.5"}`}
         >
           <SlidersIcon size={18} />
         </button>
@@ -372,7 +405,7 @@ function FolderRow({ row, list, selected }: { row: Extract<ListRow, { kind: "fol
             <span className="ml-auto shrink-0 text-[11px] text-secondary">{listLabel(latest)}</span>
           </div>
           <div className="mt-0.5 flex items-start gap-2">
-            <span className="line-clamp-2 flex-1 text-[12px] leading-[1.35] text-secondary">
+            <span className={`line-clamp-2 flex-1 leading-[1.35] text-secondary ${phone ? "text-[13.5px]" : "text-[12px]"}`}>
               {folder.name ? chats.map((c) => c.name).join(", ") : `${chats.length} แชท`}
             </span>
             {unread > 0 ? <Badge count={unread} /> : <Badge count={mutedUnread} className="bg-secondary!" />}
@@ -392,7 +425,9 @@ function FolderPicture({ chats, open }: { chats: Chat[]; open: boolean }) {
       <div className={`absolute inset-0 grid place-items-center text-line-green ${swap} ${open ? "" : "scale-75 opacity-0"}`}>
         <FolderIcon size={26} />
       </div>
-      <div className={`absolute inset-0 flex flex-wrap content-center justify-center gap-[3px] p-[5px] ${swap} ${open ? "scale-75 opacity-0" : ""}`}>
+      <div
+        className={`absolute inset-0 flex flex-wrap content-center justify-center gap-[3px] p-[5px] ${swap} ${open ? "scale-75 opacity-0" : ""}`}
+      >
         {chats.slice(0, 4).map((c) => (
           <Avatar key={c.id} id={c.id} name={c.name} size={19} picture={c.picture} local={c.avatar} />
         ))}
@@ -412,7 +447,13 @@ function FolderTitle({ folder, list }: { folder: Workspace; list: ChatList }) {
   }, [editing]);
   const shown = folderName(folder, list);
   if (!editing) {
-    return <span className={`truncate text-[13.5px] ${folder.name ? "text-primary" : "text-secondary"}`}>{shown}</span>;
+    return (
+      <span
+        className={`truncate ${phone ? "text-[16px] font-medium" : "text-[13.5px]"} ${folder.name ? "text-primary" : "text-secondary"}`}
+      >
+        {shown}
+      </span>
+    );
   }
   const finish = (name: string | null) => {
     if (done.current) return;
@@ -480,7 +521,7 @@ export function ChatRow({
   /** The open folder this row is listed in. */
   folder?: string | null;
   scroller?: React.RefObject<HTMLDivElement | null>;
-  /** Drag onto another chat to make a folder ("ทั้งหมด" tab). */
+  /** Drag onto another chat to make a folder (desktop, "ทั้งหมด" tab). */
   draggable?: boolean;
 }) {
   const [hover, setHover] = useState(false);
@@ -489,59 +530,101 @@ export function ChatRow({
   const dragged = useChatDrag((d) => d?.chat.id === chat.id);
   const merge = useChatDrag((d) => d?.target?.kind === "merge" && d.target.chatId === chat.id);
   const intoFolder = useChatDrag((d) => !!folder && d?.target?.kind === "folder" && d.target.id === folder);
-  return (
-    <Ctx menu={<ChatActions chat={chat} />} className="block">
+  const drag = draggable && !phone;
+  const previewing = useUi((s) => s.preview === chat.id);
+  const peeked = useUi((s) => s.peek === chat.id);
+  const chip = !phone && !selected && (hover || previewing);
+  const row = (
+    <div
+      data-drop="chat"
+      data-id={chat.id}
+      data-folder={folder ?? undefined}
+      onMouseEnter={() => {
+        if (phone) return;
+        setHover(true);
+        if (!selected) hoverPreview(chat.id);
+      }}
+      onMouseLeave={() => setHover(false)}
+      onPointerDown={drag ? (e) => pressChat(e, chat, folder, scroller?.current ?? null) : undefined}
+      onClick={phone ? undefined : () => !clickEndsDrag() && openChat(chat.id)}
+      className={`flex h-[72px] cursor-default items-center gap-3 px-4 transition-opacity duration-150 ease-out active:bg-row-selected ${folder ? "pl-7" : ""} ${dragged ? "opacity-40" : ""} ${
+        merge || intoFolder
+          ? "bg-line-green/12"
+          : selected
+            ? "bg-row-selected"
+            : hover || previewing
+              ? "bg-row-hover"
+              : folder
+                ? "bg-row-hover/60"
+                : ""
+      }`}
+    >
+      {/* The chat it would share a folder with grows a little, as in Discord. */}
       <div
-        data-drop="chat"
-        data-id={chat.id}
-        data-folder={folder ?? undefined}
-        onMouseEnter={() => setHover(true)}
-        onMouseLeave={() => setHover(false)}
-        onPointerDown={draggable ? (e) => pressChat(e, chat, folder, scroller?.current ?? null) : undefined}
-        onClick={() => !clickEndsDrag() && openChat(chat.id)}
-        className={`flex h-[72px] cursor-default items-center gap-3 px-4 transition-opacity duration-150 ease-out active:bg-row-selected ${folder ? "pl-7" : ""} ${dragged ? "opacity-40" : ""} ${
-          merge || intoFolder ? "bg-line-green/12" : selected ? "bg-row-selected" : hover ? "bg-row-hover" : folder ? "bg-row-hover/60" : ""
+        className={`relative rounded-full transition-[scale] duration-150 ease-out motion-reduce:transition-none ${
+          merge ? "scale-[1.06] ring-2 ring-line-green ring-offset-2 ring-offset-list" : ""
         }`}
       >
-        {/* The chat it would share a folder with grows a little, as in Discord. */}
-        <div
-          className={`relative rounded-full transition-[scale] duration-150 ease-out motion-reduce:transition-none ${
-            merge ? "scale-[1.06] ring-2 ring-line-green ring-offset-2 ring-offset-list" : ""
-          }`}
-        >
-          {keep ? (
-            <div className="grid h-[52px] w-[52px] place-items-center rounded-full bg-line-green text-white">
-              <BookmarkIcon size={24} strokeWidth={2.2} />
-            </div>
+        {keep ? (
+          <div className="grid h-[52px] w-[52px] place-items-center rounded-full bg-line-green text-white">
+            <BookmarkIcon size={24} strokeWidth={2.2} />
+          </div>
+        ) : (
+          <Avatar id={chat.id} name={chat.name} size={52} picture={chat.picture} local={chat.avatar} />
+        )}
+        {pinned && (
+          <span
+            className="absolute -top-0.5 -left-0.5 grid place-items-center rounded-full bg-pin text-white ring-2 ring-list"
+            style={{ width: 52 * 0.36, height: 52 * 0.36 }}
+          >
+            <PinIcon size={11} style={{ transform: "rotate(45deg)" }} />
+          </span>
+        )}
+      </div>
+      <div className="min-w-0 flex-1">
+        <div className="flex items-center gap-1.5">
+          {peeked && <EyeIcon size={phone ? 15 : 12} className="shrink-0 text-line-green" />}
+          <span className={`truncate text-primary ${phone ? "text-[16px] font-medium" : "text-[13.5px]"}`}>
+            {keep ? "Keep Memo" : <Highlight text={chat.name} query={query} />}
+          </span>
+          {chat.kind === "group" && chat.memberCount ? (
+            <span className="shrink-0 text-[13.5px] text-primary">({chat.memberCount})</span>
+          ) : null}
+          {chat.muted && <BellSlashIcon size={10} className="shrink-0 text-secondary" />}
+          {chip ? (
+            <PreviewChip chatId={chat.id} active={previewing} />
           ) : (
-            <Avatar id={chat.id} name={chat.name} size={52} picture={chat.picture} local={chat.avatar} />
-          )}
-          {pinned && (
-            <span
-              className="absolute -top-0.5 -left-0.5 grid place-items-center rounded-full bg-pin text-white ring-2 ring-list"
-              style={{ width: 52 * 0.36, height: 52 * 0.36 }}
-            >
-              <PinIcon size={11} style={{ transform: "rotate(45deg)" }} />
-            </span>
+            <span className="ml-auto shrink-0 text-[11px] text-secondary">{listLabel(chat.lastActivity)}</span>
           )}
         </div>
-        <div className="min-w-0 flex-1">
-          <div className="flex items-center gap-1.5">
-            <span className="truncate text-[13.5px] text-primary">{keep ? "Keep Memo" : <Highlight text={chat.name} query={query} />}</span>
-            {chat.kind === "group" && chat.memberCount ? (
-              <span className="shrink-0 text-[13.5px] text-primary">({chat.memberCount})</span>
-            ) : null}
-            {chat.muted && <BellSlashIcon size={10} className="shrink-0 text-secondary" />}
-            <span className="ml-auto shrink-0 text-[11px] text-secondary">{listLabel(chat.lastActivity)}</span>
-          </div>
-          <div className="mt-0.5 flex items-start gap-2">
-            <span className="line-clamp-2 flex-1 text-[12px] leading-[1.35] text-secondary">
-              <Preview text={listPreview(chat.preview)} />
-            </span>
-            <Badge count={chat.unread} className={chat.muted ? "bg-secondary!" : ""} />
-          </div>
+        <div className="mt-0.5 flex items-start gap-2">
+          <span className={`line-clamp-2 flex-1 leading-[1.35] text-secondary ${phone ? "text-[13.5px]" : "text-[12px]"}`}>
+            <Preview text={listPreview(chat.preview)} />
+          </span>
+          <Badge count={chat.unread} className={chat.muted ? "bg-secondary!" : ""} />
         </div>
       </div>
+    </div>
+  );
+  // An iPhone gets the system's context menu for a long-pressed link (the
+  // native-tabbar plugin's ChatMenus), with the chat's card over it. WebKit
+  // asks only about the element that takes the click, so the link takes it.
+  if (phone)
+    return (
+      <a
+        href={`#chat=${chat.id}`}
+        className="chat-link block"
+        onClick={(e) => {
+          e.preventDefault();
+          openChat(chat.id);
+        }}
+      >
+        {row}
+      </a>
+    );
+  return (
+    <Ctx menu={<ChatActions chat={chat} />} className="block">
+      {row}
     </Ctx>
   );
 }
@@ -571,6 +654,28 @@ function UpdateBar() {
   );
 }
 
+/** Shown on the hovered chat in place of its time: opens the chat beside the
+ *  list without sending a read receipt. */
+function PreviewChip({ chatId, active }: { chatId: string; active: boolean }) {
+  return (
+    <button
+      title="ดูโดยไม่ขึ้นว่าอ่านแล้ว"
+      onPointerDown={(e) => e.stopPropagation()}
+      onClick={(e) => {
+        e.stopPropagation();
+        if (active) setUi({ preview: null });
+        else showPreview(chatId);
+      }}
+      className={`ml-auto flex h-[18px] shrink-0 items-center gap-1 rounded-full px-2 text-[11px] font-medium transition-colors duration-100 ${
+        active ? "bg-line-green text-white" : "bg-field text-secondary hover:bg-line-green hover:text-white"
+      }`}
+    >
+      <EyeIcon size={11} />
+      Preview
+    </button>
+  );
+}
+
 function StatusBar() {
   const s = useSession();
   const text = useUi((u) => u.notice);
@@ -578,7 +683,10 @@ function StatusBar() {
   const line = text ?? (syncing ? s.status : s && s.status !== "เชื่อม LINE แล้ว" && s.state !== "demo" ? s.status : null);
   if (!line) return null;
   return (
-    <div className="flex h-[26px] items-center gap-2 border-t border-separator bg-rail px-3 text-[11px] text-secondary">
+    <div
+      className="flex h-[26px] items-center gap-2 border-t border-separator bg-rail px-3 text-[11px] text-secondary"
+      style={{ marginBottom: "env(safe-area-inset-bottom)" }}
+    >
       {syncing && <Spinner size={10} />}
       <span className="truncate">{line}</span>
     </div>

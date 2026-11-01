@@ -8,11 +8,13 @@ import { save } from "@tauri-apps/plugin-dialog";
 import { useEffect, useRef, useState } from "react";
 import { api, errorText, q, useChatList, usePeople, useSession } from "../lib/api";
 import { isGroup } from "../lib/chatList";
+import { phone } from "../lib/platform";
 import { fullStamp } from "../lib/time";
 import type { ViewerItem, ViewerPayload } from "../lib/viewer";
 import {
   BookmarkIcon,
   ChevronIcon,
+  CloseIcon,
   DoubleChevronIcon,
   DownloadIcon,
   ExternalIcon,
@@ -33,8 +35,9 @@ const FIT: View = { zoom: 1, rotate: 0, x: 0, y: 0 };
 const clampZoom = (z: number) => Math.min(8, Math.max(0.25, z));
 
 /** LAAB's photo/video window, laid out like LINE for Mac's: tools over the
- *  photo, big ‹ › arrows, and a strip of the chat's media underneath. */
-export function Viewer() {
+ *  photo, big ‹ › arrows, and a strip of the chat's media underneath. A phone
+ *  shows it over its one window: it passes `payload` and `onClose`. */
+export function Viewer({ payload: given, onClose }: { payload?: ViewerPayload; onClose?: () => void } = {}) {
   const [payload, setPayload] = useState<ViewerPayload | null>(null);
   const [index, setIndex] = useState(0);
   const [grid, setGrid] = useState(false);
@@ -48,12 +51,13 @@ export function Viewer() {
       setIndex(Math.min(Math.max(0, p.index), p.items.length - 1));
       setGrid(false);
     };
+    if (given) return show(given);
     api.viewerPayload().then(show);
     const off = listen<ViewerPayload>("viewer-show", (e) => show(e.payload));
     return () => {
       off.then((f) => f());
     };
-  }, []);
+  }, [given]);
 
   const items = payload?.items ?? [];
   const item = items[index] as ViewerItem | undefined;
@@ -65,11 +69,11 @@ export function Viewer() {
 
   const title = useChatList()?.chats.find((c) => c.id === item?.chatId)?.name;
   useEffect(() => {
-    if (title)
+    if (title && !onClose)
       getCurrentWindow()
         .setTitle(title)
         .catch(() => {});
-  }, [title]);
+  }, [title, onClose]);
 
   const go = (i: number) => {
     setIndex(Math.min(Math.max(0, i), Math.max(0, items.length - 1)));
@@ -78,7 +82,7 @@ export function Viewer() {
   const zoomBy = (f: number) => setView((v) => ({ ...v, zoom: clampZoom(v.zoom * f) }));
   useHotkey("ArrowLeft", () => go(index - 1));
   useHotkey("ArrowRight", () => go(index + 1));
-  useHotkey("Escape", () => (grid ? setGrid(false) : getCurrentWindow().close()));
+  useHotkey("Escape", () => (grid ? setGrid(false) : onClose ? onClose() : getCurrentWindow().close()));
   useHotkey("Mod+=", () => zoomBy(1.25));
   useHotkey("Mod+-", () => zoomBy(0.8));
   useHotkey("Mod+0", () => setView(FIT));
@@ -99,10 +103,16 @@ export function Viewer() {
         )}
         <div className="pointer-events-none absolute inset-x-0 top-0 h-[96px] bg-linear-to-b from-black/55 to-transparent" />
         <div className="absolute top-3 left-4 flex items-center gap-1">
+          {onClose && (
+            <Tool title="ปิด" onClick={onClose}>
+              <CloseIcon size={22} />
+            </Tool>
+          )}
           <Tool title="ดูทั้งหมด" active={grid} onClick={() => setGrid((g) => !g)}>
             <GridIcon size={22} />
           </Tool>
-          {photo && (
+          {/* The phone's cover screen has no room for these beside the caption. */}
+          {photo && !phone && (
             <>
               <span className="mx-1.5 h-5 w-px bg-white/30" />
               <Tool title="ย่อ (⌘-)" onClick={() => zoomBy(0.8)}>
@@ -120,7 +130,7 @@ export function Viewer() {
             </>
           )}
         </div>
-        {item && !grid && <Caption item={item} />}
+        {item && !grid && <Caption item={item} onJump={onClose} />}
         {item && <Actions item={item} say={say} />}
         {!grid && index > 0 && <Arrow dir="left" onClick={() => go(index - 1)} />}
         {!grid && index < items.length - 1 && <Arrow dir="right" onClick={() => go(index + 1)} />}
@@ -160,7 +170,7 @@ function Arrow({ dir, onClick }: { dir: "left" | "right"; onClick: () => void })
 }
 
 /** Sender and time over the photo; › shows the message in the chat. */
-function Caption({ item }: { item: ViewerItem }) {
+function Caption({ item, onJump }: { item: ViewerItem; onJump?: () => void }) {
   const name = useSenderName(item);
   if (!name && !item.time) return null;
   const jump = item.chatId && item.messageId;
@@ -171,7 +181,11 @@ function Caption({ item }: { item: ViewerItem }) {
         <button
           disabled={!jump}
           title={jump ? "ดูในแชท" : undefined}
-          onClick={() => jump && api.showMessage(item.chatId!, item.messageId!)}
+          onClick={() => {
+            if (!jump) return;
+            api.showMessage(item.chatId!, item.messageId!);
+            onJump?.();
+          }}
           className="flex items-center gap-1 text-white/90 enabled:hover:text-white"
         >
           {fullStamp(item.time)}
@@ -210,9 +224,12 @@ function Actions({ item, say }: { item: ViewerItem; say: (text: string) => void 
   if (!attachment && !item.path) return null;
   return (
     <div className="absolute top-3 right-4 flex items-center gap-1">
-      <Tool title="เปิดด้วยแอปอื่น" onClick={() => run(local().then(api.openPath), "")}>
-        <ExternalIcon size={21} />
-      </Tool>
+      {/* A phone has no other app to hand the file to. */}
+      {!phone && (
+        <Tool title="เปิดด้วยแอปอื่น" onClick={() => run(local().then(api.openPath), "")}>
+          <ExternalIcon size={21} />
+        </Tool>
+      )}
       {attachment && (
         <>
           <Tool title="บันทึกเป็น…" onClick={saveAs}>

@@ -37,8 +37,8 @@ reqwest = { version = "0.13", default-features = false, features = ["rustls", "j
 tauri-plugin-deep-link = "2.6.2"
 tauri-plugin-window-state = "2.5.0"
 url = "2.5.8"
-tauri-plugin-updater = "2"
 tauri-plugin-process = "2"
+tauri-plugin-native-tabbar = { path = "plugins/native-tabbar" }
 
 [dev-dependencies]
 tempfile = "3"
@@ -50,10 +50,20 @@ opt-level = 3
 # Keep function names so crash reports are readable; debug info still goes.
 strip = "debuginfo"
 
+[target.'cfg(any(target_os = "ios", target_os = "android"))'.dependencies]
+tauri-plugin-notification = "2"
+
+# iOS and Android apps update through their stores.
+[target.'cfg(not(any(target_os = "ios", target_os = "android")))'.dependencies]
+tauri-plugin-updater = "2"
+
+# The keychain holds the database key on both.
+[target.'cfg(any(target_os = "macos", target_os = "ios"))'.dependencies]
+security-framework = "3"
+
 [target.'cfg(target_os = "macos")'.dependencies]
 mac-notification-sys = "0.6.15"
 objc2-app-kit = "0.3"
-security-framework = "3"
 objc2-foundation = { version = "0.3", features = ["block2", "NSNotification", "NSOperation", "NSProcessInfo"] }
 objc2 = "0.6"
 block2 = "0.6"

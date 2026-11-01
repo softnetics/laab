@@ -5,7 +5,9 @@ use std::sync::Arc;
 
 use line_rs::client::{MessageInput, ReactionType};
 use serde::{Deserialize, Serialize};
-use tauri::{Manager, State, WebviewUrl, WebviewWindowBuilder};
+use tauri::{Manager, State};
+#[cfg(desktop)]
+use tauri::{WebviewUrl, WebviewWindowBuilder};
 
 use crate::convert;
 use crate::line;
@@ -336,7 +338,7 @@ pub async fn send_files(state: S<'_>, chat_id: String, paths: Vec<String>) -> R<
     let l = s.line().await.ok_or("not_logged_in")?;
     let chat = l.chat(&chat_id);
     for (i, path) in paths.iter().enumerate() {
-        let p = std::path::Path::new(path);
+        let p = &crate::paths::local_path(path);
         let name = p
             .file_name()
             .and_then(|n| n.to_str())
@@ -769,19 +771,25 @@ pub fn open_chat_window(app: tauri::AppHandle, chat_id: String, title: String) -
     if let Some(w) = app.get_webview_window(&label) {
         return w.set_focus().map_err(err);
     }
-    WebviewWindowBuilder::new(
-        &app,
-        &label,
-        WebviewUrl::App(format!("index.html#/window/{chat_id}").into()),
-    )
-    .title(title)
-    .inner_size(460.0, 760.0)
-    .min_inner_size(420.0, 420.0)
-    .title_bar_style(tauri::TitleBarStyle::Overlay)
-    .hidden_title(true)
-    .build()
-    .map_err(err)?;
-    Ok(())
+    // A phone has one window; the frontend opens chats in it instead.
+    #[cfg(mobile)]
+    return Err(format!("{label} {title}: no extra windows on this device"));
+    #[cfg(desktop)]
+    {
+        WebviewWindowBuilder::new(
+            &app,
+            &label,
+            WebviewUrl::App(format!("index.html#/window/{chat_id}").into()),
+        )
+        .title(title)
+        .inner_size(460.0, 760.0)
+        .min_inner_size(420.0, 420.0)
+        .title_bar_style(tauri::TitleBarStyle::Overlay)
+        .hidden_title(true)
+        .build()
+        .map_err(err)?;
+        Ok(())
+    }
 }
 
 #[tauri::command]
@@ -1200,7 +1208,7 @@ pub fn chat_media(state: S<'_>, chat_id: String, kind: String) -> R<Vec<Message>
 /// Write text the user chose to save (บันทึกแชท) to the path they picked.
 #[tauri::command]
 pub fn save_text(path: String, text: String) -> R<()> {
-    std::fs::write(&path, text).map_err(err)
+    std::fs::write(crate::paths::local_path(&path), text).map_err(err)
 }
 
 /// Save an attachment: to Downloads (`dest` empty) or to the chosen path.
@@ -1230,7 +1238,7 @@ pub async fn save_attachment(
             .map_err(err)?,
     };
     let target = match dest.filter(|d| !d.is_empty()) {
-        Some(d) => std::path::PathBuf::from(d),
+        Some(d) => crate::paths::local_path(&d),
         None => {
             let name = m.file_name.clone().unwrap_or_else(|| {
                 let ext = src.extension().and_then(|e| e.to_str()).unwrap_or("jpg");
@@ -1249,6 +1257,7 @@ pub async fn save_attachment(
 /// The hash route of an albums/notes or media window. The tab, and the note
 /// "ดูโน้ต" asked for, travel in the query; `at` is a fresh stamp, so asking
 /// again for the note already in the URL still reopens it.
+#[cfg_attr(mobile, allow(dead_code))]
 fn aux_route(
     kind: &str,
     chat_id: &str,
@@ -1281,32 +1290,40 @@ pub fn open_aux_window(
         crate::media::safe_name(&kind),
         crate::media::safe_name(&chat_id)
     );
-    let route = aux_route(&kind, &chat_id, tab, post, now_ms() as u64);
-    if let Some(w) = app.get_webview_window(&label) {
-        // Already open: move it to the asked-for tab or note.
-        let hash = serde_json::to_string(&route).map_err(err)?;
-        w.eval(format!("location.hash = {hash}")).map_err(err)?;
-        let _ = w.unminimize();
-        return w.set_focus().map_err(err);
+    #[cfg(mobile)]
+    {
+        let _ = (app, tab, post);
+        return Err(format!("{label} {title}: no extra windows on this device"));
     }
-    let (w, h) = if kind == "media" {
-        (420.0, 640.0)
-    } else {
-        (327.0, 643.0)
-    };
-    WebviewWindowBuilder::new(
-        &app,
-        &label,
-        WebviewUrl::App(format!("index.html#{route}").into()),
-    )
-    .title(title)
-    .inner_size(w, h)
-    .min_inner_size(300.0, 400.0)
-    .title_bar_style(tauri::TitleBarStyle::Overlay)
-    .hidden_title(true)
-    .build()
-    .map_err(err)?;
-    Ok(())
+    #[cfg(desktop)]
+    {
+        let route = aux_route(&kind, &chat_id, tab, post, now_ms() as u64);
+        if let Some(w) = app.get_webview_window(&label) {
+            // Already open: move it to the asked-for tab or note.
+            let hash = serde_json::to_string(&route).map_err(err)?;
+            w.eval(format!("location.hash = {hash}")).map_err(err)?;
+            let _ = w.unminimize();
+            return w.set_focus().map_err(err);
+        }
+        let (w, h) = if kind == "media" {
+            (420.0, 640.0)
+        } else {
+            (327.0, 643.0)
+        };
+        WebviewWindowBuilder::new(
+            &app,
+            &label,
+            WebviewUrl::App(format!("index.html#{route}").into()),
+        )
+        .title(title)
+        .inner_size(w, h)
+        .min_inner_size(300.0, 400.0)
+        .title_bar_style(tauri::TitleBarStyle::Overlay)
+        .hidden_title(true)
+        .build()
+        .map_err(err)?;
+        Ok(())
+    }
 }
 
 /// The page of history before the oldest stored message; 0 at its start.
@@ -1322,22 +1339,31 @@ pub async fn older_messages(state: S<'_>, chat_id: String) -> R<usize> {
 /// Show photos and videos in LAAB's viewer window, opening it on first use.
 #[tauri::command]
 pub fn open_viewer(app: tauri::AppHandle, state: S<'_>, payload: serde_json::Value) -> R<()> {
-    use tauri::Emitter;
     *state.viewer.lock().unwrap_or_else(|e| e.into_inner()) = payload.clone();
-    if let Some(w) = app.get_webview_window("viewer") {
-        w.emit("viewer-show", payload).map_err(err)?;
-        let _ = w.unminimize();
-        return w.set_focus().map_err(err);
+    // A phone shows the viewer inside its one window (ui.gallery).
+    #[cfg(mobile)]
+    {
+        let _ = app;
+        return Err("no extra windows on this device".into());
     }
-    WebviewWindowBuilder::new(&app, "viewer", WebviewUrl::App("index.html#/viewer".into()))
-        // The page retitles it with the chat's name, as LINE does.
-        .title("รูปภาพ")
-        .inner_size(900.0, 760.0)
-        .min_inner_size(480.0, 360.0)
-        .theme(Some(tauri::Theme::Dark))
-        .build()
-        .map_err(err)?;
-    Ok(())
+    #[cfg(desktop)]
+    {
+        use tauri::Emitter;
+        if let Some(w) = app.get_webview_window("viewer") {
+            w.emit("viewer-show", payload).map_err(err)?;
+            let _ = w.unminimize();
+            return w.set_focus().map_err(err);
+        }
+        WebviewWindowBuilder::new(&app, "viewer", WebviewUrl::App("index.html#/viewer".into()))
+            // The page retitles it with the chat's name, as LINE does.
+            .title("รูปภาพ")
+            .inner_size(900.0, 760.0)
+            .min_inner_size(480.0, 360.0)
+            .theme(Some(tauri::Theme::Dark))
+            .build()
+            .map_err(err)?;
+        Ok(())
+    }
 }
 
 /// The viewer's "›" next to the date: show that message in the main window.

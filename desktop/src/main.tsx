@@ -6,6 +6,7 @@ import React from "react";
 import ReactDOM from "react-dom/client";
 import { reportUncaughtErrors } from "./lib/analytics";
 import { queryClient, useBackendEvents } from "./lib/api";
+import { fitPhoneViewport, phone } from "./lib/platform";
 import { router } from "./router";
 import "./index.css";
 
@@ -15,6 +16,7 @@ function App() {
 }
 
 reportUncaughtErrors();
+if (phone) fitPhoneViewport();
 
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
   <React.StrictMode>

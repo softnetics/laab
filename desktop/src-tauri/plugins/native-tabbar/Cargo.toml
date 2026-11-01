@@ -1,0 +1,14 @@
+[package]
+name = "tauri-plugin-native-tabbar"
+version = "0.1.0"
+description = "LAAB's tab bar as a native UITabBar on iOS (Liquid Glass on iOS 26+)"
+license = "GPL-3.0-or-later"
+edition = "2024"
+publish = false
+links = "tauri-plugin-native-tabbar"
+
+[dependencies]
+tauri = { version = "2.12.4" }
+
+[build-dependencies]
+tauri-plugin = { version = "2.7.2", features = ["build"] }

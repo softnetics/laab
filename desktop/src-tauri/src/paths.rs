@@ -64,6 +64,16 @@ impl Paths {
     }
 }
 
+/// iOS file pickers hand back `file://` URLs; desktop dialogs give plain paths.
+pub fn local_path(s: &str) -> PathBuf {
+    if s.starts_with("file://")
+        && let Some(p) = url::Url::parse(s).ok().and_then(|u| u.to_file_path().ok())
+    {
+        return p;
+    }
+    PathBuf::from(s)
+}
+
 pub fn private_dir(path: &Path) -> Result<()> {
     fs::create_dir_all(path).with_context(|| format!("create {}", path.display()))?;
     #[cfg(unix)]
@@ -88,4 +98,21 @@ pub fn write_private(path: &Path, data: &[u8]) -> Result<()> {
     }
     fs::rename(&tmp, path)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reads_picker_urls() {
+        assert_eq!(
+            local_path("file:///private/var/tmp/IMG%200001+1.HEIC"),
+            PathBuf::from("/private/var/tmp/IMG 0001+1.HEIC")
+        );
+        assert_eq!(
+            local_path("/Users/me/a b.png"),
+            PathBuf::from("/Users/me/a b.png")
+        );
+    }
 }

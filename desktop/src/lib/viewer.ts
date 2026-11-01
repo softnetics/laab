@@ -1,6 +1,7 @@
 import { api, errorText, mediaUrl } from "./api";
+import { phone } from "./platform";
 import type { Message } from "./types";
-import { notice } from "./ui";
+import { notice, setUi } from "./ui";
 
 /** One photo or video in the viewer window. */
 export interface ViewerItem {
@@ -43,7 +44,9 @@ export function messageItem(chatId: string, m: Message): ViewerItem {
 }
 
 export function openViewer(items: ViewerItem[], index: number) {
-  api.openViewer({ items, index }).catch((e) => notice(errorText(e)));
+  // A phone has one window, so the viewer opens over the page.
+  if (phone) setUi({ gallery: { items, index } });
+  else api.openViewer({ items, index }).catch((e) => notice(errorText(e)));
 }
 
 /** Open a chat photo or video, with the chat's other ones a step away. */

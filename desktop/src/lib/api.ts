@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { QueryClient, queryOptions, useQuery } from "@tanstack/react-query";
 import { useEffect } from "react";
+import { phone } from "./platform";
 import { setUi } from "./ui";
 import type { ViewerPayload } from "./viewer";
 import type {
@@ -126,13 +127,17 @@ export const api = {
   /** LINE-style separate windows: `albums` (tab albums/notes) or `media`
    *  (tab media/links/files). */
   openAuxWindow: (kind: "albums" | "media", chatId: string, title: string, tab?: string, post?: string) =>
-    invoke<void>("open_aux_window", { kind, chatId, title, tab: tab ?? null, post: post ?? null }),
+    phone
+      ? import("./nav").then((n) => n.openAuxPage(kind, chatId, tab, post))
+      : invoke<void>("open_aux_window", { kind, chatId, title, tab: tab ?? null, post: post ?? null }),
   /** The one photo/video viewer window; see `lib/viewer.ts`. */
   openViewer: (payload: ViewerPayload) => invoke<void>("open_viewer", { payload }),
   viewerPayload: () => invoke<ViewerPayload | null>("viewer_payload"),
   showMessage: (chatId: string, messageId: string) => invoke<void>("show_message", { chatId, messageId }),
   quit: () => invoke<void>("quit"),
-  openPath: (path: string) => invoke<void>("open_path", { path }),
+  /** A phone shows the file in LAAB's viewer; `from` lets it save the file. */
+  openPath: (path: string, from?: { chatId: string; messageId: string; name: string | null }) =>
+    phone ? Promise.resolve(setUi({ viewer: { path, ...from } })) : invoke<void>("open_path", { path }),
   revealPath: (path: string) => invoke<void>("reveal_path", { path }),
   cacheSize: () => invoke<number>("cache_size"),
   clearCache: () => invoke<void>("clear_cache"),

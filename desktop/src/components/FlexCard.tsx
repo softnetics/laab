@@ -41,7 +41,7 @@ export function parseFlex(json: string | undefined): Node | null {
 export function FlexCard({ root, onAction }: { root: Node; onAction: (a: FlexAction) => void }) {
   if (root.type === "carousel") {
     return (
-      <div className="flex max-w-[560px] gap-2 overflow-x-auto pb-1">
+      <div className="flex max-w-[min(560px,100%)] gap-2 overflow-x-auto pb-1">
         {(root.contents ?? []).map((b: Node, i: number) => (
           <Bubble key={i} node={b} onAction={onAction} />
         ))}
@@ -74,7 +74,7 @@ function Bubble({ node, onAction }: { node: Node; onAction: (a: FlexAction) => v
   return (
     <div
       className="shrink-0 overflow-hidden rounded-2xl bg-white text-[#111111] shadow-[0_1px_2px_rgba(0,0,0,0.12)]"
-      style={{ width, colorScheme: "light", direction: node.direction === "rtl" ? "rtl" : undefined }}
+      style={{ width, maxWidth: "100%", colorScheme: "light", direction: node.direction === "rtl" ? "rtl" : undefined }}
       onClick={(e) => {
         if (node.action && e.target === e.currentTarget) onAction(node.action);
       }}

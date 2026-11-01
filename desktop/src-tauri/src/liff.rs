@@ -2,13 +2,18 @@
 //! URL fragment, a LINE user agent, a minimal `window._liff` bridge and the
 //! share-target picker.
 
+// The window, bridge and picker are desktop only.
+#![cfg_attr(mobile, allow(dead_code))]
+
 use std::sync::Arc;
 
 use anyhow::{Result, anyhow};
 use line_rs::client::liff::LiffViewOptions;
 use serde::{Deserialize, Serialize};
 use serde_json::Value as Json;
-use tauri::{Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
+use tauri::{Emitter, Manager};
+#[cfg(desktop)]
+use tauri::{WebviewUrl, WebviewWindowBuilder};
 
 use crate::state::AppState;
 
@@ -271,7 +276,16 @@ struct PickerRequest {
     data: Json,
 }
 
+/// A phone has one window, so LIFF apps open in the browser there. They lose
+/// the LINE user agent, the bridge and the share picker.
+#[cfg(mobile)]
+pub fn open_window(_state: &Arc<AppState>, view: &LiffView, _chat: Option<String>) -> Result<()> {
+    tauri_plugin_opener::open_url(&view.url, None::<&str>)?;
+    Ok(())
+}
+
 /// Open a LIFF view in its own window.
+#[cfg(desktop)]
 pub fn open_window(state: &Arc<AppState>, view: &LiffView, chat: Option<String>) -> Result<()> {
     let app = state.app.clone();
     let label = format!("liff-{}", crate::state::now_ms() as u64);

@@ -1,6 +1,7 @@
 //! The database key: 32 random bytes, kept hex-encoded in the login keychain
 //! (service `tech.softnetics.laab`, account `database-key`). The Raycast
-//! extension reads the same item.
+//! extension reads the same item. On iPhone the item is in the app's own
+//! keychain.
 
 use anyhow::{Result, bail};
 
@@ -12,7 +13,7 @@ const ACCOUNT: &str = "database-key";
 const NOT_FOUND: i32 = -25300;
 
 /// The stored key, or a new one if there is none.
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "ios"))]
 pub fn database_key() -> Result<String> {
     use security_framework::passwords::{delete_generic_password, set_generic_password};
     use security_framework::random::SecRandom;
@@ -35,7 +36,7 @@ pub fn database_key() -> Result<String> {
 }
 
 /// The key under `service`, or `None` if there is no such item.
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "ios"))]
 fn stored_key(service: &str) -> Result<Option<String>> {
     use security_framework::passwords::get_generic_password;
 
@@ -53,7 +54,7 @@ fn stored_key(service: &str) -> Result<Option<String>> {
     }
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", target_os = "ios")))]
 pub fn database_key() -> Result<String> {
-    bail!("database encryption needs the macOS keychain")
+    bail!("database encryption needs the Apple keychain")
 }

@@ -16,6 +16,8 @@ import { BubblesIcon, ChevronIcon } from "./Icons";
 import { LiffConsent, SharePicker } from "./LiffDialogs";
 import { AddFriendPage, FriendsPage } from "./ListPages";
 import { LoginView } from "./LoginView";
+import { PhoneLayout } from "./PhoneLayout";
+import { phone } from "../lib/platform";
 import { Rail } from "./Rail";
 import { ProfileSheet } from "./ProfileSheet";
 import { RawInspector } from "./RawInspector";
@@ -25,6 +27,10 @@ const RAIL = 63;
 const MIN_DETAIL = 360;
 
 export function MainLayout({ chatId }: { chatId: string | null }) {
+  return phone ? <PhoneLayout chatId={chatId} /> : <DesktopLayout chatId={chatId} />;
+}
+
+function DesktopLayout({ chatId }: { chatId: string | null }) {
   const session = useSession();
   const loginPage = useLoginPage();
   const list = useChatList();

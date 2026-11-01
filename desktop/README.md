@@ -48,6 +48,37 @@ cd src-tauri && cargo test      # store, message conversion, LIFF, notification 
 
 To build the `.app`, run `./scripts/build-desktop.sh` (set `VERSION=` if you want). It writes `dist/LAAB.app`, signed with the Developer ID certificate in your Keychain if there is one and ad hoc otherwise.
 
+## iPhone
+
+The same code builds as an iPhone app (Tauri 2 iOS; the Xcode project is in `src-tauri/gen/apple`). The UI follows LINE for iPhone and is designed for the iPhone Duo first:
+
+- iOS draws the tab bar with UIKit (the `src-tauri/plugins/native-tabbar` plugin), so it gets Liquid Glass on iOS 26 and later. On screens where iOS 27.1 has a vertical bar (the iPhone Duo's cover screen, and the inner screen in landscape), the clock sits in a column beside the screen, so the plugin puts the tabs and the back, search, notes, ⋯ and new chat buttons there as glass groups, the way Apple's apps do, and the header keeps only the chat's name. Other screens get a `UITabBar` at the bottom that content scrolls under (`--tabbar-h`). The bar hides itself while a dialog or the viewer is open. Android and the phone preview on the desktop use an HTML tab bar.
+- Cover screen (narrower than 600 pt): a tab bar at the bottom (friends, chats, add friends, settings). A chat slides in over the list; swipe from the left edge to go back.
+- Inner screen (unfolded) and landscape: two panes, the list on the left and the chat on the right. Folding or unfolding keeps the same chat open.
+- Long-press instead of right-click. A message's menu starts with a row of reactions. The composer has send, photo and file buttons (Return makes a new line). Photos, videos and PDFs open in the app.
+- Albums and notes, and photos, files and links, open as pages in the app instead of separate windows.
+- QR sign-in: on a phone that has LINE, **เปิดแอป LINE บนเครื่องนี้** (Open LINE on this device) opens the QR's link in LINE to confirm.
+
+```bash
+cd desktop
+pnpm tauri ios dev "iPhone Duo"          # simulator (needs the iOS 27.1 runtime)
+SIMCTL_CHILD_LAAB_DEMO=1 xcrun simctl launch --terminate-running-process booted app.laab.ios   # relaunch in demo mode
+xcrun simctl openurl booted "laab://chat/c_team"   # open a chat by deep link (iOS asks first)
+SIMCTL_CHILD_LAAB_DEMO=1 SIMCTL_CHILD_LAAB_DEMO_OPEN="laab://chat/c_team" \
+  xcrun simctl launch --terminate-running-process booted app.laab.ios   # demo that opens a chat at launch, no tapping
+```
+
+To see the phone layout in the desktop app, set `localStorage.laabPhone = "1"` in the devtools and reload.
+
+To build the app, run `./scripts/build-ios.sh` (simulator) or `APPLE_DEVELOPMENT_TEAM=<Team ID> ./scripts/build-ios.sh --device` (an `.ipa`).
+
+Limits on iPhone:
+
+- iOS suspends LAAB in the background, so notifications only arrive while the app is open (notifications while it's closed need APNs and a relay). The app syncs again when it comes back.
+- LIFF opens in Safari, so there's no LINE user agent, `window._liff` or shareTargetPicker.
+- Nothing moves over from the Mac; sign in again on the phone.
+- The updater, usage statistics, crash reports and LIFF DevTools are for the Mac only.
+
 ## Features
 
 - A resizable chat list (double-click the edge to reset it), LINE-style bubble tails, "อ่านแล้ว" (Read) above the time, Shift-Return for a new line

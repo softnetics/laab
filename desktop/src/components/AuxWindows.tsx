@@ -6,14 +6,17 @@ import { useEffect, useState } from "react";
 import { api, errorText, mediaUrl, queryClient, useChatList } from "../lib/api";
 import { linkify } from "../lib/links";
 import type { NotePost } from "../lib/types";
+import { goBack } from "../lib/nav";
 import { openUrl } from "../lib/open";
-import { messageItem, openViewer } from "../lib/viewer";
+import { phone } from "../lib/platform";
 import { fullStamp, listLabel, toDate } from "../lib/time";
+import { messageItem, openViewer } from "../lib/viewer";
 import { notice, setUi } from "../lib/ui";
 import { Avatar } from "./Avatar";
 import { ConfirmDialog } from "./Dialogs";
 import { CommentIcon, DocIcon, MoreVIcon, PhotoIcon, PlayIcon, SearchIcon, SmileIcon } from "./Icons";
 import { itemClass, popupClass, Spinner } from "./kit";
+import { PhoneHeader } from "./PhoneHeader";
 import { VirtualGrid } from "./VirtualGrid";
 
 // LINE for Mac opens albums/notes and a chat's photos, links and files in
@@ -570,12 +573,18 @@ export function AlbumsNotesWindow({ chatId, tab, post, at }: { chatId: string; t
   const [current, setCurrent] = useState(tab);
   useEffect(() => setCurrent(tab), [tab, at]);
   return (
-    <div className="flex h-full flex-col bg-chat">
-      {/* LINE puts the title on its own row under the traffic lights. */}
-      <div className="drag h-[26px] shrink-0" data-tauri-drag-region />
-      <div className="drag flex h-[30px] shrink-0 items-center justify-center px-10 text-[14px] font-semibold" data-tauri-drag-region>
-        <span className="truncate">{title}</span>
-      </div>
+    <div className={`flex h-full flex-col bg-chat ${phone ? "safe-x safe-bottom" : ""}`}>
+      {phone ? (
+        <PhoneHeader title={title} onBack={goBack} />
+      ) : (
+        <>
+          {/* LINE puts the title on its own row under the traffic lights. */}
+          <div className="drag h-[26px] shrink-0" data-tauri-drag-region />
+          <div className="drag flex h-[30px] shrink-0 items-center justify-center px-10 text-[14px] font-semibold" data-tauri-drag-region>
+            <span className="truncate">{title}</span>
+          </div>
+        </>
+      )}
       <Tabs
         tabs={[
           ["albums", "อัลบั้ม"],
@@ -601,13 +610,17 @@ export function MediaWindow({ chatId, initial }: { chatId: string; initial: "med
   const openFile = (id: string, name: string | null) =>
     api
       .download(chatId, id, name)
-      .then(api.openPath)
+      .then((path) => api.openPath(path, { chatId, messageId: id, name }))
       .catch((e) => notice(errorText(e)));
   return (
-    <div className="flex h-full flex-col bg-white text-[#111111]" style={{ colorScheme: "light" }}>
-      <div className="drag flex h-[30px] shrink-0 items-center justify-center px-[76px] text-[13px] font-semibold" data-tauri-drag-region>
-        <span className="truncate">{title}</span>
-      </div>
+    <div className={`flex h-full flex-col bg-white text-[#111111] ${phone ? "safe-x safe-bottom" : ""}`} style={{ colorScheme: "light" }}>
+      {phone ? (
+        <PhoneHeader title={title} onBack={goBack} />
+      ) : (
+        <div className="drag flex h-[30px] shrink-0 items-center justify-center px-[76px] text-[13px] font-semibold" data-tauri-drag-region>
+          <span className="truncate">{title}</span>
+        </div>
+      )}
       <Tabs
         light
         tabs={[
@@ -624,7 +637,7 @@ export function MediaWindow({ chatId, initial }: { chatId: string; initial: "med
       {!!data?.length && tab === "media" && (
         <VirtualGrid
           count={data.length}
-          columns={4}
+          columns={phone ? 3 : 4}
           className="flex-1"
           render={(i) => {
             const m = data[i];

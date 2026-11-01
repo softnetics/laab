@@ -13,6 +13,7 @@
     "dialog:allow-save",
     "clipboard-manager:allow-write-text",
     "deep-link:default",
-    "window-state:default"
+    "window-state:default",
+    "native-tabbar:default"
   ]
 }

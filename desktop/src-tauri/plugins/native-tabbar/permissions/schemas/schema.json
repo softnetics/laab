@@ -295,6 +295,18 @@
       "type": "string",
       "oneOf": [
         {
+          "description": "Enables the menu command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-menu",
+          "markdownDescription": "Enables the menu command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the menu command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-menu",
+          "markdownDescription": "Denies the menu command without any pre-configured scope."
+        },
+        {
           "description": "Enables the register_listener command without any pre-configured scope.",
           "type": "string",
           "const": "allow-register-listener",
@@ -319,6 +331,18 @@
           "markdownDescription": "Denies the remove_listener command without any pre-configured scope."
         },
         {
+          "description": "Enables the thaw command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-thaw",
+          "markdownDescription": "Enables the thaw command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the thaw command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-thaw",
+          "markdownDescription": "Denies the thaw command without any pre-configured scope."
+        },
+        {
           "description": "Enables the update command without any pre-configured scope.",
           "type": "string",
           "const": "allow-update",
@@ -331,10 +355,10 @@
           "markdownDescription": "Denies the update command without any pre-configured scope."
         },
         {
-          "description": "Lets LAAB's own windows show the native tab bar and hear taps on it.\n#### This default permission set includes:\n\n- `allow-update`\n- `allow-register-listener`\n- `allow-remove-listener`",
+          "description": "Lets LAAB's own windows show the native tab bar and chat menus and hear taps on them.\n#### This default permission set includes:\n\n- `allow-update`\n- `allow-menu`\n- `allow-thaw`\n- `allow-register-listener`\n- `allow-remove-listener`",
           "type": "string",
           "const": "default",
-          "markdownDescription": "Lets LAAB's own windows show the native tab bar and hear taps on it.\n#### This default permission set includes:\n\n- `allow-update`\n- `allow-register-listener`\n- `allow-remove-listener`"
+          "markdownDescription": "Lets LAAB's own windows show the native tab bar and chat menus and hear taps on them.\n#### This default permission set includes:\n\n- `allow-update`\n- `allow-menu`\n- `allow-thaw`\n- `allow-register-listener`\n- `allow-remove-listener`"
         }
       ]
     }

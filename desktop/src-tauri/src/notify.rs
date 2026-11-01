@@ -2,7 +2,9 @@
 
 use std::sync::Arc;
 
-use tauri::{Emitter, Manager};
+#[cfg(target_os = "macos")]
+use tauri::Emitter;
+use tauri::Manager;
 
 use crate::model::{Chat, Message};
 use crate::state::{AppState, Focus};
@@ -104,7 +106,31 @@ fn post(
     });
 }
 
-#[cfg(not(target_os = "macos"))]
+/// iPhone and Android: a local notification. It only shows while LAAB runs;
+/// a suspended app gets nothing without a push relay.
+#[cfg(mobile)]
+fn post(
+    app: tauri::AppHandle,
+    title: String,
+    subtitle: Option<String>,
+    text: String,
+    chat_id: String,
+) {
+    use tauri_plugin_notification::NotificationExt;
+    let body = match subtitle {
+        Some(who) => format!("{who}: {text}"),
+        None => text,
+    };
+    let _ = app
+        .notification()
+        .builder()
+        .title(title)
+        .body(body)
+        .extra("chatId", chat_id)
+        .show();
+}
+
+#[cfg(not(any(target_os = "macos", mobile)))]
 fn post(
     _app: tauri::AppHandle,
     _title: String,

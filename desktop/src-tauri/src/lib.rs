@@ -137,20 +137,30 @@ pub fn run() {
         )
         .init();
     tracing::info!("LAAB starting");
-    let demo = std::env::args().any(|a| a == "--demo") || std::env::var_os("LAAB_DEMO").is_some();
+    // An iPhone app gets no environment from `tauri ios dev`, so the build can
+    // set LAAB_DEMO too.
+    let demo = std::env::args().any(|a| a == "--demo")
+        || std::env::var_os("LAAB_DEMO").is_some()
+        || option_env!("LAAB_DEMO").is_some();
 
-    tauri::Builder::default()
+    let builder = tauri::Builder::default()
         .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_clipboard_manager::init())
-        .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
+        .plugin(tauri_plugin_native_tabbar::init());
+    #[cfg(desktop)]
+    let builder = builder
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(
             tauri_plugin_window_state::Builder::new()
                 .with_denylist(&[])
                 .build(),
-        )
+        );
+    #[cfg(mobile)]
+    let builder = builder.plugin(tauri_plugin_notification::init());
+    builder
         .register_asynchronous_uri_scheme_protocol("media", |ctx, request, responder| {
             let state = ctx.app_handle().state::<Arc<AppState>>().inner().clone();
             tauri::async_runtime::spawn(async move {
@@ -200,6 +210,16 @@ pub fn run() {
                 notify::update_badge(&state);
             }
 
+            // Demo only: open a `laab://` link at launch, to check pages on a
+            // simulator nobody can tap (SIMCTL_CHILD_LAAB_DEMO_OPEN=...).
+            if demo && let Ok(url) = std::env::var("LAAB_DEMO_OPEN") {
+                let handle = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                    open_deep_link(&handle, &url);
+                });
+            }
+
             use tauri_plugin_deep_link::DeepLinkExt;
             let handle = app.handle().clone();
             app.deep_link().on_open_url(move |event| {
@@ -216,11 +236,18 @@ pub fn run() {
             if let WindowEvent::Resized(_) = event {
                 traffic_lights::place(window);
             }
-            if let WindowEvent::Focused(active) = event {
-                let state = window.app_handle().state::<Arc<AppState>>();
-                state.focus.lock().unwrap().active = *active;
-                let _ = window.emit("app-active", *active);
-            }
+            let active = match event {
+                WindowEvent::Focused(active) => *active,
+                // A phone app is active between these, not by window focus.
+                #[cfg(mobile)]
+                WindowEvent::Resumed => true,
+                #[cfg(mobile)]
+                WindowEvent::Suspended => false,
+                _ => return,
+            };
+            let state = window.app_handle().state::<Arc<AppState>>();
+            state.focus.lock().unwrap().active = active;
+            let _ = window.emit("app-active", active);
         })
         .invoke_handler(tauri::generate_handler![
             fold::resize_window,

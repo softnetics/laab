@@ -1,5 +1,7 @@
 import { createStore, useStore } from "@tanstack/react-store";
-import type { Message, Workspace } from "./types";
+import type { Fold, Hinge } from "./nativeTabbar";
+import type { Message, SearchKind, Workspace } from "./types";
+import type { ViewerPayload } from "./viewer";
 
 export type ChatFilter = "all" | "friends" | "groups" | "official" | `folder:${string}`;
 export type ChatSort = "recent" | "unread";
@@ -61,7 +63,36 @@ export interface UiState {
   /** Someone's profile card; name and picture show while it loads. */
   profile: { mid: string; name?: string; picture?: string | null } | null;
   /** What the column next to the left bar shows: chats, friends, add friend. */
-  railPage: "chats" | "friends" | "add";
+  railPage: "chats" | "friends" | "add" | "more";
+  /** ⌘K's results kept in the list column of the unfolded iPhone Duo, so
+   *  each hit opens beside them; `index` is the hit shown in the chat. */
+  searchDock: { query: string; kinds: SearchKind[]; index: number } | null;
+  /** The phone's photo/video viewer; the desktop opens a window instead. */
+  gallery: ViewerPayload | null;
+  /** The phone's file viewer (photos, videos, PDFs, other files). */
+  viewer: { path: string; chatId?: string; messageId?: string; name?: string | null } | null;
+  /** iOS shows a vertical bar at this edge (the iPhone Duo's cover screen);
+   *  the native plugin draws the tabs and chat buttons there. */
+  sideBar: "leading" | "trailing" | null;
+  /** The iPhone Duo's hinge while it is partly open, in CSS pixels. */
+  fold: Fold | null;
+  /** The status bar sits in a top corner beside the camera (the iPhone Duo's
+   *  inner screen) instead of across the top. */
+  statusCorner: boolean;
+  /** Bumped by the vertical bar's search button to open in-chat search. */
+  chatSearch: number;
+  /** The chat's ⋮ menu, opened from the vertical bar. */
+  chatMenuOpen: boolean;
+  /** The chat's card drawn for a moment for the long-press menu to show
+   *  (see `answerChatMenu`). */
+  menuCard: string | null;
+  /** The chat shown beside the list without telling LINE it was read. */
+  preview: string | null;
+  /** The chat picked on the iPhone Duo's cover screen, shown once the device
+   *  is opened a little and opened for real (read) when it is opened flat. */
+  peek: string | null;
+  /** A foldable's hinge, from iOS; null elsewhere. */
+  hinge: Hinge | null;
   /** When this app last sent a message; that message scrolls the chat down. */
   sentAt: number;
   /** The announcement list over the chat is open. */
@@ -99,6 +130,18 @@ export const ui = createStore<UiState>({
   translations: {},
   confirm: null,
   sheet: null,
+  searchDock: null,
+  gallery: null,
+  viewer: null,
+  sideBar: null,
+  fold: null,
+  statusCorner: false,
+  chatSearch: 0,
+  chatMenuOpen: false,
+  menuCard: null,
+  preview: null,
+  peek: null,
+  hinge: null,
   profile: null,
 });
 

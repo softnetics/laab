@@ -3,6 +3,9 @@
 //!
 //! LIFF pages are remote and get no IPC. `CAPTURE` keeps their log in a
 //! buffer inside the page; a poller drains it with `eval_with_callback`.
+//!
+//! A phone opens LIFF in Safari (see `liff.rs`), so there it records nothing.
+#![cfg_attr(mobile, allow(dead_code, unused_imports))]
 
 use std::sync::{LazyLock, Mutex};
 use std::time::Duration;
@@ -247,26 +250,35 @@ pub fn session(label: &str) -> Option<Session> {
 /// Open the DevTools window, or bring it forward; `focus` selects a LIFF
 /// window in it.
 pub fn open(app: &AppHandle, focus: Option<&str>) -> tauri::Result<()> {
-    if let Some(w) = app.get_webview_window(WINDOW) {
-        let _ = w.unminimize();
-        w.set_focus()?;
-    } else {
-        WebviewWindowBuilder::new(
-            app,
-            WINDOW,
-            WebviewUrl::App("index.html#/liff-devtools".into()),
-        )
-        .title("LIFF DevTools")
-        .inner_size(960.0, 620.0)
-        .min_inner_size(640.0, 360.0)
-        .title_bar_style(tauri::TitleBarStyle::Overlay)
-        .hidden_title(true)
-        .build()?;
+    // A phone has no second window to hold DevTools.
+    #[cfg(mobile)]
+    {
+        let _ = (app, focus);
+        Ok(())
     }
-    if let Some(label) = focus {
-        let _ = app.emit_to(WINDOW, "liff-dev-focus", label);
+    #[cfg(desktop)]
+    {
+        if let Some(w) = app.get_webview_window(WINDOW) {
+            let _ = w.unminimize();
+            w.set_focus()?;
+        } else {
+            WebviewWindowBuilder::new(
+                app,
+                WINDOW,
+                WebviewUrl::App("index.html#/liff-devtools".into()),
+            )
+            .title("LIFF DevTools")
+            .inner_size(960.0, 620.0)
+            .min_inner_size(640.0, 360.0)
+            .title_bar_style(tauri::TitleBarStyle::Overlay)
+            .hidden_title(true)
+            .build()?;
+        }
+        if let Some(label) = focus {
+            let _ = app.emit_to(WINDOW, "liff-dev-focus", label);
+        }
+        Ok(())
     }
-    Ok(())
 }
 
 /// Records page events: console output, uncaught errors, failed resources,

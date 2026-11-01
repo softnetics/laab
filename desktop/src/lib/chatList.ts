@@ -90,3 +90,8 @@ export const unreadLabel = (n: number) => (n > 999 ? "999+" : String(n));
 
 /** The chat with yourself is LINE's Keep Memo. */
 export const isKeepMemo = (c: Pick<Chat, "id">, me: string | undefined) => !!me && c.id === me;
+
+/** Unread messages outside muted chats, for the tab bar and the phone's back
+ *  button, as LINE for iPhone counts them. */
+export const unreadTotal = (list: ChatList | undefined) =>
+  (list?.chats ?? []).reduce((n, c) => n + (c.muted ? 0 : Math.max(0, c.unread)), 0);

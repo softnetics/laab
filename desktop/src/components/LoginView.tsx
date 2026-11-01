@@ -2,6 +2,8 @@ import { motion } from "motion/react";
 import QRCode from "qrcode";
 import { useEffect, useState } from "react";
 import { api, errorText, useSession } from "../lib/api";
+import { openUrl } from "../lib/open";
+import { phone } from "../lib/platform";
 import { notice } from "../lib/ui";
 import { BubbleIcon } from "./Icons";
 import { Spinner } from "./kit";
@@ -96,6 +98,16 @@ export function LoginView() {
             <img src={qr} width={220} height={220} alt="QR" />
           </div>
           <p className="text-[13px] text-secondary">เปิด LINE บนโทรศัพท์ แล้วสแกน QR นี้</p>
+          {phone && s?.qrUrl && (
+            // LINE cannot scan its own screen, so on the phone that runs LINE
+            // the QR's link opens LINE to approve the login instead.
+            <button
+              onClick={() => openUrl(s.qrUrl!)}
+              className="mt-1 h-11 w-60 rounded-lg bg-line-green text-[15px] font-semibold text-white"
+            >
+              เปิดแอป LINE บนเครื่องนี้
+            </button>
+          )}
         </motion.div>
       )}
       {s?.pin && (

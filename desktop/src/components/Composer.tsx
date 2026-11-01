@@ -1,4 +1,5 @@
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
+import { motion } from "motion/react";
 import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState } from "react";
 import { api, errorText } from "../lib/api";
 import {
@@ -13,11 +14,14 @@ import {
   targets,
 } from "../lib/mentions";
 import type { ChatMember, DraftMention } from "../lib/types";
+import { phone, useWide } from "../lib/platform";
 import { notice, pushDismiss, setUi, useUi } from "../lib/ui";
 import { Avatar } from "./Avatar";
-import { CloseIcon, PaperclipIcon, SmileIcon } from "./Icons";
+import { CloseIcon, PaperclipIcon, PhotoIcon, SendIcon, SmileIcon } from "./Icons";
 
-const LINE_HEIGHT = 20;
+// iOS zooms into fields under 16px, so the phone's field is larger.
+const FONT_SIZE = phone ? 16 : 14;
+const LINE_HEIGHT = phone ? 22 : 20;
 const MAX_LINES = 6;
 
 export interface ComposerHandle {
@@ -54,6 +58,9 @@ export const Composer = forwardRef<
   const [sending, setSending] = useState(false);
   const pickerOpenedAt = useRef(0);
   const focusRequest = useUi((s) => s.composerFocus);
+  // Two panes with no vertical bar: the system's tab bar floats below.
+  const wide = useWide();
+  const tabsBelow = useUi((s) => phone && wide && !s.sideBar);
   // Replying to or editing a message (from its right-click menu).
   const modeAll = useUi((s) => s.composerMode);
   const mode = modeAll?.chatId === chatId ? modeAll : null;
@@ -163,8 +170,8 @@ export const Composer = forwardRef<
     }
   };
 
-  const attach = async () => {
-    const files = await openDialog({ multiple: true, directory: false });
+  const attach = async (pickerMode?: "media") => {
+    const files = await openDialog({ multiple: true, directory: false, pickerMode });
     if (!files) return;
     const paths = Array.isArray(files) ? files : [files];
     api.sendFiles(chatId, paths).catch((e) => notice(errorText(e)));
@@ -197,7 +204,8 @@ export const Composer = forwardRef<
       onStep(e.key === "ArrowDown" ? 1 : -1);
       return;
     }
-    if (e.key === "Enter" && (plain || (e.metaKey && !e.shiftKey))) {
+    // A phone keyboard's return key starts a new line; the send button sends.
+    if (e.key === "Enter" && ((plain && !phone) || (e.metaKey && !e.shiftKey))) {
       e.preventDefault();
       send();
       return;
@@ -240,8 +248,40 @@ export const Composer = forwardRef<
     setHeight(h);
   }, [text, lines]);
 
+  const field = (
+    <div className="relative" style={{ height }}>
+      <div
+        ref={mirror}
+        aria-hidden
+        className="pointer-events-none absolute inset-0 overflow-hidden break-words whitespace-pre-wrap text-primary"
+        style={{ fontSize: FONT_SIZE, lineHeight: `${LINE_HEIGHT}px` }}
+      >
+        {mirrored}
+      </div>
+      <textarea
+        ref={area}
+        rows={1}
+        disabled={disabled}
+        value={text}
+        placeholder="พิมพ์ข้อความ"
+        spellCheck={false}
+        onChange={(e) => update(e.target.value, e.target.selectionStart)}
+        onSelect={(e) => setCaret(e.currentTarget.selectionStart)}
+        onScroll={(e) => {
+          if (mirror.current) mirror.current.scrollTop = e.currentTarget.scrollTop;
+        }}
+        onKeyDown={onKeyDown}
+        className="selectable absolute inset-0 w-full resize-none bg-transparent text-transparent caret-primary outline-none placeholder:text-secondary/70 disabled:opacity-50"
+        style={{ fontSize: FONT_SIZE, lineHeight: `${LINE_HEIGHT}px` }}
+      />
+    </div>
+  );
+
   return (
-    <div className="relative border-t border-separator bg-chat px-[14px] pt-3 pb-1.5" onClick={() => area.current?.focus()}>
+    <div
+      className={`relative border-t border-separator bg-chat ${phone ? `px-1.5 pt-1.5 ${tabsBelow ? "tabbar-gap" : "safe-bottom pb-1.5"}` : "px-[14px] pt-3 pb-1.5"}`}
+      onClick={() => !phone && area.current?.focus()}
+    >
       {pickerOpen && (
         // Opens while typing "@": no animation.
         <div className="absolute right-4 bottom-full left-4 mb-1 overflow-hidden rounded-xl bg-popover shadow-[0_8px_28px_rgba(0,0,0,0.22)] ring-1 ring-black/10">
@@ -256,7 +296,9 @@ export const Composer = forwardRef<
       )}
       {mode && (
         // LINE for Mac: a full-width strip with the quoted sender and text.
-        <div className="-mx-[14px] -mt-3 mb-3 flex items-center gap-2.5 border-b border-separator px-[14px] py-2">
+        <div
+          className={`flex items-center gap-2.5 border-b border-separator py-2 ${phone ? "-mx-1.5 -mt-1.5 mb-1.5 px-3" : "-mx-[14px] -mt-3 mb-3 px-[14px]"}`}
+        >
           {mode.kind === "reply" && (
             <Avatar
               id={mode.message.mine ? (mode.message.senderId ?? "me") : (mode.message.senderId ?? "")}
@@ -287,55 +329,69 @@ export const Composer = forwardRef<
           </button>
         </div>
       )}
-      <div className="relative" style={{ height }}>
-        <div
-          ref={mirror}
-          aria-hidden
-          className="pointer-events-none absolute inset-0 overflow-hidden text-[14px] break-words whitespace-pre-wrap text-primary"
-          style={{ lineHeight: `${LINE_HEIGHT}px` }}
-        >
-          {mirrored}
+      {phone ? (
+        // LINE for iPhone: attach and photo buttons, a rounded field with the
+        // sticker button inside, and a send button once there is text.
+        <div className="flex items-end gap-1">
+          <button title="แนบไฟล์" disabled={disabled} onClick={() => attach()} className={phoneButton}>
+            <PaperclipIcon size={23} strokeWidth={1.6} />
+          </button>
+          <button title="รูปภาพ" disabled={disabled} onClick={() => attach("media")} className={phoneButton}>
+            <PhotoIcon size={24} />
+          </button>
+          <div className="flex min-w-0 flex-1 items-end gap-1 rounded-[20px] bg-field py-[7px] pr-1 pl-3.5">
+            <div className="min-w-0 flex-1">{field}</div>
+            <button
+              title="สติกเกอร์"
+              onClick={(e) => (e.stopPropagation(), onToggleStickers())}
+              className={`-my-1 grid h-8 w-8 shrink-0 place-items-center ${stickerOpen ? "text-line-green" : "text-secondary"}`}
+            >
+              <SmileIcon size={23} strokeWidth={1.5} />
+            </button>
+          </div>
+          {text.trim() && (
+            <motion.button
+              initial={{ scale: 0.6, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              title="ส่ง"
+              disabled={disabled || sending}
+              onClick={(e) => (e.stopPropagation(), send())}
+              className="mb-0.5 grid h-9 w-9 shrink-0 place-items-center rounded-full bg-line-green text-white disabled:opacity-50"
+            >
+              <SendIcon size={18} />
+            </motion.button>
+          )}
         </div>
-        <textarea
-          ref={area}
-          rows={1}
-          disabled={disabled}
-          value={text}
-          placeholder="พิมพ์ข้อความ"
-          spellCheck={false}
-          onChange={(e) => update(e.target.value, e.target.selectionStart)}
-          onSelect={(e) => setCaret(e.currentTarget.selectionStart)}
-          onScroll={(e) => {
-            if (mirror.current) mirror.current.scrollTop = e.currentTarget.scrollTop;
-          }}
-          onKeyDown={onKeyDown}
-          className="selectable absolute inset-0 w-full resize-none bg-transparent text-[14px] text-transparent caret-primary outline-none placeholder:text-secondary/70 disabled:opacity-50"
-          style={{ lineHeight: `${LINE_HEIGHT}px` }}
-        />
-      </div>
-      {/* LINE for Mac: 📎 on the left, 🙂 (stickers) on the right, no send
-          button; Return sends. */}
-      <div className="mt-7 flex items-center gap-1 text-secondary dark:text-[#c0c0c0]">
-        <button
-          title="แนบไฟล์"
-          disabled={disabled}
-          onClick={attach}
-          className="grid h-8 w-8 place-items-center hover:text-primary disabled:opacity-40"
-        >
-          <PaperclipIcon size={21} strokeWidth={1.6} />
-        </button>
-        <div className="flex-1" />
-        <button
-          title="สติกเกอร์"
-          onClick={(e) => (e.stopPropagation(), onToggleStickers())}
-          className={`grid h-8 w-8 place-items-center hover:text-primary ${stickerOpen ? "text-line-green" : ""}`}
-        >
-          <SmileIcon size={23} strokeWidth={1.5} />
-        </button>
-      </div>
+      ) : (
+        <>
+          {field}
+          {/* LINE for Mac: 📎 on the left, 🙂 (stickers) on the right, no send
+              button; Return sends. */}
+          <div className="mt-7 flex items-center gap-1 text-secondary dark:text-[#c0c0c0]">
+            <button
+              title="แนบไฟล์"
+              disabled={disabled}
+              onClick={() => attach()}
+              className="grid h-8 w-8 place-items-center hover:text-primary disabled:opacity-40"
+            >
+              <PaperclipIcon size={21} strokeWidth={1.6} />
+            </button>
+            <div className="flex-1" />
+            <button
+              title="สติกเกอร์"
+              onClick={(e) => (e.stopPropagation(), onToggleStickers())}
+              className={`grid h-8 w-8 place-items-center hover:text-primary ${stickerOpen ? "text-line-green" : ""}`}
+            >
+              <SmileIcon size={23} strokeWidth={1.5} />
+            </button>
+          </div>
+        </>
+      )}
     </div>
   );
 });
+
+const phoneButton = "grid h-10 w-9 shrink-0 place-items-center text-secondary disabled:opacity-40";
 
 function PickerList({
   candidates,

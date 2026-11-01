@@ -188,6 +188,12 @@ export const BookmarkIcon = (p: P) => (
     <path d="M6.5 3.5h11a1 1 0 0 1 1 1V20l-6.5-4.2L5.5 20V4.5a1 1 0 0 1 1-1Z" />
   </svg>
 );
+export const EyeIcon = (p: P) => (
+  <svg {...base(p)} fill="none" stroke="currentColor" strokeWidth={p.strokeWidth ?? 2} strokeLinejoin="round">
+    <path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12Z" />
+    <circle cx="12" cy="12" r="3" />
+  </svg>
+);
 export const SlidersIcon = (p: P) => (
   <svg {...base(p)} fill="none" stroke="currentColor" strokeWidth={1.9} strokeLinecap="round">
     <path d="M4 8h9M17 8h3M4 16h3M11 16h9" />
