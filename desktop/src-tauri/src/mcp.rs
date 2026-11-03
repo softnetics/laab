@@ -271,6 +271,9 @@ struct Runtime {
     /// One approval dialog at a time.
     asking: tokio::sync::Mutex<()>,
     clients: Mutex<usize>,
+    /// Inode of the socket file this instance bound, so it never deletes
+    /// one a newer LAAB bound at the same path.
+    socket: Mutex<Option<u64>>,
 }
 
 static RT: LazyLock<Runtime> = LazyLock::new(|| Runtime {
@@ -280,6 +283,7 @@ static RT: LazyLock<Runtime> = LazyLock::new(|| Runtime {
     changed: broadcast::channel(16).0,
     asking: tokio::sync::Mutex::new(()),
     clients: Mutex::new(0),
+    socket: Mutex::new(None),
 });
 
 fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
@@ -321,7 +325,7 @@ fn apply(state: &Arc<AppState>) {
         *listener = Some(tauri::async_runtime::spawn(listen(state.clone())));
     } else if !on && let Some(task) = listener.take() {
         task.abort();
-        let _ = std::fs::remove_file(state.paths.mcp_socket());
+        remove_own_socket(&state.paths.mcp_socket());
         *lock(&RT.clients) = 0;
     }
 }
@@ -330,7 +334,20 @@ fn apply(state: &Arc<AppState>) {
 pub fn shutdown(state: &AppState) {
     if let Some(task) = lock(&RT.listener).take() {
         task.abort();
-        let _ = std::fs::remove_file(state.paths.mcp_socket());
+        remove_own_socket(&state.paths.mcp_socket());
+    }
+}
+
+fn inode(path: &std::path::Path) -> Option<u64> {
+    use std::os::unix::fs::MetadataExt;
+    std::fs::metadata(path).ok().map(|m| m.ino())
+}
+
+/// Delete the socket file only if it is still the one this instance bound.
+fn remove_own_socket(path: &std::path::Path) {
+    let ours = lock(&RT.socket).take();
+    if ours.is_some() && inode(path) == ours {
+        let _ = std::fs::remove_file(path);
     }
 }
 
@@ -492,9 +509,16 @@ pub fn clip(s: &str, n: usize) -> String {
 
 async fn listen(state: Arc<AppState>) {
     let path = state.paths.mcp_socket();
-    if UnixStream::connect(&path).await.is_ok() {
-        tracing::warn!("another LAAB already serves MCP at {}", path.display());
-        return;
+    // A LAAB that is quitting still answers for a moment; wait for it
+    // rather than leave MCP off once it has gone.
+    let mut tries = 0;
+    while UnixStream::connect(&path).await.is_ok() {
+        tries += 1;
+        if tries >= 20 {
+            tracing::warn!("another LAAB already serves MCP at {}", path.display());
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
     }
     let _ = std::fs::remove_file(&path);
     let listener = match UnixListener::bind(&path) {
@@ -508,6 +532,7 @@ async fn listen(state: Arc<AppState>) {
         use std::os::unix::fs::PermissionsExt;
         let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
     }
+    *lock(&RT.socket) = inode(&path);
     tracing::info!("MCP listening");
     let mut conns = JoinSet::new();
     loop {
