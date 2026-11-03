@@ -110,7 +110,28 @@ describe("notices", () => {
       ["b", false, true],
       ["c", true, true],
       ["d", true, true],
-      ["e", true, true],
+    ]);
+    expect(rows[3].photos?.map((m) => m.id)).toEqual(["d", "e"]);
+  });
+  it("puts photos sent together in one grid", () => {
+    const t = new Date(2026, 9, 21, 14, 57, 5).getTime();
+    const photo = (id: string, at: number, more: Partial<Message> = {}) => msg({ id, createdTime: t + at, contentType: "IMAGE", ...more });
+    const rows = buildRows(
+      [
+        photo("a", 0),
+        photo("b", 2_000),
+        photo("c", 50_000),
+        photo("d", 200_000), // more than a minute after c
+        photo("e", 201_000, { senderId: "u3" }), // someone else
+        photo("f", 202_000, { senderId: "u3", unsent: 1 }),
+      ],
+      name,
+    );
+    expect(rows.map((r) => [r.message.id, r.photos?.map((m) => m.id) ?? null])).toEqual([
+      ["a", ["a", "b", "c"]],
+      ["d", null],
+      ["e", null],
+      ["f", null],
     ]);
   });
   it("hides silent unsends and starts runs after notices", () => {

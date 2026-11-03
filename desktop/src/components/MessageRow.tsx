@@ -103,6 +103,42 @@ function Attachment({ m, ctx }: { m: Message; ctx: RowContext }) {
   return m.contentType === "FILE" ? <FileBubble m={m} ctx={ctx} /> : <MediaBubble m={m} ctx={ctx} />;
 }
 
+/** Photos sent together, as LINE shows them: two per row, and a last odd
+ *  one across the whole width. Each opens on its own. */
+function PhotoGrid({ photos, ctx }: { photos: Message[]; ctx: RowContext }) {
+  const dev = useUi((s) => s.developerMode);
+  const odd = photos.length % 2 === 1;
+  return (
+    <div className="grid w-[300px] grid-cols-2 gap-0.5 overflow-hidden rounded-[2px]">
+      {photos.map((p, i) => {
+        const wide = odd && i === photos.length - 1;
+        return (
+          // Its own menu, so save, reply and the rest act on the photo clicked.
+          <Ctx key={p.id} menu={rowMenu(p, dev, ctx)} className={wide ? "col-span-2 aspect-[2/1]" : "aspect-square"}>
+            <GridPhoto m={p} ctx={ctx} className="h-full w-full" />
+          </Ctx>
+        );
+      })}
+    </div>
+  );
+}
+
+function GridPhoto({ m, ctx, className }: { m: Message; ctx: RowContext; className: string }) {
+  const [failed, setFailed] = useState(false);
+  const src = m.imagePath ? mediaUrl.local(m.imagePath) : mediaUrl.message(ctx.chatId, m.id, true);
+  return (
+    <div className={`relative cursor-pointer bg-incoming ${className}`} aria-label="เปิดรูป" {...pressable(() => viewMessage(ctx.chatId, m))}>
+      {failed ? (
+        <div className="grid h-full w-full place-items-center text-secondary">
+          <PhotoIcon size={24} />
+        </div>
+      ) : (
+        <img src={src} onError={() => setFailed(true)} draggable={false} className="block h-full w-full object-cover" alt="" />
+      )}
+    </div>
+  );
+}
+
 function FileBubble({ m, ctx }: { m: Message; ctx: RowContext }) {
   const { state, open } = useOpener(m, ctx);
   const caption = state === "loading" ? "กำลังดาวน์โหลด…" : state !== "idle" ? state : m.filePath ? "คลิกเพื่อเปิด" : "คลิกเพื่อดาวน์โหลด";
@@ -533,9 +569,12 @@ export const MessageRow = memo(function MessageRow({
   readers,
   highlight,
   current,
+  photos,
 }: {
   m: Message;
   ctx: RowContext;
+  /** Photos sent together with `m` (the first), drawn as one grid. */
+  photos?: Message[];
   runStart: boolean;
   /** Last of its group: LINE shows the time and read mark only here. */
   runEnd: boolean;
@@ -560,7 +599,7 @@ export const MessageRow = memo(function MessageRow({
       {runEnd ? (
         <div className={`flex flex-col gap-px ${m.mine ? "items-end" : "items-start"}`}>
           <ReadMark direct={!ctx.group} readers={readers} onOpen={ctx.loadMembers} />
-          <span className="text-[11px] text-secondary">{clock(m.createdTime)}</span>
+          <span className="text-[11px] text-secondary">{clock((photos?.[photos.length - 1] ?? m).createdTime)}</span>
         </div>
       ) : (
         // Mid-group: no time, but keep room for the hover reaction button.
@@ -578,7 +617,11 @@ export const MessageRow = memo(function MessageRow({
   const bubble = (
     <div className="relative">
       <Ctx menu={rowMenu(m, dev, ctx)}>
-        <Content m={m} ctx={ctx} tail={tail} highlight={highlight} current={current} />
+        {photos && photos.length > 1 ? (
+          <PhotoGrid photos={photos} ctx={ctx} />
+        ) : (
+          <Content m={m} ctx={ctx} tail={tail} highlight={highlight} current={current} />
+        )}
       </Ctx>
       {translation && (
         <div className={`selectable mt-1 max-w-[420px] rounded-xl bg-field px-3 py-1.5 text-[12.5px] ${m.mine ? "ml-auto" : ""}`}>
