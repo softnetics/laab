@@ -105,12 +105,12 @@ describe("notices", () => {
       ],
       name,
     );
-    expect(rows.map((r) => [r.message.id, r.runStart, r.runEnd])).toEqual([
-      ["a", true, false],
-      ["b", false, true],
-      ["c", true, true],
-      ["d", true, true],
-      ["e", true, true],
+    expect(rows.map((r) => [r.message.id, r.runStart])).toEqual([
+      ["a", true],
+      ["b", false],
+      ["c", true],
+      ["d", true],
+      ["e", true],
     ]);
   });
   it("hides silent unsends and starts runs after notices", () => {

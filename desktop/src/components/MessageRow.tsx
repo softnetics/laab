@@ -529,7 +529,6 @@ export const MessageRow = memo(function MessageRow({
   m,
   ctx,
   runStart,
-  runEnd,
   readers,
   highlight,
   current,
@@ -537,8 +536,6 @@ export const MessageRow = memo(function MessageRow({
   m: Message;
   ctx: RowContext;
   runStart: boolean;
-  /** Last of its group: LINE shows the time and read mark only here. */
-  runEnd: boolean;
   readers: Reader[];
   highlight?: [number, number][];
   current?: boolean;
@@ -555,22 +552,15 @@ export const MessageRow = memo(function MessageRow({
   // Hovering shows the reaction button beside the read mark and time, not
   // in their place: replacing them made "อ่านแล้ว N" impossible to click.
   const showReact = (hover || picking) && ctx.signedIn;
+  // LINE puts the time (and read mark) beside every message, even several
+  // in the same minute; only the avatar and name are shared by a run.
   const meta = (
     <div className={`relative flex shrink-0 flex-col justify-end gap-px self-end pb-0.5 ${m.mine ? "items-end" : "items-start"}`}>
-      {runEnd ? (
-        <div className={`flex flex-col gap-px ${m.mine ? "items-end" : "items-start"}`}>
-          <ReadMark direct={!ctx.group} readers={readers} onOpen={ctx.loadMembers} />
-          <span className="text-[11px] text-secondary">{clock(m.createdTime)}</span>
-        </div>
-      ) : (
-        // Mid-group: no time, but keep room for the hover reaction button.
-        <div className="h-7 w-7" />
-      )}
-      <div
-        className={`absolute bottom-0 ${
-          runEnd ? (m.mine ? "right-full mr-1.5" : "left-full ml-1.5") : m.mine ? "right-0" : "left-0"
-        } ${showReact ? "" : "invisible"}`}
-      >
+      <div className={`flex flex-col gap-px ${m.mine ? "items-end" : "items-start"}`}>
+        <ReadMark direct={!ctx.group} readers={readers} onOpen={ctx.loadMembers} />
+        <span className="text-[11px] text-secondary">{clock(m.createdTime)}</span>
+      </div>
+      <div className={`absolute bottom-0 ${m.mine ? "right-full mr-1.5" : "left-full ml-1.5"} ${showReact ? "" : "invisible"}`}>
         <ReactButton mine={myReaction} onPick={react} onOpenChange={setPicking} />
       </div>
     </div>
