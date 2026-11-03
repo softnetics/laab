@@ -280,3 +280,9 @@ export const WarningIcon = (p: P) => (
     <path d="M12 2.5c.6 0 1.1.3 1.4.8l9.2 16a1.6 1.6 0 0 1-1.4 2.4H2.8a1.6 1.6 0 0 1-1.4-2.4l9.2-16c.3-.5.8-.8 1.4-.8ZM11 9h2v6h-2V9Zm1 7.5a1.25 1.25 0 1 0 0 2.5 1.25 1.25 0 0 0 0-2.5Z" />
   </svg>
 );
+export const CalendarIcon = (p: P) => (
+  <svg {...base(p)} fill="none" stroke="currentColor" strokeWidth={p.strokeWidth ?? 2} strokeLinecap="round" strokeLinejoin="round">
+    <rect x="4" y="5" width="16" height="15" rx="3" />
+    <path d="M8 3v4M16 3v4M4 10h16" />
+  </svg>
+);

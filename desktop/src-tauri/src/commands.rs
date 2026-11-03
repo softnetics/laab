@@ -789,6 +789,14 @@ pub fn is_demo(state: S<'_>) -> bool {
     state.demo
 }
 
+/// "อยากได้ฟีเจอร์นี้": counted only with statistics on, like every event.
+#[tauri::command]
+pub fn want_feature(state: S<'_>, feature: String) -> R<()> {
+    let f = crate::analytics::Feature::parse(&feature).ok_or_else(|| format!("unknown feature {feature}"))?;
+    crate::analytics::send(&state, crate::analytics::Event::FeatureWanted(f));
+    Ok(())
+}
+
 #[tauri::command]
 pub fn analytics_status(state: S<'_>) -> crate::analytics::Status {
     crate::analytics::status(&state)

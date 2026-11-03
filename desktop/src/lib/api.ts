@@ -86,6 +86,7 @@ export const api = {
   isDemo: () => invoke<boolean>("is_demo"),
   analyticsStatus: () => invoke<AnalyticsStatus>("analytics_status"),
   setAnalytics: (on: boolean) => invoke<void>("set_analytics", { on }),
+  wantFeature: (feature: "calendar") => invoke<void>("want_feature", { feature }),
   reportPreview: (req: { messageId: string | null; content: boolean; log: boolean }) => invoke<string>("report_preview", { req }),
   sendReport: (report: string) => invoke<void>("send_report", { report }),
   reportJsError: (name: string, stack: string) => invoke<void>("report_js_error", { name, stack }),

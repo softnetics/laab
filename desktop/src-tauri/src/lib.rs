@@ -265,6 +265,7 @@ pub fn run() {
             commands::open_chat_window,
             commands::is_demo,
             commands::analytics_status,
+            commands::want_feature,
             commands::set_analytics,
             commands::report_preview,
             commands::send_report,
