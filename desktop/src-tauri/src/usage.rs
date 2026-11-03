@@ -31,10 +31,11 @@ pub enum Action {
     CreatedFolder,
     Refreshed,
     OpenedDeepLink,
+    UsedMcp,
 }
 
 impl Action {
-    pub const ALL: [Action; 11] = [
+    pub const ALL: [Action; 12] = [
         Action::OpenedChat,
         Action::SentText,
         Action::SentSticker,
@@ -46,6 +47,7 @@ impl Action {
         Action::CreatedFolder,
         Action::Refreshed,
         Action::OpenedDeepLink,
+        Action::UsedMcp,
     ];
 
     pub fn name(self) -> &'static str {
@@ -61,6 +63,7 @@ impl Action {
             Action::CreatedFolder => "created_folder",
             Action::Refreshed => "refreshed",
             Action::OpenedDeepLink => "opened_deep_link",
+            Action::UsedMcp => "used_mcp",
         }
     }
 

@@ -29,6 +29,18 @@ LAAB asks once, after you sign in, whether to send anonymous usage statistics an
 
 Release builds send only if `LAAB_POSTHOG_KEY` (and optionally `LAAB_POSTHOG_HOST`) was set at build time; otherwise the menu items don't show. Debug builds log events instead of sending them, also in demo mode, so the whole flow can be tried with `LAAB_DEMO=1`.
 
+## MCP (letting AI apps use LAAB)
+
+**MCP (ให้ AI ใช้ LAAB)…** in the ⋯ menu lets AI apps such as Claude Code, Claude Desktop and Cursor use LAAB through the [Model Context Protocol](https://modelcontextprotocol.io). It is off until you turn it on.
+
+- **Connecting**: the AI app runs `LAAB.app/Contents/MacOS/laab mcp`, which pipes stdio to the running app over `mcp.sock` in the data folder (mode 0600, there only while MCP is on). If LAAB isn't running, the bridge opens it in the background. The **เชื่อมต่อ** (Connect) tab shows the exact `claude mcp add` command and the JSON config. Code: `src-tauri/src/mcp.rs` (server, settings, approval), `mcp_tools.rs` (tools), `mcp_bridge.rs`.
+- **Tools** (51): read and page through messages (fetching older history from LINE as needed), search, list chats, folders, members, people, read status, announcements, notes, albums and shared media; view photos as images; save attachments; translate; write a draft into the message box; send text with mentions, stickers and files; react; mark read; bot postbacks; post notes and comments; edit and unsend; mute, pin, hide, folders, announcements, albums, Keep; delete history, leave groups, block, add friends, join by link. Not exposed: signing in or out, LIFF, the cache, statistics.
+- **Permissions**: four groups: อ่าน (read, which includes writing drafts), ส่ง (send), จัดการ (manage), and ย้อนกลับยาก (delete history, leave, block, add friend, join). Each can be ปิด (off), ถามก่อน (ask) or อนุญาต (allowed). The defaults are read allowed, send and manage ask, the rest off. Rules for one chat, a folder, or a kind of chat (friends, groups, official accounts) override the defaults: the chat's rule wins over its folders' (the strictest folder wins), which win over the kind's. A chat with read off doesn't appear in any list or search.
+- **Ask** shows a native dialog on the main window for each call, with the chat and the text to be sent. Return picks **ไม่อนุญาต** (deny); **อนุญาตแชทนี้เสมอ** adds a chat rule allowing that group from then on.
+- The **กิจกรรม** (Activity) tab lists the last 200 calls with what they did and whether they were allowed. The list stays in memory only. Usage statistics count MCP calls as `n_used_mcp`, with nothing about what they did.
+
+To try it without LINE, run the demo (`LAAB_DEMO=1 pnpm tauri dev`), turn MCP on, and register `target/debug/laab mcp --demo` with your AI app.
+
 ## Developing
 
 You need Rust and pnpm.

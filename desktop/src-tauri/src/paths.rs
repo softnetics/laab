@@ -12,8 +12,9 @@ pub struct Paths {
 }
 
 impl Paths {
-    pub fn resolve(demo: bool) -> Result<Self> {
-        let root = if demo {
+    /// The data folder, without creating or clearing it.
+    pub fn root_for(demo: bool) -> Result<PathBuf> {
+        Ok(if demo {
             std::env::temp_dir().join("laab-demo")
         } else if let Some(dir) = std::env::var_os("LAAB_DATA_DIR") {
             PathBuf::from(dir)
@@ -21,7 +22,11 @@ impl Paths {
             dirs::data_dir()
                 .context("no Application Support folder")?
                 .join("Laab")
-        };
+        })
+    }
+
+    pub fn resolve(demo: bool) -> Result<Self> {
+        let root = Self::root_for(demo)?;
         if demo {
             let _ = fs::remove_dir_all(&root);
         }
@@ -62,6 +67,15 @@ impl Paths {
     pub fn stickers(&self) -> PathBuf {
         self.root.join("cache/stickers")
     }
+
+    /// The socket MCP clients reach the app through (see `mcp.rs`).
+    pub fn mcp_socket(&self) -> PathBuf {
+        mcp_socket(&self.root)
+    }
+}
+
+pub fn mcp_socket(root: &Path) -> PathBuf {
+    root.join("mcp.sock")
 }
 
 pub fn private_dir(path: &Path) -> Result<()> {
