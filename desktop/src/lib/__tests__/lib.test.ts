@@ -89,6 +89,10 @@ describe("notices", () => {
     const ev = readChatEvent(msg({ contentType: "CHATEVENT", metadata: { LOC_KEY: "C_MI", LOC_ARGS: "me\u001eu2" } }))!;
     expect(chatEventText(ev, name)).toBe("Nara เพิ่ม O เข้ากลุ่ม");
     expect(chatEventText({ key: "C_MA", args: ["me"] }, name)).toBe("Nara เพิ่มประกาศ");
+    expect(chatEventText({ key: "A_MI", args: ["me", "u2"] }, name)).toBe("Nara เพิ่ม O เข้ากลุ่ม");
+    expect(chatEventText({ key: "A_MC", args: ["me", "u2"] }, name)).toBe("Nara สร้างกลุ่มนี้");
+    expect(chatEventText({ key: "C_ML", args: ["u2"] }, name)).toBe("O ออกจากกลุ่ม");
+    expect(chatEventText({ key: "X_YZ", args: ["u2"] }, name)).toBe("มีการเปลี่ยนแปลงในกลุ่ม");
     expect(noticeFor(msg({ unsent: 1, senderId: "u2" }), name)?.text).toBe("O ยกเลิกข้อความ");
     expect(noticeFor(msg({ unsent: 1, mine: true }), name)?.text).toBe("ยกเลิกข้อความแล้ว");
     expect(isBlank(msg({ text: "  " }))).toBe(true);

@@ -72,13 +72,29 @@ export function readChatEvent(m: Message): ChatEventInfo | null {
   };
 }
 
-/** "<actor> เพิ่ม <a, b> เข้ากลุ่ม"; other keys get a generic line. */
+/** LINE's group event keys (`LOC_KEY`) as a line of text. `LOC_ARGS` holds
+ *  the mids, the actor first. Keys seen in real chats:
+ *  - `C_MI`, `A_MI`: <actor> added <a, b>
+ *  - `A_MC`: <actor> created the group (LINE lists every first member, but
+ *    the event names only one, so LAAB doesn't list them)
+ *  - `C_ML`: <actor> left
+ *  - `C_MA`: <actor> pinned an announcement
+ *  Anything else gets a generic line. */
 export function chatEventText(e: ChatEventInfo, name: (mid: string) => string): string {
-  if (e.key === "C_MI" && e.args.length >= 2) {
-    const [actor, ...added] = e.args;
-    return `${name(actor)} เพิ่ม ${added.map(name).join(", ")} เข้ากลุ่ม`;
+  const [actor, ...rest] = e.args;
+  if (!actor) return "มีการเปลี่ยนแปลงในกลุ่ม";
+  switch (e.key) {
+    case "C_MI":
+    case "A_MI":
+      if (rest.length) return `${name(actor)} เพิ่ม ${rest.map(name).join(", ")} เข้ากลุ่ม`;
+      break;
+    case "A_MC":
+      return `${name(actor)} สร้างกลุ่มนี้`;
+    case "C_ML":
+      return `${name(actor)} ออกจากกลุ่ม`;
+    case "C_MA":
+      return `${name(actor)} เพิ่มประกาศ`;
   }
-  if (e.key === "C_MA" && e.args.length >= 1) return `${name(e.args[0])} เพิ่มประกาศ`;
   return "มีการเปลี่ยนแปลงในกลุ่ม";
 }
 
