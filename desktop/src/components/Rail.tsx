@@ -115,6 +115,9 @@ export function Rail() {
                   ส่งสถิติการใช้งาน
                 </Menu.CheckboxItem>
               )}
+              <Menu.Item className={itemClass} onClick={() => setUi({ sheet: { kind: "mcp" } })}>
+                MCP (ให้ AI ใช้ LAAB)…
+              </Menu.Item>
               <Menu.Item className={itemClass} onClick={clearCache}>
                 ล้าง cache
                 {cacheBytes != null && <span className="ml-auto text-secondary">{megabytes(cacheBytes)}</span>}

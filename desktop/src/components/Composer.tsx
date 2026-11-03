@@ -1,3 +1,4 @@
+import { listen } from "@tauri-apps/api/event";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState } from "react";
 import { api, errorText } from "../lib/api";
@@ -76,7 +77,8 @@ export const Composer = forwardRef<
   };
   useEffect(() => (mode ? pushDismiss(endMode) : undefined));
 
-  // Per-chat drafts survive switching chats and relaunching.
+  // Per-chat drafts survive switching chats and relaunching. An AI app can
+  // write one through MCP (`draft-changed`), shown even while the chat is open.
   useEffect(() => {
     let live = true;
     setText("");
@@ -86,8 +88,17 @@ export const Composer = forwardRef<
       setText(d.text);
       setMentions(d.mentions);
     });
+    const off = listen<{ chatId: string }>("draft-changed", (e) => {
+      if (e.payload.chatId !== chatId) return;
+      api.draft(chatId).then((d) => {
+        if (!live || !d) return;
+        setText(d.text);
+        setMentions(d.mentions);
+      });
+    });
     return () => {
       live = false;
+      off.then((f) => f());
     };
   }, [chatId]);
   const saveTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);

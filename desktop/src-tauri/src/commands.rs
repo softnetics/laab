@@ -1380,6 +1380,31 @@ pub async fn add_comment(state: S<'_>, chat_id: String, post_id: String, text: S
         .map_err(|e| format!("แสดงความคิดเห็นไม่สำเร็จ: {e}"))
 }
 
+#[tauri::command]
+pub fn mcp_settings() -> crate::mcp::Settings {
+    crate::mcp::settings()
+}
+
+#[tauri::command]
+pub fn set_mcp_settings(state: S<'_>, settings: crate::mcp::Settings) -> R<()> {
+    crate::mcp::set_settings(&state, settings).map_err(err)
+}
+
+#[tauri::command]
+pub fn mcp_activity() -> Vec<crate::mcp::Activity> {
+    crate::mcp::activity()
+}
+
+#[tauri::command]
+pub fn clear_mcp_activity(state: S<'_>) {
+    crate::mcp::clear_activity(&state);
+}
+
+#[tauri::command]
+pub fn mcp_setup(state: S<'_>) -> crate::mcp::Setup {
+    crate::mcp::setup(&state)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

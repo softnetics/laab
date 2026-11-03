@@ -7,6 +7,9 @@ import type { ViewerPayload } from "./viewer";
 import type {
   Album,
   AnalyticsStatus,
+  McpActivity,
+  McpSettings,
+  McpSetup,
   AlbumPhoto,
   ChatList,
   ChatMember,
@@ -136,6 +139,11 @@ export const api = {
   revealPath: (path: string) => invoke<void>("reveal_path", { path }),
   cacheSize: () => invoke<number>("cache_size"),
   clearCache: () => invoke<void>("clear_cache"),
+  mcpSettings: () => invoke<McpSettings>("mcp_settings"),
+  setMcpSettings: (settings: McpSettings) => invoke<void>("set_mcp_settings", { settings }),
+  mcpActivity: () => invoke<McpActivity[]>("mcp_activity"),
+  clearMcpActivity: () => invoke<void>("clear_mcp_activity"),
+  mcpSetup: () => invoke<McpSetup>("mcp_setup"),
 };
 
 /** How many stored messages a chat shows; scrolling up raises it. */
@@ -155,6 +163,8 @@ export const q = {
   stickers: queryOptions({ queryKey: ["stickers"], queryFn: api.stickers, staleTime: 10 * 60_000 }),
   isDemo: queryOptions({ queryKey: ["demo"], queryFn: api.isDemo }),
   analytics: queryOptions({ queryKey: ["analytics"], queryFn: api.analyticsStatus }),
+  mcp: queryOptions({ queryKey: ["mcp"], queryFn: api.mcpSettings }),
+  mcpActivity: queryOptions({ queryKey: ["mcp-activity"], queryFn: api.mcpActivity }),
 };
 
 export const useSession = () => useQuery(q.session).data;
@@ -185,6 +195,14 @@ export function useBackendEvents() {
         queryClient.invalidateQueries({ queryKey: ["people"] });
       }),
       listen<{ chatId: string }>("messages-changed", (e) => queryClient.invalidateQueries({ queryKey: ["messages", e.payload.chatId] })),
+      listen("mcp-changed", () => {
+        queryClient.invalidateQueries({ queryKey: ["mcp"] });
+        queryClient.invalidateQueries({ queryKey: ["mcp-setup"] });
+      }),
+      listen("mcp-activity", () => {
+        queryClient.invalidateQueries({ queryKey: ["mcp-activity"] });
+        queryClient.invalidateQueries({ queryKey: ["mcp-setup"] });
+      }),
       listen<{ chatId: string }>("reads-changed", (e) => queryClient.invalidateQueries({ queryKey: ["reads", e.payload.chatId] })),
       listen<{ chatId: string }>("members-changed", (e) => {
         queryClient.invalidateQueries({ queryKey: ["members", e.payload.chatId] });
