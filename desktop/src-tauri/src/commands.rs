@@ -27,6 +27,12 @@ fn err(e: impl std::fmt::Display) -> String {
 fn send_failed(state: &AppState, action: crate::usage::Action, e: impl std::fmt::Display) -> String {
     let text = e.to_string();
     crate::analytics::failed(state, crate::analytics::Failure::Send(action), &text);
+    // line-rs opens each encrypted message as its recipients would before
+    // sending it, and refuses one they couldn't read.
+    if text.contains("E2EE self-check failed") {
+        tracing::warn!("send refused: {text}");
+        return "ไม่ได้ส่ง: ข้อความที่เข้ารหัสจะเปิดไม่ได้ในเครื่องของผู้รับ ลองออกจากระบบแล้วเข้าสู่ระบบใหม่".into();
+    }
     text
 }
 
