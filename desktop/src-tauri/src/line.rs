@@ -513,7 +513,11 @@ async fn handle_event(state: &Arc<AppState>, line: &Arc<Line>, ev: LineEvent) {
         LineEvent::Message(m) | LineEvent::MessageEdit(m) => {
             let ct = m.content_type();
             line.remember_media(&m.raw, &ct);
-            let json = m.raw.to_json();
+            // line-rs decrypts text but not an E2EE file's payload, which
+            // holds its name; without this a file that arrives live, or that
+            // we just sent, has no name until LAAB restarts.
+            let raw = with_e2ee_file_name(line, m.raw.clone()).await;
+            let json = raw.to_json();
             let Some(mut msg) = convert::message_from_json(&json, &line.me, true) else {
                 return;
             };

@@ -27,6 +27,12 @@ fn err(e: impl std::fmt::Display) -> String {
 fn send_failed(state: &AppState, action: crate::usage::Action, e: impl std::fmt::Display) -> String {
     let text = e.to_string();
     crate::analytics::failed(state, crate::analytics::Failure::Send(action), &text);
+    // line-rs opens each encrypted message as its recipients would before
+    // sending it, and refuses one they couldn't read.
+    if text.contains("E2EE self-check failed") {
+        tracing::warn!("send refused: {text}");
+        return "ผู้รับจะเปิดข้อความที่เข้ารหัสนี้ไม่ได้ จึงยังไม่ได้ส่ง ลองออกจากระบบแล้วเข้าสู่ระบบใหม่".into();
+    }
     text
 }
 
@@ -1378,6 +1384,31 @@ pub async fn add_comment(state: S<'_>, chat_id: String, post_id: String, text: S
     crate::actions::add_comment(&s, &chat_id, &post_id, &text)
         .await
         .map_err(|e| format!("แสดงความคิดเห็นไม่สำเร็จ: {e}"))
+}
+
+#[tauri::command]
+pub fn mcp_settings() -> crate::mcp::Settings {
+    crate::mcp::settings()
+}
+
+#[tauri::command]
+pub fn set_mcp_settings(state: S<'_>, settings: crate::mcp::Settings) -> R<()> {
+    crate::mcp::set_settings(&state, settings).map_err(err)
+}
+
+#[tauri::command]
+pub fn mcp_activity() -> Vec<crate::mcp::Activity> {
+    crate::mcp::activity()
+}
+
+#[tauri::command]
+pub fn clear_mcp_activity(state: S<'_>) {
+    crate::mcp::clear_activity(&state);
+}
+
+#[tauri::command]
+pub fn mcp_setup(state: S<'_>) -> crate::mcp::Setup {
+    crate::mcp::setup(&state)
 }
 
 #[cfg(test)]

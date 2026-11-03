@@ -79,6 +79,39 @@ export type SearchKind = "chat" | "message" | "file";
 /** Usage statistics: `unavailable` in demo mode and in builds without a PostHog key. */
 export type AnalyticsStatus = "unavailable" | "unasked" | "on" | "off";
 
+export type McpAccess = "off" | "ask" | "on";
+export type McpGroup = "read" | "send" | "manage" | "account";
+export type McpLevels = Record<McpGroup, McpAccess>;
+/** A rule's levels; null (or missing) follows the next rule down. */
+export type McpOverrides = Partial<Record<McpGroup, McpAccess | null>>;
+export type McpRuleKind = "chat" | "folder" | "type";
+export interface McpRule {
+  kind: McpRuleKind;
+  /** Chat id, folder id, or `dm` / `group` / `bot`. */
+  id: string;
+  levels: McpOverrides;
+}
+export interface McpSettings {
+  enabled: boolean;
+  defaults: McpLevels;
+  rules: McpRule[];
+}
+export interface McpActivity {
+  time: number;
+  client: string;
+  tool: string;
+  summary: string;
+  outcome: "ok" | "denied" | "error";
+}
+export interface McpSetup {
+  listening: boolean;
+  clients: number;
+  socket: string;
+  command: string;
+  args: string[];
+  env: [string, string][];
+}
+
 export interface SearchHit {
   kind: SearchKind;
   chatId: string;

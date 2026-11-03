@@ -280,3 +280,8 @@ export const WarningIcon = (p: P) => (
     <path d="M12 2.5c.6 0 1.1.3 1.4.8l9.2 16a1.6 1.6 0 0 1-1.4 2.4H2.8a1.6 1.6 0 0 1-1.4-2.4l9.2-16c.3-.5.8-.8 1.4-.8ZM11 9h2v6h-2V9Zm1 7.5a1.25 1.25 0 1 0 0 2.5 1.25 1.25 0 0 0 0-2.5Z" />
   </svg>
 );
+export const PlugIcon = (p: P) => (
+  <svg {...base(p)} fill="none" stroke="currentColor" strokeWidth={p.strokeWidth ?? 2} strokeLinecap="round" strokeLinejoin="round">
+    <path d="M9 3v4M15 3v4M6.5 7h11v3.5a5.5 5.5 0 0 1-11 0V7ZM12 16v5" />
+  </svg>
+);

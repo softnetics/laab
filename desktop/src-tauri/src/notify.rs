@@ -9,6 +9,7 @@ use crate::state::{AppState, Focus};
 
 /// A banner is posted when the message is not ours, arrived after launch (30 s
 /// grace), was not already shown, is not in the chat the user is looking at,
+/// is not a group event (someone joined or left) or one LINE marks as silent,
 /// and the chat is not muted unless it mentions us.
 pub fn should_notify(
     msg: &Message,
@@ -18,6 +19,12 @@ pub fn should_notify(
     already: bool,
 ) -> bool {
     if msg.mine || already || msg.unsent > 0 {
+        return false;
+    }
+    // LINE's apps don't post banners for these either.
+    if msg.content_type == "CHATEVENT"
+        || msg.metadata.get("NOTIFICATION_DISABLED").map(String::as_str) == Some("true")
+    {
         return false;
     }
     if msg.created_time > 0.0 && msg.created_time < launched_ms - 30_000.0 {
@@ -157,6 +164,26 @@ mod tests {
             text: "hi".into(),
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn group_events_and_silent_messages_stay_quiet() {
+        let chat = Chat {
+            id: "c1".into(),
+            ..Default::default()
+        };
+        let away = Focus {
+            chat: Some("c2".into()),
+            active: true,
+        };
+        let left = Message {
+            content_type: "CHATEVENT".into(),
+            ..msg()
+        };
+        assert!(!should_notify(&left, &chat, 10_000_000.0, &away, false));
+        let mut silent = msg();
+        silent.metadata.insert("NOTIFICATION_DISABLED".into(), "true".into());
+        assert!(!should_notify(&silent, &chat, 10_000_000.0, &away, false));
     }
 
     #[test]

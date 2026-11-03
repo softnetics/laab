@@ -4,6 +4,7 @@ import { openChat } from "../lib/nav";
 import { notice, setUi, useUi } from "../lib/ui";
 import { Avatar } from "./Avatar";
 import { Spinner } from "./kit";
+import { McpSheet } from "./McpSheet";
 import { buttonClass, Sheet } from "./Sheet";
 
 const inputClass = "selectable h-9 rounded-md bg-field px-3 text-[14px] outline-none placeholder:text-secondary";
@@ -187,7 +188,7 @@ function Report({ messageId, onDone }: { messageId: string | null; onDone: () =>
   );
 }
 
-/** The sheet for adding friends or reporting a problem, whichever is open. */
+/** The sheet for adding friends, reporting a problem or MCP, whichever is open. */
 export function Sheets() {
   const sheet = useUi((s) => s.sheet);
   const close = () => setUi({ sheet: null });
@@ -198,6 +199,9 @@ export function Sheets() {
       </Sheet>
       <Sheet open={sheet?.kind === "report"} onClose={close} className="h-[min(600px,calc(100vh-48px))] w-[520px]" title="รายงานปัญหา">
         {sheet?.kind === "report" && <Report messageId={sheet.messageId} onDone={close} />}
+      </Sheet>
+      <Sheet open={sheet?.kind === "mcp"} onClose={close} className="h-[min(680px,calc(100vh-48px))] w-[min(760px,calc(100vw-48px))]">
+        {sheet?.kind === "mcp" && <McpSheet onDone={close} />}
       </Sheet>
     </>
   );
