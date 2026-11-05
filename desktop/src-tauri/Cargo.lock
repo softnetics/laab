@@ -2621,7 +2621,7 @@ dependencies = [
 [[package]]
 name = "line-rs"
 version = "0.1.0"
-source = "git+https://github.com/softnetics/line-rs?rev=9a4c89ea6b9804ff9ddda33dffd7bf05052a944f#9a4c89ea6b9804ff9ddda33dffd7bf05052a944f"
+source = "git+https://github.com/softnetics/line-rs?rev=f5a314edc4f14372767154ec7046169230f73a5b#f5a314edc4f14372767154ec7046169230f73a5b"
 dependencies = [
  "aes",
  "aes-gcm",

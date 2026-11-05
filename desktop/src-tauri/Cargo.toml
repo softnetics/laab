@@ -17,7 +17,7 @@ tauri = { version = "2", features = [] }
 tauri-plugin-opener = "2"
 tauri-plugin-dialog = "2"
 tauri-plugin-clipboard-manager = "2"
-line-rs = { git = "https://github.com/softnetics/line-rs", rev = "9a4c89ea6b9804ff9ddda33dffd7bf05052a944f" }
+line-rs = { git = "https://github.com/softnetics/line-rs", rev = "f5a314edc4f14372767154ec7046169230f73a5b" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["full"] }
