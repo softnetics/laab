@@ -49,6 +49,24 @@ pub fn cursor(reported: Option<&str>, fallback: Option<&str>) -> Option<String> 
     }
 }
 
+/// What is still unread after we read a chat through `cursor`, on this or
+/// another device: the messages from others newer than it, never more than
+/// `current`. A cursor we can't place means the whole chat was read.
+pub fn unread_after<'a>(
+    current: i64,
+    cursor: &str,
+    from_others: impl IntoIterator<Item = &'a str>,
+) -> i64 {
+    if !is_numeric_id(cursor) {
+        return 0;
+    }
+    let newer = from_others
+        .into_iter()
+        .filter(|id| compare_ids(id, cursor) == Some(Ordering::Greater))
+        .count() as i64;
+    newer.min(current.max(0))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -63,5 +81,14 @@ mod tests {
         assert_eq!(later(Some("200"), "100"), "200");
         assert_eq!(later(Some("abc"), "100"), "100");
         assert_eq!(cursor(Some("x"), Some("55")).as_deref(), Some("55"));
+    }
+
+    #[test]
+    fn reading_elsewhere_lowers_unread() {
+        let ids = ["100", "101", "102"];
+        assert_eq!(unread_after(3, "102", ids), 0);
+        assert_eq!(unread_after(3, "100", ids), 2);
+        assert_eq!(unread_after(1, "100", ids), 1);
+        assert_eq!(unread_after(5, "", ids), 0);
     }
 }

@@ -535,6 +535,10 @@ async fn handle_event(state: &Arc<AppState>, line: &Arc<Line>, ev: LineEvent) {
                 }
                 apply_read(state, &chat_mid, &reader_mid, &message_id);
             }
+            TalkEvent::ChatChecked {
+                chat_mid,
+                message_id,
+            } => apply_checked(state, &chat_mid, &message_id),
             TalkEvent::Reaction(r) => {
                 let user = if r.reactor_mid.is_empty() {
                     line.me.clone()
@@ -615,6 +619,26 @@ pub fn apply_read(state: &AppState, chat: &str, reader: &str, message_id: &str) 
         let _ = store.set_read(chat, reader, &next);
         drop(store);
         state.reads_changed(chat);
+    }
+}
+
+/// We read a chat, maybe on the phone: lower its unread count to what came
+/// after the message we read through.
+pub fn apply_checked(state: &AppState, chat: &str, message_id: &str) {
+    let store = state.store();
+    let Ok(Some(row)) = store.chat(chat) else {
+        return;
+    };
+    if row.unread <= 0 {
+        return;
+    }
+    let recent = store.messages(chat, 500).unwrap_or_default();
+    let others = recent.iter().filter(|m| !m.mine).map(|m| m.id.as_str());
+    let unread = reads::unread_after(row.unread, message_id, others);
+    if unread != row.unread {
+        let _ = store.set_unread(chat, unread);
+        drop(store);
+        state.chats_changed();
     }
 }
 
