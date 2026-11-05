@@ -2,8 +2,11 @@
 # with a changelog of the commits since the previous release.
 #
 # Start it with ./scripts/release.sh <version>, or from the Actions tab.
-# A dry run uploads the package as a workflow artifact and publishes nothing;
-# it can run on any branch.
+# It sets the version in the source (scripts/bump-version.sh) and commits it
+# as "chore(release): <version>" before testing and building; the commit is
+# pushed to main and tagged only when the release is published, so a failed
+# run leaves neither. A dry run uploads the package as a workflow artifact and
+# publishes nothing; it can run on any branch.
 #
 # Secrets:
 #   DEVELOPER_ID_P12              base64 of the exported "Developer ID Application" certificate and key
@@ -67,6 +70,16 @@ jobs:
               { echo "::error::tag v$version already exists"; exit 1; }
           fi
           echo "VERSION=$version" >> "$GITHUB_ENV"
+
+      - name: Set the version
+        run: |
+          ./scripts/bump-version.sh "$VERSION"
+          if [[ -n "$(git status --porcelain)" ]]; then
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git commit -qam "chore(release): $VERSION"
+          fi
+          echo "RELEASE_SHA=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
 
       - uses: pnpm/action-setup@v4
         with:
@@ -160,9 +173,12 @@ jobs:
           flags=()
           [[ "$DRAFT" == true ]] && flags+=(--draft)
           [[ "$VERSION" == *-* ]] && flags+=(--prerelease)
+          # The version commit goes to main only now. If main moved during the
+          # run the push is rejected and nothing is published.
+          [[ "$RELEASE_SHA" == "$GITHUB_SHA" ]] || git push origin "$RELEASE_SHA:refs/heads/main"
           # Creating the tag with the release means a failed run leaves no tag behind.
           gh release create "v$VERSION" dist/LAAB-"$VERSION"-macos-* dist/latest.json \
-            --target "$GITHUB_SHA" \
+            --target "$RELEASE_SHA" \
             --title "LAAB $VERSION" \
             --notes-file "$RUNNER_TEMP/notes.md" \
             ${flags[@]+"${flags[@]}"}

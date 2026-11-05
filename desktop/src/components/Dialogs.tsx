@@ -1,10 +1,8 @@
 import { useEffect, useRef, useState } from "react";
-import { useQuery } from "@tanstack/react-query";
-import { api, errorText, q } from "../lib/api";
+import { api, errorText } from "../lib/api";
 import { openChat } from "../lib/nav";
 import { notice, setUi, useUi } from "../lib/ui";
 import { Avatar } from "./Avatar";
-import { CalendarIcon } from "./Icons";
 import { Spinner } from "./kit";
 import { McpSheet } from "./McpSheet";
 import { buttonClass, Sheet } from "./Sheet";
@@ -190,51 +188,7 @@ function Report({ messageId, onDone }: { messageId: string | null; onDone: () =>
   );
 }
 
-/** A LINE feature LAAB doesn't have yet (LINE Calendar), with a button
- *  that counts how many people want it. */
-function ComingSoon({ onDone }: { onDone: () => void }) {
-  const { data: stats } = useQuery(q.analytics);
-  const [sent, setSent] = useState(false);
-  const want = () => {
-    api.wantFeature("calendar").catch(() => {});
-    setSent(true);
-  };
-  return (
-    <div className="flex flex-col items-center px-6 pt-7 pb-5 text-center">
-      <span className="grid size-14 place-items-center rounded-[14px] bg-line-green text-white">
-        <CalendarIcon size={30} />
-      </span>
-      <h2 className="mt-4 text-[16px] font-semibold">LINE Calendar ยังไม่มีใน LAAB</h2>
-      <p className="mt-1.5 text-[13px] leading-snug text-pretty text-secondary">
-        ตอนนี้ดูและแก้นัดหมายได้ในแอป LINE บนโทรศัพท์ ถ้าอยากให้ LAAB ทำได้ด้วย กดบอกเราได้เลย
-      </p>
-      {sent ? (
-        <p role="status" className="mt-5 text-[13px] leading-snug text-pretty">
-          {stats === "on" ? (
-            "ขอบคุณ เรานับเสียงของคุณแล้ว"
-          ) : (
-            <>
-              ขอบคุณ แต่ตอนนี้การส่งสถิติการใช้งานปิดอยู่ เสียงนี้จึงยังไม่ถึงเรา
-              <span className="block text-secondary">เปิดได้ที่ ⋯ › ส่งสถิติการใช้งาน แล้วกดอีกครั้ง</span>
-            </>
-          )}
-        </p>
-      ) : null}
-      <div className="mt-6 flex w-full gap-2">
-        <button className={`${buttonClass()} flex-1`} onClick={onDone}>
-          {sent ? "ปิด" : "ไว้ก่อน"}
-        </button>
-        {!(sent && stats === "on") && (
-          <button className={`${buttonClass(true)} flex-1`} onClick={want}>
-            อยากได้ฟีเจอร์นี้
-          </button>
-        )}
-      </div>
-    </div>
-  );
-}
-
-/** The sheet for adding friends, reporting a problem, MCP or a coming-soon feature, whichever is open. */
+/** The sheet for adding friends, reporting a problem or MCP, whichever is open. */
 export function Sheets() {
   const sheet = useUi((s) => s.sheet);
   const close = () => setUi({ sheet: null });
@@ -248,9 +202,6 @@ export function Sheets() {
       </Sheet>
       <Sheet open={sheet?.kind === "mcp"} onClose={close} className="h-[min(680px,calc(100vh-48px))] w-[min(760px,calc(100vw-48px))]">
         {sheet?.kind === "mcp" && <McpSheet onDone={close} />}
-      </Sheet>
-      <Sheet open={sheet?.kind === "coming-soon"} onClose={close} className="w-[400px]">
-        {sheet?.kind === "coming-soon" && <ComingSoon onDone={close} />}
       </Sheet>
     </>
   );

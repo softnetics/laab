@@ -156,6 +156,7 @@ pub async fn open_chat(state: S<'_>, chat_id: String) -> R<()> {
         let _ = line::fetch_history(&s, &chat_id).await;
         acknowledge(&s, &chat_id).await;
         let _ = line::read_status(&s, &chat_id).await;
+        crate::actions::prefetch_calendars(&s, Some(&chat_id)).await;
         if chat_id.starts_with('c') || chat_id.starts_with('r') {
             let _ = line::load_members(&s, &chat_id, false).await;
         }
@@ -1139,6 +1140,95 @@ pub async fn delete_note(state: S<'_>, chat_id: String, post_id: String) -> R<()
 }
 
 #[tauri::command]
+pub async fn calendar_events(
+    state: S<'_>,
+    chat_id: String,
+) -> R<Vec<crate::actions::CalendarEvent>> {
+    crate::usage::hit(crate::usage::Action::OpenedCalendar);
+    if state.demo {
+        return Ok(crate::demo::calendar_events(&chat_id));
+    }
+    let s = state.inner().clone();
+    crate::actions::mark_calendar_used(&s);
+    crate::actions::calendar_events(&s, &chat_id)
+        .await
+        .map_err(err)
+}
+
+/// The events a calendar window (a chat id, or `all`) last loaded, to show
+/// while it loads fresh ones.
+#[tauri::command]
+pub fn cached_calendar(state: S<'_>, chat_id: String) -> Option<crate::actions::AllCalendars> {
+    crate::actions::cached_calendar(state.inner(), &chat_id)
+}
+
+/// Every calendar's events, for the rail's ปฏิทิน window.
+#[tauri::command]
+pub async fn all_calendar_events(state: S<'_>) -> R<crate::actions::AllCalendars> {
+    crate::usage::hit(crate::usage::Action::OpenedCalendar);
+    if state.demo {
+        return Ok(crate::demo::all_calendar_events());
+    }
+    let s = state.inner().clone();
+    crate::actions::mark_calendar_used(&s);
+    crate::actions::all_calendar_events(&s).await.map_err(err)
+}
+
+#[tauri::command]
+pub async fn create_calendar_event(
+    state: S<'_>,
+    chat_id: String,
+    event: crate::actions::CalendarEventInput,
+    notify: bool,
+) -> R<()> {
+    if state.demo {
+        crate::demo::save_calendar_event(&chat_id, None, &event);
+        return Ok(());
+    }
+    let s = state.inner().clone();
+    crate::actions::create_calendar_event(&s, &chat_id, &event, notify)
+        .await
+        .map_err(err)
+}
+
+#[tauri::command]
+pub async fn update_calendar_event(
+    state: S<'_>,
+    chat_id: String,
+    event_id: String,
+    updated_at: i64,
+    event: crate::actions::CalendarEventInput,
+    notify: bool,
+) -> R<()> {
+    if state.demo {
+        crate::demo::save_calendar_event(&chat_id, Some(&event_id), &event);
+        return Ok(());
+    }
+    let s = state.inner().clone();
+    crate::actions::update_calendar_event(&s, &chat_id, &event_id, updated_at, &event, notify)
+        .await
+        .map_err(err)
+}
+
+#[tauri::command]
+pub async fn delete_calendar_event(
+    state: S<'_>,
+    chat_id: String,
+    event_id: String,
+    updated_at: i64,
+    notify: bool,
+) -> R<()> {
+    if state.demo {
+        crate::demo::delete_calendar_event(&chat_id, &event_id);
+        return Ok(());
+    }
+    let s = state.inner().clone();
+    crate::actions::delete_calendar_event(&s, &chat_id, &event_id, updated_at, notify)
+        .await
+        .map_err(err)
+}
+
+#[tauri::command]
 pub async fn list_albums(state: S<'_>, chat_id: String) -> R<Vec<crate::actions::Album>> {
     let s = live!(state);
     crate::actions::list_albums(&s, &chat_id).await.map_err(err)
@@ -1303,10 +1393,10 @@ pub fn open_aux_window(
         let _ = w.unminimize();
         return w.set_focus().map_err(err);
     }
-    let (w, h) = if kind == "media" {
-        (420.0, 640.0)
-    } else {
-        (327.0, 643.0)
+    let (w, h) = match kind.as_str() {
+        "media" => (420.0, 640.0),
+        "calendar" => (360.0, 643.0),
+        _ => (327.0, 643.0),
     };
     WebviewWindowBuilder::new(
         &app,

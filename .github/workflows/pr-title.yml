@@ -1,0 +1,26 @@
+# Pull requests are squash-merged, so the title becomes the commit subject and
+# a line in the release notes. Check it, and the branch name, follow the
+# convention in AGENTS.md.
+name: PR title
+
+on:
+  pull_request:
+    types: [opened, edited, reopened, synchronize]
+
+permissions:
+  contents: read
+
+jobs:
+  title:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Check the title
+        env:
+          # Through the environment, never inlined: the title is user input.
+          TITLE: ${{ github.event.pull_request.title }}
+        run: ./scripts/check-title.sh "$TITLE"
+      - name: Check the branch name
+        env:
+          BRANCH: ${{ github.head_ref }}
+        run: ./scripts/check-title.sh --branch "$BRANCH"

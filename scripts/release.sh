@@ -6,8 +6,9 @@
 #   ./scripts/release.sh 0.2.0 --zip      # publish a .zip instead of a .dmg
 #   ./scripts/release.sh 0.2.0 --dry-run  # test and package here; no workflow
 #
-# The workflow (.github/workflows/release.yml) tests, builds, signs and
-# notarizes on main, writes the changelog with release-notes.sh, then creates
+# The workflow (.github/workflows/release.yml) sets the version in the source
+# (bump-version.sh), tests, builds, signs and notarizes on main, writes the
+# changelog with release-notes.sh, then pushes the version commit and creates
 # the tag and the GitHub release together. A dry run tests and runs
 # package.sh locally and creates nothing outside dist/.
 set -euo pipefail

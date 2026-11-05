@@ -27,6 +27,9 @@ pub struct AppState {
     pub members_loaded: Mutex<HashMap<String, f64>>,
     /// What the photo/video viewer window shows: `{ items, index }`.
     pub viewer: Mutex<serde_json::Value>,
+    /// The last events loaded for each calendar window (a chat id, or `all`)
+    /// and when, so a window opens on them while it loads fresh ones.
+    pub calendars: Mutex<HashMap<String, (f64, crate::actions::AllCalendars)>>,
 }
 
 #[derive(Debug, Default, Clone)]
@@ -68,6 +71,7 @@ impl AppState {
             notified: Mutex::new(HashSet::new()),
             members_loaded: Mutex::new(HashMap::new()),
             viewer: Mutex::new(serde_json::Value::Null),
+            calendars: Mutex::new(HashMap::new()),
         })
     }
 

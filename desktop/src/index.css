@@ -35,6 +35,14 @@
   --animate-row-in: row-in 180ms cubic-bezier(0.32, 0.72, 0, 1) both;
   --animate-folder-in: folder-in 220ms cubic-bezier(0.32, 0.72, 0, 1) both;
   --animate-ghost-in: ghost-in 120ms ease-out both;
+  /* The calendar window switching between month, event and form. */
+  --animate-pane-in: pane-in 180ms cubic-bezier(0.32, 0.72, 0, 1) both;
+  @keyframes pane-in {
+    from {
+      opacity: 0;
+      translate: 0 4px;
+    }
+  }
   @keyframes row-in {
     from {
       /* `translate`, not `transform`: the list places rows with transform. */

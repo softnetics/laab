@@ -58,7 +58,7 @@ cd src-tauri && cargo test      # store, message conversion, LIFF, notification 
 
 `LAAB_DATA_DIR` still uses the same Keychain key as your real data, so expect a Keychain prompt when the build is signed differently from the one you normally run. Demo mode doesn't touch the Keychain.
 
-To build the `.app`, run `./scripts/build-desktop.sh` (set `VERSION=` if you want). It writes `dist/LAAB.app`, signed with the Developer ID certificate in your Keychain if there is one and ad hoc otherwise.
+To build the `.app`, run `./scripts/build-desktop.sh` (it takes the version from `package.json`; set `VERSION=` to override it). It writes `dist/LAAB.app`, signed with the Developer ID certificate in your Keychain if there is one and ad hoc otherwise.
 
 ## Features
 

@@ -5,6 +5,9 @@ import { useEffect } from "react";
 import { setUi } from "./ui";
 import type { ViewerPayload } from "./viewer";
 import type {
+  AllCalendars,
+  CalendarEvent,
+  CalendarEventInput,
   Album,
   AnalyticsStatus,
   McpActivity,
@@ -89,7 +92,6 @@ export const api = {
   isDemo: () => invoke<boolean>("is_demo"),
   analyticsStatus: () => invoke<AnalyticsStatus>("analytics_status"),
   setAnalytics: (on: boolean) => invoke<void>("set_analytics", { on }),
-  wantFeature: (feature: "calendar") => invoke<void>("want_feature", { feature }),
   reportPreview: (req: { messageId: string | null; content: boolean; log: boolean }) => invoke<string>("report_preview", { req }),
   sendReport: (report: string) => invoke<void>("send_report", { report }),
   reportJsError: (name: string, stack: string) => invoke<void>("report_js_error", { name, stack }),
@@ -115,6 +117,16 @@ export const api = {
   noteDetail: (chatId: string, postId: string) => invoke<NoteDetail>("note_detail", { chatId, postId }),
   addComment: (chatId: string, postId: string, text: string) => invoke<void>("add_comment", { chatId, postId, text }),
   deleteNote: (chatId: string, postId: string) => invoke<void>("delete_note", { chatId, postId }),
+  calendarEvents: (chatId: string) => invoke<CalendarEvent[]>("calendar_events", { chatId }),
+  allCalendarEvents: () => invoke<AllCalendars>("all_calendar_events"),
+  /** What a calendar window (a chat id, or ALL_CALENDARS) last loaded. */
+  cachedCalendar: (chatId: string) => invoke<AllCalendars | null>("cached_calendar", { chatId }),
+  createCalendarEvent: (chatId: string, event: CalendarEventInput, notify: boolean) =>
+    invoke<void>("create_calendar_event", { chatId, event, notify }),
+  updateCalendarEvent: (chatId: string, eventId: string, updatedAt: number, event: CalendarEventInput, notify: boolean) =>
+    invoke<void>("update_calendar_event", { chatId, eventId, updatedAt, event, notify }),
+  deleteCalendarEvent: (chatId: string, eventId: string, updatedAt: number, notify: boolean) =>
+    invoke<void>("delete_calendar_event", { chatId, eventId, updatedAt, notify }),
   listAlbums: (chatId: string) => invoke<Album[]>("list_albums", { chatId }),
   albumPhotos: (chatId: string, albumId: string, limit?: number) =>
     invoke<AlbumPhoto[]>("album_photos", { chatId, albumId, limit: limit ?? null }),
@@ -127,9 +139,9 @@ export const api = {
   saveText: (path: string, text: string) => invoke<void>("save_text", { path, text }),
   saveAttachment: (chatId: string, messageId: string, dest: string | null = null) =>
     invoke<string>("save_attachment", { chatId, messageId, dest }),
-  /** LINE-style separate windows: `albums` (tab albums/notes) or `media`
-   *  (tab media/links/files). */
-  openAuxWindow: (kind: "albums" | "media", chatId: string, title: string, tab?: string, post?: string) =>
+  /** LINE-style separate windows: `albums` (tab albums/notes), `media`
+   *  (tab media/links/files) or `calendar` (`post` is the day to open on). */
+  openAuxWindow: (kind: "albums" | "media" | "calendar", chatId: string, title: string, tab?: string, post?: string) =>
     invoke<void>("open_aux_window", { kind, chatId, title, tab: tab ?? null, post: post ?? null }),
   /** The one photo/video viewer window; see `lib/viewer.ts`. */
   openViewer: (payload: ViewerPayload) => invoke<void>("open_viewer", { payload }),

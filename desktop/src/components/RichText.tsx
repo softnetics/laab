@@ -1,5 +1,5 @@
 import { Fragment, type ReactNode } from "react";
-import { liffId, linkify } from "../lib/links";
+import { linkify } from "../lib/links";
 import type { MentionSpan } from "../lib/types";
 import { openUrl } from "../lib/open";
 
@@ -90,7 +90,7 @@ export function RichText({
                   style={{ color: linkColor }}
                   onClick={(e) => {
                     e.preventDefault();
-                    openUrl(url, liffId(url) ? chatId : null);
+                    openUrl(url, chatId);
                   }}
                 >
                   {body}

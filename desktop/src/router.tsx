@@ -9,6 +9,7 @@ import {
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useEffect } from "react";
 import { AlbumsNotesWindow, MediaWindow } from "./components/AuxWindows";
+import { CalendarWindow } from "./components/CalendarWindow";
 import { ChatWindow } from "./components/ChatWindow";
 import { LiffDevTools } from "./components/LiffDevTools";
 import { MainLayout } from "./components/MainLayout";
@@ -84,6 +85,17 @@ const media = createRoute({
   },
 });
 
+const calendar = createRoute({
+  getParentRoute: () => root,
+  path: "/calendar/$chatId",
+  validateSearch: tabSearch,
+  component: function CalendarRoute() {
+    const { chatId } = calendar.useParams();
+    const { post, at } = calendar.useSearch();
+    return <CalendarWindow chatId={chatId} day={post} at={at} />;
+  },
+});
+
 const viewer = createRoute({ getParentRoute: () => root, path: "/viewer", component: Viewer });
 
 const liffDevtools = createRoute({ getParentRoute: () => root, path: "/liff-devtools", component: LiffDevTools });
@@ -115,7 +127,7 @@ function RenderError({ error }: ErrorComponentProps) {
 }
 
 export const router = createRouter({
-  routeTree: root.addChildren([home, chat, detached, albums, media, viewer, liffDevtools]),
+  routeTree: root.addChildren([home, chat, detached, albums, media, calendar, viewer, liffDevtools]),
   defaultErrorComponent: RenderError,
   history: createHashHistory(),
   parseSearch,
