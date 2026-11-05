@@ -691,6 +691,10 @@ pub struct AllCalendars {
     pub events: Vec<CalendarEvent>,
 }
 
+/// LINE Calendar sends and takes event times in epoch seconds; the app uses
+/// milliseconds, as everywhere else.
+const MS_PER_S: i64 = 1000;
+
 /// Where a write for `chat_id` (see [`CalendarEvent::chat_id`]) goes.
 fn calendar_target(chat_id: &str) -> EventTarget<'_> {
     match chat_id.strip_prefix("cal:") {
@@ -703,8 +707,8 @@ fn calendar_event(e: line_rs::client::calendar::Event, chat_id: &str) -> Calenda
     CalendarEvent {
         id: e.id,
         title: e.title,
-        start: e.start_time,
-        end: e.end_time,
+        start: e.start_time * MS_PER_S,
+        end: e.end_time * MS_PER_S,
         all_day: e.is_all_day,
         timezone: e.timezone,
         location: e.location,
@@ -735,8 +739,8 @@ impl CalendarEventInput {
     fn to_line(&self) -> EventInput {
         EventInput {
             title: self.title.trim().to_string(),
-            start_time: self.start,
-            end_time: self.end,
+            start_time: self.start / MS_PER_S,
+            end_time: self.end / MS_PER_S,
             timezone: self.timezone.clone(),
             is_all_day: self.all_day,
             location: self.location.trim().to_string(),
@@ -1092,3 +1096,28 @@ mod tests {
         assert_eq!(cover_object_id(&serde_json::json!({"result": {}})), None);
     }
 }
+
+    #[test]
+    fn calendar_times_are_seconds_on_the_wire() {
+        // Tue 3 Nov 2026, 18:00 to 19:00 in Bangkok, as LINE sends it.
+        let wire = line_rs::client::calendar::Event {
+            start_time: 1_793_703_600,
+            end_time: 1_793_707_200,
+            ..Default::default()
+        };
+        let e = calendar_event(wire, "c1");
+        assert_eq!((e.start, e.end), (1_793_703_600_000, 1_793_707_200_000));
+
+        let input = CalendarEventInput {
+            title: "x".into(),
+            start: e.start,
+            end: e.end,
+            all_day: false,
+            timezone: "Asia/Bangkok".into(),
+            location: String::new(),
+            url: String::new(),
+            description: String::new(),
+        };
+        let out = input.to_line();
+        assert_eq!((out.start_time, out.end_time), (1_793_703_600, 1_793_707_200));
+    }
