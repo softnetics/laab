@@ -1,0 +1,18 @@
+# Commit scopes for changes users see (feat, fix, perf), and what the release
+# notes call them: scope=Name. Read by release-notes.sh and check-title.sh.
+# A scope names a feature users know, not a module in the code.
+calendar=Calendar
+chat=Chats
+group=Groups
+keep=Keep Memo
+album=Albums
+note=Notes
+media=Photos and videos
+file=Files
+liff=LIFF
+mcp=MCP
+notify=Notifications
+login=Sign-in
+update=Updates
+report=Report a problem
+stats=Usage statistics

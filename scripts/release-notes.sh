@@ -51,13 +51,50 @@ if [[ -z "$previous" ]]; then
   echo "The first release. The [README]($server/$repo#readme) describes what LAAB does."
   exit 0
 fi
-# A commit cherry-picked between branches appears twice; keep the newest copy.
+# Commits are "type(scope): subject" (see AGENTS.md). feat, fix and perf get
+# their own sections without the prefix; chore, ci, test, refactor, docs,
+# build and style are left out, since users don't see them. Anything else,
+# such as commits from before the convention, goes under Other changes. A
+# scope becomes a bold label in front, named as users know the feature, and
+# each section is sorted by label (unlabeled last) so a feature's changes sit
+# together. A commit cherry-picked between branches appears twice; keep the
+# newest copy.
+#
+# The scopes, and what the release notes call them, are in scripts/scopes.txt.
+scopes=$(grep -v '^#' scripts/scopes.txt | paste -sd ';' -)
+# One line per change: section number, label, order in the log, the line.
 changes=$(git log --no-merges --format='%s%x09%h' "$previous..HEAD" |
-  awk -F '\t' '!seen[$1]++ { print "- " $1 " (" $2 ")" }')
+  awk -F '\t' -v scopes="$scopes" '
+    function cap(t) { return toupper(substr(t, 1, 1)) substr(t, 2) }
+    BEGIN {
+      n = split(scopes, pairs, ";")
+      for (i = 1; i <= n; i++) { split(pairs[i], kv, "="); names[kv[1]] = kv[2] }
+    }
+    !seen[$1]++ {
+      s = $1; type = ""; scope = ""
+      if (match(s, /^[a-z]+(\([^)]*\))?!?: /)) {
+        head = substr(s, 1, RLENGTH); s = substr(s, RLENGTH + 1)
+        type = head; sub(/[(!:].*/, "", type)
+        if (match(head, /\([^)]*\)/)) scope = substr(head, RSTART + 1, RLENGTH - 2)
+      }
+      if (type ~ /^(chore|ci|test|refactor|docs|build|style)$/) next
+      name = scope == "" ? "" : (scope in names ? names[scope] : cap(scope))
+      section = type == "feat" ? 1 : type == "fix" ? 2 : type == "perf" ? 3 : 4
+      line = "- " (name == "" ? "" : "**" name ":** ") cap(s) " (" $2 ")"
+      # "~" sorts after every letter, so unlabeled changes come last.
+      printf "%d\t%s\t%06d\t%s\n", section, (name == "" ? "~" : tolower(name)), NR, line
+    }
+  ' |
+  LC_ALL=C sort -t $'\t' -k1,1n -k2,2 -k3,3n |
+  awk -F '\t' '
+    BEGIN { split("New|Fixed|Performance|Other changes", headings, "|") }
+    $1 != last { printf "%s### %s\n\n", (last == "" ? "" : "\n"), headings[$1]; last = $1 }
+    { print $4 }
+  ')
 if [[ -n "$changes" ]]; then
   echo "$changes"
 else
-  echo "No changes since $previous."
+  echo "No changes users will notice since $previous."
 fi
 echo
 echo "**Full changelog**: $server/$repo/compare/$previous...$tag"
