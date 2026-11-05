@@ -382,6 +382,7 @@ async fn connected(state: Arc<AppState>, client: Client, device: Device) {
             s.status(format!("โหลดรายชื่อแชทไม่สำเร็จ: {e}"));
         }
         name_stored_files(&s).await;
+        crate::actions::prefetch_calendars(&s, None).await;
     });
 }
 

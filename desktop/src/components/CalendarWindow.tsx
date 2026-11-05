@@ -71,6 +71,7 @@ export function CalendarWindow({ chatId, day: openOn, at }: { chatId: string; da
   const targets: Target[] | null = useMemo(
     () =>
       all
+    placeholderData: cached ?? undefined,
         ? (loaded?.calendars ?? [])
             .map((c) => ({ chatId: c.chatId, name: calendarName(c.chatId, chatName(c.chatId), c.name) }))
             .sort((a, b) => a.name.localeCompare(b.name, "th"))
@@ -307,7 +308,7 @@ function Month({
         title="เพิ่มนัดหมาย"
         aria-label="เพิ่มนัดหมาย"
         onClick={onAdd}
-        className="absolute right-4 bottom-4 grid h-11 w-11 place-items-center rounded-full bg-line-green text-white shadow-[0_4px_14px_rgba(6,199,85,0.35),0_1px_3px_rgba(0,0,0,0.2)] transition-transform duration-150 hover:scale-105 active:scale-95"
+        className="absolute right-4 bottom-4 grid h-11 w-11 place-items-center rounded-full bg-line-green text-white shadow-[0_1px_3px_rgba(0,0,0,0.25)] transition-transform duration-150 hover:scale-105 active:scale-95"
       >
         <svg width="18" height="18" viewBox="0 0 18 18" aria-hidden>
           <path d="M9 3v12M3 9h12" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" />

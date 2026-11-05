@@ -156,6 +156,7 @@ pub async fn open_chat(state: S<'_>, chat_id: String) -> R<()> {
         let _ = line::fetch_history(&s, &chat_id).await;
         acknowledge(&s, &chat_id).await;
         let _ = line::read_status(&s, &chat_id).await;
+        crate::actions::prefetch_calendars(&s, Some(&chat_id)).await;
         if chat_id.starts_with('c') || chat_id.starts_with('r') {
             let _ = line::load_members(&s, &chat_id, false).await;
         }
@@ -1148,9 +1149,17 @@ pub async fn calendar_events(
         return Ok(crate::demo::calendar_events(&chat_id));
     }
     let s = state.inner().clone();
+    crate::actions::mark_calendar_used(&s);
     crate::actions::calendar_events(&s, &chat_id)
         .await
         .map_err(err)
+}
+
+/// The events a calendar window (a chat id, or `all`) last loaded, to show
+/// while it loads fresh ones.
+#[tauri::command]
+pub fn cached_calendar(state: S<'_>, chat_id: String) -> Option<crate::actions::AllCalendars> {
+    crate::actions::cached_calendar(state.inner(), &chat_id)
 }
 
 /// Every calendar's events, for the rail's ปฏิทิน window.
@@ -1161,6 +1170,7 @@ pub async fn all_calendar_events(state: S<'_>) -> R<crate::actions::AllCalendars
         return Ok(crate::demo::all_calendar_events());
     }
     let s = state.inner().clone();
+    crate::actions::mark_calendar_used(&s);
     crate::actions::all_calendar_events(&s).await.map_err(err)
 }
 

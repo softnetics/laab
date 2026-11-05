@@ -23,7 +23,7 @@ use serde_json::Value as Json;
 
 use crate::convert::{num_of, str_of};
 use crate::line::{self, Line};
-use crate::state::AppState;
+use crate::state::{AppState, now_ms};
 
 async fn line(state: &Arc<AppState>) -> Result<Arc<Line>> {
     state.line().await.ok_or_else(|| anyhow!("not_logged_in"))
@@ -685,7 +685,7 @@ pub struct CalendarInfo {
 }
 
 /// Every calendar the user can see, and all their events.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Default, Serialize)]
 pub struct AllCalendars {
     pub calendars: Vec<CalendarInfo>,
     pub events: Vec<CalendarEvent>,
@@ -765,7 +765,69 @@ pub async fn calendar_events(state: &Arc<AppState>, chat_id: &str) -> Result<Vec
         .map(|e| calendar_event(e, chat_id))
         .collect();
     out.sort_by_key(|e| (e.start, e.end));
+    remember_calendar(
+        state,
+        chat_id,
+        AllCalendars {
+            calendars: Vec::new(),
+            events: out.clone(),
+        },
+    );
     Ok(out)
+}
+
+/// The all-calendars window's key in [`AppState::calendars`]; the frontend's
+/// `ALL_CALENDARS`.
+pub const ALL_CALENDARS: &str = "all";
+
+/// Set once the user has opened a calendar. LINE approves the Calendar
+/// channel for the account on the first call, so nothing is loaded ahead of
+/// time until the user has used it themselves.
+const CALENDAR_USED: &str = "calendar_used";
+
+/// How old a chat's cached calendar can get before opening the chat reloads it.
+const CALENDAR_FRESH_MS: f64 = 120_000.0;
+
+fn remember_calendar(state: &Arc<AppState>, key: &str, value: AllCalendars) {
+    state
+        .calendars
+        .lock()
+        .unwrap()
+        .insert(key.to_string(), (now_ms(), value));
+}
+
+/// The events last loaded for a calendar window, if any.
+pub fn cached_calendar(state: &Arc<AppState>, key: &str) -> Option<AllCalendars> {
+    state.calendars.lock().unwrap().get(key).map(|(_, v)| v.clone())
+}
+
+pub fn mark_calendar_used(state: &Arc<AppState>) {
+    let _ = state.store().set_kv(CALENDAR_USED, "1");
+}
+
+/// Loads calendars ahead of time for someone who uses them: every one when
+/// `chat_id` is None (all-calendars fills each chat's cache too), else that
+/// chat's when its copy is stale. Failures are left for the window to show.
+pub async fn prefetch_calendars(state: &Arc<AppState>, chat_id: Option<&str>) {
+    if state.demo || state.store().get_kv(CALENDAR_USED).ok().flatten().is_none() {
+        return;
+    }
+    match chat_id {
+        None => {
+            let _ = all_calendar_events(state).await;
+        }
+        Some(id) => {
+            let fresh = state
+                .calendars
+                .lock()
+                .unwrap()
+                .get(id)
+                .is_some_and(|(at, _)| now_ms() - at < CALENDAR_FRESH_MS);
+            if !fresh {
+                let _ = calendar_events(state, id).await;
+            }
+        }
+    }
 }
 
 /// Every calendar's events at once, as LINE's Calendar tab shows them. A
@@ -808,7 +870,9 @@ pub async fn all_calendar_events(state: &Arc<AppState>) -> Result<AllCalendars> 
         }
     }
     events.sort_by_key(|e| (e.start, e.end));
-    Ok(AllCalendars { calendars, events })
+    let all = AllCalendars { calendars, events };
+    remember_calendar(state, ALL_CALENDARS, all.clone());
+    Ok(all)
 }
 
 /// Adds an event to a chat's calendar. `notify` posts LINE's "event
@@ -1095,7 +1159,6 @@ mod tests {
         assert_eq!(cover_object_id(&flat).as_deref(), Some("xyz"));
         assert_eq!(cover_object_id(&serde_json::json!({"result": {}})), None);
     }
-}
 
     #[test]
     fn calendar_times_are_seconds_on_the_wire() {
@@ -1121,3 +1184,4 @@ mod tests {
         let out = input.to_line();
         assert_eq!((out.start_time, out.end_time), (1_793_703_600, 1_793_707_200));
     }
+}

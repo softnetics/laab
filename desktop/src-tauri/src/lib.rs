@@ -305,6 +305,7 @@ pub fn run() {
             commands::list_albums,
             commands::calendar_events,
             commands::all_calendar_events,
+            commands::cached_calendar,
             commands::create_calendar_event,
             commands::update_calendar_event,
             commands::delete_calendar_event,

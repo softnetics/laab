@@ -119,6 +119,8 @@ export const api = {
   deleteNote: (chatId: string, postId: string) => invoke<void>("delete_note", { chatId, postId }),
   calendarEvents: (chatId: string) => invoke<CalendarEvent[]>("calendar_events", { chatId }),
   allCalendarEvents: () => invoke<AllCalendars>("all_calendar_events"),
+  /** What a calendar window (a chat id, or ALL_CALENDARS) last loaded. */
+  cachedCalendar: (chatId: string) => invoke<AllCalendars | null>("cached_calendar", { chatId }),
   createCalendarEvent: (chatId: string, event: CalendarEventInput, notify: boolean) =>
     invoke<void>("create_calendar_event", { chatId, event, notify }),
   updateCalendarEvent: (chatId: string, eventId: string, updatedAt: number, event: CalendarEventInput, notify: boolean) =>
