@@ -36,10 +36,7 @@ export function ChatListColumn({ selected }: { selected: string | null }) {
   // chats flat.
   const grouped = filter === "all" && !query.trim();
   const rows = useMemo<ListRow[]>(
-    () =>
-      list && grouped
-        ? groupRows(list, chats, new Set(openFolders))
-        : chats.map((chat) => ({ kind: "chat", chat, folder: null })),
+    () => (list && grouped ? groupRows(list, chats, new Set(openFolders)) : chats.map((chat) => ({ kind: "chat", chat, folder: null }))),
     [list, grouped, chats, openFolders],
   );
   const visible = useMemo(() => rows.flatMap((r) => (r.kind === "chat" ? [r.chat] : [])), [rows]);
@@ -140,70 +137,73 @@ export function ChatListColumn({ selected }: { selected: string | null }) {
           </Menu.Root>
         )}
       </div>
-      <div
-        ref={scroller}
-        tabIndex={0}
-        onKeyDown={onKey}
-        aria-label="รายชื่อแชท"
-        data-drop="list"
-        className="relative min-h-0 flex-1 overflow-y-auto outline-none focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-secondary"
-      >
-        {query.trim() && chats.length > 0 && (
-          // LINE for Mac: results under a "แชท N" heading.
-          <div className="px-4 pt-1 pb-1 text-[12px] text-secondary">แชท {chats.length}</div>
-        )}
-        {!list ? (
-          <div className="grid place-items-center pt-16 text-secondary">
-            <Spinner />
-          </div>
-        ) : chats.length === 0 ? (
-          <Empty filter={filter} query={query} />
-        ) : (
-          <div style={{ height: virtual.getTotalSize(), position: "relative" }}>
-            {virtual.getVirtualItems().map((v) => {
-              const row = rows[v.index];
-              // Right after a folder opens, closes or takes a chat, rows
-              // slide to their new places; any other time they jump.
-              const slide = moving();
-              const key = rowKey(row);
-              const enter = !shownKeys.current.has(key) && isRecent(row.kind === "folder" ? row.folder.id : row.folder);
-              const nth = row.kind === "chat" && row.folder ? rows.findIndex((r) => r.kind === "folder" && r.folder.id === row.folder) : -1;
-              return (
-                <div
-                  key={key}
-                  className={`${slide ? "transition-transform duration-200 ease-[cubic-bezier(0.32,0.72,0,1)] motion-reduce:transition-none" : ""} ${
-                    enter ? (row.kind === "folder" ? "motion-safe:animate-folder-in" : "motion-safe:animate-row-in") : ""
-                  }`}
-                  style={{
-                    position: "absolute",
-                    top: 0,
-                    left: 0,
-                    right: 0,
-                    transform: `translateY(${v.start}px)`,
-                    // A short stagger down the opened folder.
-                    animationDelay: enter && nth >= 0 ? `${Math.min(v.index - nth - 1, 4) * 25}ms` : undefined,
-                  }}
-                >
-                  {row.kind === "folder" ? (
-                    <FolderRow row={row} list={list} selected={!row.open && row.chats.some((c) => c.id === selected)} />
-                  ) : (
-                    <ChatRow
-                      chat={row.chat}
-                      selected={row.chat.id === selected}
-                      pinned={pinned.has(row.chat.id)}
-                      folder={row.folder}
-                      scroller={scroller}
-                      draggable={grouped}
-                    />
-                  )}
-                </div>
-              );
-            })}
-          </div>
-        )}
+      <div className="relative min-h-0 flex-1">
+        <div
+          ref={scroller}
+          tabIndex={0}
+          onKeyDown={onKey}
+          aria-label="รายชื่อแชท"
+          data-drop="list"
+          className="relative h-full overflow-y-auto outline-none focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-secondary"
+        >
+          {query.trim() && chats.length > 0 && (
+            // LINE for Mac: results under a "แชท N" heading.
+            <div className="px-4 pt-1 pb-1 text-[12px] text-secondary">แชท {chats.length}</div>
+          )}
+          {!list ? (
+            <div className="grid place-items-center pt-16 text-secondary">
+              <Spinner />
+            </div>
+          ) : chats.length === 0 ? (
+            <Empty filter={filter} query={query} />
+          ) : (
+            <div style={{ height: virtual.getTotalSize(), position: "relative" }}>
+              {virtual.getVirtualItems().map((v) => {
+                const row = rows[v.index];
+                // Right after a folder opens, closes or takes a chat, rows
+                // slide to their new places; any other time they jump.
+                const slide = moving();
+                const key = rowKey(row);
+                const enter = !shownKeys.current.has(key) && isRecent(row.kind === "folder" ? row.folder.id : row.folder);
+                const nth =
+                  row.kind === "chat" && row.folder ? rows.findIndex((r) => r.kind === "folder" && r.folder.id === row.folder) : -1;
+                return (
+                  <div
+                    key={key}
+                    className={`${slide ? "transition-transform duration-200 ease-[cubic-bezier(0.32,0.72,0,1)] motion-reduce:transition-none" : ""} ${
+                      enter ? (row.kind === "folder" ? "motion-safe:animate-folder-in" : "motion-safe:animate-row-in") : ""
+                    }`}
+                    style={{
+                      position: "absolute",
+                      top: 0,
+                      left: 0,
+                      right: 0,
+                      transform: `translateY(${v.start}px)`,
+                      // A short stagger down the opened folder.
+                      animationDelay: enter && nth >= 0 ? `${Math.min(v.index - nth - 1, 4) * 25}ms` : undefined,
+                    }}
+                  >
+                    {row.kind === "folder" ? (
+                      <FolderRow row={row} list={list} selected={!row.open && row.chats.some((c) => c.id === selected)} />
+                    ) : (
+                      <ChatRow
+                        chat={row.chat}
+                        selected={row.chat.id === selected}
+                        pinned={pinned.has(row.chat.id)}
+                        folder={row.folder}
+                        scroller={scroller}
+                        draggable={grouped}
+                      />
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+        {/* Pinned to the list's bottom-right corner, however short the list. */}
         <button
-          className="sticky bottom-4 left-full mr-4 grid h-13 w-13 place-items-center rounded-full bg-line-green text-white shadow-[0_3px_12px_rgba(0,0,0,0.25)] transition-transform duration-150 ease-out active:scale-[0.96]"
-          style={{ marginTop: -52 }}
+          className="absolute right-4 bottom-4 grid h-13 w-13 place-items-center rounded-full bg-line-green text-white shadow-[0_3px_12px_rgba(0,0,0,0.25)] transition-transform duration-150 ease-out active:scale-[0.96]"
           title="แชทใหม่"
           onClick={() => setUi({ searchOpen: true, searchInitial: "" })}
         >
@@ -275,9 +275,7 @@ function Tabs() {
           >
             {t.label}
             {unreadIn(t.id) && <span className="absolute -top-0.5 -right-2 h-[5px] w-[5px] rounded-full bg-line-green" />}
-            {filter === t.id && (
-              <span className="absolute right-0 bottom-0 left-0 h-0.5 rounded bg-primary" />
-            )}
+            {filter === t.id && <span className="absolute right-0 bottom-0 left-0 h-0.5 rounded bg-primary" />}
           </button>
         ))}
         <button
@@ -392,7 +390,9 @@ function FolderPicture({ chats, open }: { chats: Chat[]; open: boolean }) {
       <div className={`absolute inset-0 grid place-items-center text-line-green ${swap} ${open ? "" : "scale-75 opacity-0"}`}>
         <FolderIcon size={26} />
       </div>
-      <div className={`absolute inset-0 flex flex-wrap content-center justify-center gap-[3px] p-[5px] ${swap} ${open ? "scale-75 opacity-0" : ""}`}>
+      <div
+        className={`absolute inset-0 flex flex-wrap content-center justify-center gap-[3px] p-[5px] ${swap} ${open ? "scale-75 opacity-0" : ""}`}
+      >
         {chats.slice(0, 4).map((c) => (
           <Avatar key={c.id} id={c.id} name={c.name} size={19} picture={c.picture} local={c.avatar} />
         ))}
