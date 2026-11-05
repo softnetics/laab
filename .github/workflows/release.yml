@@ -16,6 +16,9 @@
 #   NOTARY_ISSUER                 its issuer id
 #   TAURI_SIGNING_PRIVATE_KEY     the in-app updater's private key (tauri signer generate)
 #   TAURI_SIGNING_PRIVATE_KEY_PASSWORD  its password
+#   RELEASE_DEPLOY_KEY            private half of the repo's write deploy key; main's
+#                                 ruleset lets deploy keys bypass it, so the version
+#                                 commit can be pushed without a pull request
 name: Release
 
 on:
@@ -58,6 +61,9 @@ jobs:
       - uses: actions/checkout@v5
         with:
           fetch-depth: 0
+          # Push the version commit with the deploy key: GITHUB_TOKEN cannot
+          # bypass main's ruleset (pull request and "test" check required).
+          ssh-key: ${{ secrets.RELEASE_DEPLOY_KEY }}
 
       - name: Check the version
         run: |
