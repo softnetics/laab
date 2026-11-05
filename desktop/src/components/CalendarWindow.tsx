@@ -56,6 +56,13 @@ export function CalendarWindow({ chatId, day: openOn, at }: { chatId: string; da
       .setTitle(title ? `ปฏิทิน · ${title}` : "ปฏิทิน")
       .catch(() => {});
   }, [title]);
+  // Events loaded earlier (ahead of time, or by the last window), shown
+  // while fresh ones load.
+  const { data: cached } = useQuery({
+    queryKey: ["calendar-cache", chatId],
+    queryFn: () => api.cachedCalendar(chatId),
+    staleTime: Infinity,
+  });
   const {
     data: loaded,
     isLoading,
@@ -64,6 +71,7 @@ export function CalendarWindow({ chatId, day: openOn, at }: { chatId: string; da
     queryKey: ["calendar", chatId],
     queryFn: () => (all ? api.allCalendarEvents() : api.calendarEvents(chatId).then((events) => ({ calendars: [], events }))),
     staleTime: 0,
+    placeholderData: cached ?? undefined,
   });
   const data = loaded?.events;
   // The window's calendars by name, for the agenda and the add form; null
@@ -71,7 +79,6 @@ export function CalendarWindow({ chatId, day: openOn, at }: { chatId: string; da
   const targets: Target[] | null = useMemo(
     () =>
       all
-    placeholderData: cached ?? undefined,
         ? (loaded?.calendars ?? [])
             .map((c) => ({ chatId: c.chatId, name: calendarName(c.chatId, chatName(c.chatId), c.name) }))
             .sort((a, b) => a.name.localeCompare(b.name, "th"))

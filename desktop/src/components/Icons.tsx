@@ -318,7 +318,7 @@ export const TextIcon = (p: P) => (
 );
 export const CalendarIcon = (p: P) => (
   <svg {...base(p)} fill="none" stroke="currentColor" strokeWidth={p.strokeWidth ?? 2} strokeLinecap="round" strokeLinejoin="round">
-    <rect x="4" y="5" width="16" height="15" rx="3" />
-    <path d="M8 3v4M16 3v4M4 10h16" />
+    <rect x="4" y="5.5" width="16" height="15" rx="3" />
+    <path d="M8 3.5v4M16 3.5v4M4 10.5h16" />
   </svg>
 );
