@@ -1,7 +1,7 @@
 import { Menu } from "@base-ui/react/menu";
 import { useQuery } from "@tanstack/react-query";
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
-import { save } from "@tauri-apps/plugin-dialog";
+import { open as openDialog, save } from "@tauri-apps/plugin-dialog";
 import { memo, useState } from "react";
 import { api, errorText, mediaUrl, q, queryClient } from "../lib/api";
 import { performFlexAction } from "../lib/flexActions";
@@ -109,16 +109,19 @@ function PhotoGrid({ photos, ctx }: { photos: Message[]; ctx: RowContext }) {
   const dev = useUi((s) => s.developerMode);
   const odd = photos.length % 2 === 1;
   return (
-    <div className="grid w-[300px] grid-cols-2 gap-0.5 overflow-hidden rounded-[2px]">
-      {photos.map((p, i) => {
-        const wide = odd && i === photos.length - 1;
-        return (
-          // Its own menu, so save, reply and the rest act on the photo clicked.
-          <Ctx key={p.id} menu={rowMenu(p, dev, ctx)} className={wide ? "col-span-2 aspect-[2/1]" : "aspect-square"}>
-            <GridPhoto m={p} ctx={ctx} className="h-full w-full" />
-          </Ctx>
-        );
-      })}
+    <div className={`flex flex-col ${photos[0].mine ? "items-end" : "items-start"}`}>
+      <div className="grid w-[300px] grid-cols-2 gap-0.5 overflow-hidden rounded-[2px]">
+        {photos.map((p, i) => {
+          const wide = odd && i === photos.length - 1;
+          return (
+            // Its own menu, so save, reply and the rest act on the photo clicked.
+            <Ctx key={p.id} menu={rowMenu(p, dev, ctx)} className={wide ? "col-span-2 aspect-[2/1]" : "aspect-square"}>
+              <GridPhoto m={p} ctx={ctx} className="h-full w-full" />
+            </Ctx>
+          );
+        })}
+      </div>
+      <MediaLinks items={photos} ctx={ctx} />
     </div>
   );
 }
@@ -172,12 +175,6 @@ function MediaBubble({ m, ctx }: { m: Message; ctx: RowContext }) {
   const video = m.contentType === "VIDEO";
   // A downloaded video's imagePath is the video itself, not a picture.
   const src = m.imagePath && !video ? mediaUrl.local(m.imagePath) : mediaUrl.message(ctx.chatId, m.id, true);
-  const run = (p: Promise<unknown>, done: (r: unknown) => string) => p.then((r) => notice(done(r))).catch((e) => notice(errorText(e)));
-  const saveAs = async () => {
-    const dest = await save({ defaultPath: m.fileName ?? (video ? `LINE_${m.id}.mp4` : `LINE_${m.id}.jpg`) });
-    if (dest) run(api.saveAttachment(ctx.chatId, m.id, dest), () => "บันทึกแล้ว");
-  };
-  const link = "hover:text-primary";
   return (
     <div className={`flex flex-col ${m.mine ? "items-end" : "items-start"}`}>
       {/* LINE for Mac: square corners, and links under every photo/video. */}
@@ -208,25 +205,55 @@ function MediaBubble({ m, ctx }: { m: Message; ctx: RowContext }) {
           </div>
         )}
       </div>
-      {
-        <div className="mt-1 flex gap-1.5 text-[11.5px] text-secondary">
-          <button className={link} onClick={() => run(api.saveAttachment(ctx.chatId, m.id), (p) => `บันทึกไว้ที่ ${p}`)}>
-            บันทึก
-          </button>
+      <MediaLinks items={[m]} ctx={ctx} />
+    </div>
+  );
+}
+
+const fileNameOf = (m: Message) => m.fileName ?? (m.contentType === "VIDEO" ? `LINE_${m.id}.mp4` : `LINE_${m.id}.jpg`);
+
+/** LINE for Mac's links under a photo, a video or photos sent together.
+ *  Under a grid they act on every photo in it. */
+function MediaLinks({ items, ctx }: { items: Message[]; ctx: RowContext }) {
+  const one = items.length === 1;
+  // One at a time, so a big batch doesn't start every download at once.
+  const each = async <T,>(f: (m: Message) => Promise<T>) => {
+    const out: T[] = [];
+    for (const m of items) out.push(await f(m));
+    return out;
+  };
+  const run = <T,>(p: Promise<T>, done: (r: T) => string) => p.then((r) => notice(done(r))).catch((e) => notice(errorText(e)));
+  const saved = (paths: string[]) => (one ? `บันทึกไว้ที่ ${paths[0]}` : `บันทึก ${paths.length} รูปไว้ที่ ${paths[0].replace(/\/[^/]*$/, "")}`);
+  const saveAs = async () => {
+    if (one) {
+      const dest = await save({ defaultPath: fileNameOf(items[0]) });
+      if (dest) run(api.saveAttachment(ctx.chatId, items[0].id, dest), () => "บันทึกแล้ว");
+      return;
+    }
+    const dir = await openDialog({ directory: true, title: "เลือกโฟลเดอร์ที่จะบันทึกรูป" });
+    if (typeof dir === "string") run(each((m) => api.saveAttachment(ctx.chatId, m.id, `${dir}/${fileNameOf(m)}`)), saved);
+  };
+  const link = "hover:text-primary";
+  return (
+    <div className="mt-1 flex gap-1.5 text-[11.5px] text-secondary">
+      <button className={link} onClick={() => run(each((m) => api.saveAttachment(ctx.chatId, m.id)), saved)}>
+        บันทึก
+      </button>
+      <span>|</span>
+      <button className={link} onClick={saveAs}>
+        บันทึกเป็น…
+      </button>
+      {ctx.chatId !== ctx.me && (
+        <>
           <span>|</span>
-          <button className={link} onClick={saveAs}>
-            บันทึกเป็น…
+          <button
+            className={link}
+            onClick={() => run(each((m) => api.saveToKeep(ctx.chatId, m.id)), () => (one ? "ส่งไปยัง Keep Memo แล้ว" : `ส่ง ${items.length} รูปไปยัง Keep Memo แล้ว`))}
+          >
+            ส่งไปยัง Keep Memo
           </button>
-          {ctx.chatId !== ctx.me && (
-            <>
-              <span>|</span>
-              <button className={link} onClick={() => run(api.saveToKeep(ctx.chatId, m.id), () => "ส่งไปยัง Keep Memo แล้ว")}>
-                ส่งไปยัง Keep Memo
-              </button>
-            </>
-          )}
-        </div>
-      }
+        </>
+      )}
     </div>
   );
 }

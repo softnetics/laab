@@ -13,21 +13,16 @@ export interface Row {
   photos?: Message[];
 }
 
-// LINE shows photos sent together as a grid. E2EE photos carry no group id
-// (neither in contentMetadata nor in their payload), so photos from one
-// sender, each within a minute of the one before, count as sent together.
-const PHOTO_GAP_MS = 60_000;
-const ms = (t: number) => (t > 1e11 ? t : t * 1000);
+// LINE shows photos sent together as a grid. It marks them with a shared
+// group id (`GID`, with `GSEQ` and `GTOTAL`); photos sent one by one have
+// none and stand alone, however close together they come.
 const joinsPhotos = (prev: Message, m: Message) =>
   m.contentType === "IMAGE" &&
   prev.contentType === "IMAGE" &&
   !m.unsent &&
   !prev.unsent &&
-  prev.mine === m.mine &&
-  (m.mine || prev.senderId === m.senderId) &&
-  !m.replyTo &&
-  ms(m.createdTime) - ms(prev.createdTime) <= PHOTO_GAP_MS &&
-  sameDay(prev.createdTime, m.createdTime);
+  !!m.metadata.GID &&
+  m.metadata.GID === prev.metadata.GID;
 
 // LINE groups messages by sender and minute under one avatar and name. Photos, videos and calls always stand alone.
 // (Checked against LINE for Mac 2026-10-22.)

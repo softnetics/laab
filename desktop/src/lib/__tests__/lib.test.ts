@@ -114,28 +114,34 @@ describe("notices", () => {
       ["b", false],
       ["c", true],
       ["d", true],
+      ["e", true],
     ]);
-    expect(rows[3].photos?.map((m) => m.id)).toEqual(["d", "e"]);
   });
   it("puts photos sent together in one grid", () => {
     const t = new Date(2026, 9, 21, 14, 57, 5).getTime();
-    const photo = (id: string, at: number, more: Partial<Message> = {}) => msg({ id, createdTime: t + at, contentType: "IMAGE", ...more });
+    const photo = (id: string, at: number, gid?: string, more: Partial<Message> = {}) =>
+      msg({ id, createdTime: t + at, contentType: "IMAGE", metadata: gid ? { GID: gid } : {}, ...more });
     const rows = buildRows(
       [
-        photo("a", 0),
-        photo("b", 2_000),
-        photo("c", 50_000),
-        photo("d", 200_000), // more than a minute after c
-        photo("e", 201_000, { senderId: "u3" }), // someone else
-        photo("f", 202_000, { senderId: "u3", unsent: 1 }),
+        photo("a", 0, "g1"),
+        photo("b", 0, "g1"),
+        photo("c", 1_000, "g1"),
+        photo("d", 2_000, "g2"), // another batch right after
+        photo("e", 2_000, "g2"),
+        photo("f", 3_000), // sent on its own
+        photo("g", 4_000), // also on its own, though only a second later
+        photo("h", 5_000, "g3"),
+        photo("i", 5_000, "g3", { unsent: 1 }),
       ],
       name,
     );
     expect(rows.map((r) => [r.message.id, r.photos?.map((m) => m.id) ?? null])).toEqual([
       ["a", ["a", "b", "c"]],
-      ["d", null],
-      ["e", null],
+      ["d", ["d", "e"]],
       ["f", null],
+      ["g", null],
+      ["h", null],
+      ["i", null],
     ]);
   });
   it("hides silent unsends and starts runs after notices", () => {
