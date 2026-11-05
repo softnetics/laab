@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Build the Tauri app (desktop/) into dist/LAAB.app.
-# VERSION sets the app version (default 0.1.0). Needs macOS, Rust and pnpm.
+# VERSION overrides the app version (default: desktop/package.json, which
+# bump-version.sh sets). Needs macOS, Rust and pnpm.
 #
 # Signing: APPLE_SIGNING_IDENTITY if set, else the first "Developer ID
 # Application" certificate in the keychain (hardened runtime, timestamped),
@@ -9,7 +10,8 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 root=$(pwd)
-version=${VERSION:-0.1.0}
+version=${VERSION:-$(sed -n 's/^  "version": "\(.*\)",$/\1/p' desktop/package.json)}
+[[ -n "$version" ]] || { echo "build-desktop: no version in desktop/package.json" >&2; exit 1; }
 identity=${APPLE_SIGNING_IDENTITY:-$(security find-identity -v -p codesigning |
   sed -n 's/.*"\(Developer ID Application: [^"]*\)".*/\1/p' | head -1)}
 identity=${identity:--}

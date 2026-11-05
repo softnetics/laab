@@ -9,7 +9,7 @@ Building and releasing need macOS (`codesign`, `hdiutil`). On Linux, check scrip
 - Build `dist/LAAB.app` only through `./scripts/build-desktop.sh`. It handles steps a manual copy misses:
   - It replaces the bundle instead of overwriting it, because macOS caches code signatures per inode.
   - It signs with the first "Developer ID Application" certificate in the keychain (or `APPLE_SIGNING_IDENTITY`), with hardened runtime. Without one, it signs the whole bundle ad hoc. Unsigned, macOS drops the app's notifications.
-- The app version comes from the `VERSION` environment variable. There is no `VERSION` file.
+- The app version lives in `desktop/package.json` (`tauri.conf.json` reads it from there), `desktop/src-tauri/Cargo.toml` and its `Cargo.lock` entry. Set all three with `./scripts/bump-version.sh <version>`, never by hand. The Release workflow runs it and commits `chore(release): <version>`, so don't bump the version in a PR. `VERSION=` overrides it for one local build.
 - To check packaging, run `./scripts/release.sh <version> --dry-run`. It runs on any branch, packages through `scripts/package.sh` locally, and creates nothing outside `dist/`.
 - A real release runs `.github/workflows/release.yml` on GitHub Actions; `release.sh <version>` only starts it. The workflow tests, builds, signs and notarizes, writes the changelog with `scripts/release-notes.sh`, then creates the tag and the GitHub release in one step, so a failed run leaves no tag. Before you start it, get the user's confirmation for that version.
 - The workflow reads its signing and notarization credentials from repo secrets (listed at the top of `release.yml`). Do not set or change those secrets unless the user asks.
