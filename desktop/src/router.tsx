@@ -91,8 +91,8 @@ const calendar = createRoute({
   validateSearch: tabSearch,
   component: function CalendarRoute() {
     const { chatId } = calendar.useParams();
-    const { at } = calendar.useSearch();
-    return <CalendarWindow chatId={chatId} at={at} />;
+    const { post, at } = calendar.useSearch();
+    return <CalendarWindow chatId={chatId} day={post} at={at} />;
   },
 });
 

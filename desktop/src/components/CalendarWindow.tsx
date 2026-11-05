@@ -44,7 +44,9 @@ type Target = { chatId: string; name: string };
 // refreshes the other.
 const refresh = () => queryClient.invalidateQueries({ queryKey: ["calendar"] });
 
-export function CalendarWindow({ chatId, at }: { chatId: string; at: string }) {
+/** `day` is the day to open on (a day key), from an event card's link;
+ *  empty for today. */
+export function CalendarWindow({ chatId, day: openOn, at }: { chatId: string; day: string; at: string }) {
   const all = chatId === ALL_CALENDARS;
   const chats = useChatList()?.chats;
   const chatName = (id: string) => chats?.find((c) => c.id === id)?.name;
@@ -76,13 +78,14 @@ export function CalendarWindow({ chatId, at }: { chatId: string; at: string }) {
     [all, loaded, chats],
   );
   const nameOf = (id: string) => targets?.find((t) => t.chatId === id)?.name ?? calendarName(id, chatName(id));
-  const [day, setDay] = useState(todayKey);
+  const [day, setDay] = useState(() => openOn || todayKey());
   const [view, setView] = useState<View>({ kind: "month" });
-  // Opening the window again (a calendar link, the menu) goes back to today.
+  // Opening the window again (a calendar link, the menu) goes to the link's
+  // day, or back to today.
   useEffect(() => {
-    setDay(todayKey());
+    setDay(openOn || todayKey());
     setView({ kind: "month" });
-  }, [at]);
+  }, [at, openOn]);
 
   const viewing = view.kind === "event" ? data?.find((e) => e.id === view.id) : undefined;
   const pane = view.kind === "edit" ? `edit-${view.event?.id ?? "new"}` : viewing ? `event-${viewing.id}` : "month";

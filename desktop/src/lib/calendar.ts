@@ -97,6 +97,22 @@ export function eventDays(e: Pick<CalendarEvent, "start" | "end" | "allDay" | "t
   return out;
 }
 
+/** The day an event card's link points at: LINE's `calendar/list` links
+ *  carry the event's start (seconds), its zone and whether it's all-day.
+ *  Null for a link without one, such as the card's "LINE Calendar" footer. */
+export function linkDay(url: string): string | null {
+  let q: URLSearchParams;
+  try {
+    q = new URL(url).searchParams;
+  } catch {
+    return null;
+  }
+  const start = Number(q.get("startTime"));
+  if (!q.get("startTime") || !Number.isFinite(start)) return null;
+  const zone = q.get("allDay") === "true" ? (q.get("timeZone") ?? undefined) : undefined;
+  return keyOf(partsIn(start * 1000, zone));
+}
+
 /** Events by the days they cover. */
 export function byDay(events: CalendarEvent[]): Map<string, CalendarEvent[]> {
   const map = new Map<string, CalendarEvent[]>();

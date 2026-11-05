@@ -7,6 +7,7 @@ import {
   longDayLabel,
   formOf,
   inputOf,
+  linkDay,
   calendarName,
   monthGrid,
   newForm,
@@ -117,5 +118,16 @@ describe("calendarName", () => {
     expect(calendarName("c1", "ทีม", "x")).toBe("ทีม");
     expect(calendarName("c1", undefined, "ทีม LINE")).toBe("ทีม LINE");
     expect(calendarName("cal:abc")).toBe("ปฏิทินของฉัน");
+  });
+});
+
+describe("linkDay", () => {
+  it("reads the day from an event card's link", () => {
+    // 2026-11-03 12:00 UTC: the same day in any zone within ±11 hours.
+    expect(linkDay("https://line.me/R/calendar/list?startTime=1793707200&timeZone=Asia%2FBangkok&allDay=false")).toBe("2026-11-03");
+    // An all-day event starts at midnight in its own zone.
+    expect(linkDay("https://line.me/R/calendar/list?startTime=1793638800&timeZone=Asia%2FBangkok&allDay=true")).toBe("2026-11-03");
+    expect(linkDay("https://line.me/R/calendar")).toBeNull();
+    expect(linkDay("https://line.me/R/calendar/list?startTime=x")).toBeNull();
   });
 });

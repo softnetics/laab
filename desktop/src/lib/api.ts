@@ -138,7 +138,7 @@ export const api = {
   saveAttachment: (chatId: string, messageId: string, dest: string | null = null) =>
     invoke<string>("save_attachment", { chatId, messageId, dest }),
   /** LINE-style separate windows: `albums` (tab albums/notes), `media`
-   *  (tab media/links/files) or `calendar`. */
+   *  (tab media/links/files) or `calendar` (`post` is the day to open on). */
   openAuxWindow: (kind: "albums" | "media" | "calendar", chatId: string, title: string, tab?: string, post?: string) =>
     invoke<void>("open_aux_window", { kind, chatId, title, tab: tab ?? null, post: post ?? null }),
   /** The one photo/video viewer window; see `lib/viewer.ts`. */
