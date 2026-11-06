@@ -5,7 +5,7 @@
 use std::sync::Arc;
 
 use anyhow::{Result, anyhow};
-use line_rs::client::liff::LiffViewOptions;
+use line_rs::client::liff::{self as lliff, ConsentPage, LiffViewOptions, PickerResult};
 use serde::{Deserialize, Serialize};
 use serde_json::Value as Json;
 use tauri::{Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
@@ -132,21 +132,98 @@ pub fn client_url(endpoint: &str, link: &LiffLink, tokens: &[(&str, String)]) ->
     Ok(format!("{url}#{}", fragment.join("&")))
 }
 
-fn consent_required(e: &line_rs::Error) -> bool {
-    if let line_rs::Error::Request { data, .. } = e {
-        let json = data.to_json();
-        let exc = if json.get("liffException").is_some() {
-            &json["liffException"]
-        } else {
-            &json
-        };
-        return exc["code"].as_str() == Some("CONSENT_REQUIRED") || exc["code"].as_i64() == Some(3);
+/// The account's language as LINE has it (`preferenceLocale`), once read.
+static ACCOUNT_LOCALE: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+pub fn set_account_locale(locale: Option<String>) {
+    *ACCOUNT_LOCALE.lock().unwrap() = locale.and_then(|l| normalize_locale(&l));
+}
+
+/// `th_TH` from `th-TH`, `en_TH@rg=thzzzz` or `th`; None for nothing usable.
+fn normalize_locale(raw: &str) -> Option<String> {
+    let base = raw.split(['@', '.']).next()?.trim().replace('-', "_");
+    let mut parts = base.split('_').filter(|p| !p.is_empty());
+    let lang = parts.next()?.to_ascii_lowercase();
+    if lang.len() < 2 || !lang.bytes().all(|b| b.is_ascii_alphabetic()) {
+        return None;
     }
-    format!("{e:?}").contains("CONSENT_REQUIRED")
+    // A script subtag (zh_Hant_TW) is skipped; the region is the last part.
+    let region = parts.filter(|p| p.len() == 2).last().map(str::to_ascii_uppercase);
+    Some(match region {
+        Some(r) => format!("{lang}_{r}"),
+        None => lang,
+    })
+}
+
+/// The Mac's locale (`AppleLocale`), read once.
+fn mac_locale() -> Option<String> {
+    static MAC: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+    MAC.get_or_init(|| {
+        let out = std::process::Command::new("defaults")
+            .args(["read", "-g", "AppleLocale"])
+            .output()
+            .ok()?;
+        normalize_locale(String::from_utf8_lossy(&out.stdout).trim())
+    })
+    .clone()
+}
+
+/// The language LIFF apps are opened in, as LINE sends it in
+/// issueLiffView: the account's, else the Mac's, else Thai.
+pub fn lang() -> String {
+    ACCOUNT_LOCALE
+        .lock()
+        .unwrap()
+        .clone()
+        .or_else(mac_locale)
+        .unwrap_or_else(|| "th_TH".into())
+}
+
+/// LINE's consent pages fetched for the user to agree to, by LIFF id, so
+/// "Allow" posts the very page they saw.
+static CONSENTS: std::sync::Mutex<Vec<(String, ConsentPage)>> = std::sync::Mutex::new(Vec::new());
+
+/// What a LIFF app asks the user to agree to, from LINE's consent page.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConsentInfo {
+    pub permissions: Vec<lliff::ConsentPermission>,
+    /// LINE's consent page, to open in the browser.
+    pub consent_url: String,
+}
+
+/// Fetch LINE's consent page for `url` (as LINE for Android opens it) and
+/// say what it asks for. Nothing is granted here.
+pub async fn consent_info(state: &Arc<AppState>, url: &str, chat: Option<String>) -> Result<ConsentInfo> {
+    let link = parse_link(url).ok_or_else(|| anyhow!("invalid_liff_id"))?;
+    let line = state.line().await.ok_or_else(|| anyhow!("not_logged_in"))?;
+    let liff = line.client.liff();
+    let opts = view_options(&link, chat);
+    let consent = match liff.issue_view(&opts).await {
+        Ok(_) => return Ok(ConsentInfo { permissions: vec![], consent_url: String::new() }),
+        Err(e) => lliff::consent_required(&e).ok_or_else(|| anyhow!("{e}"))?,
+    };
+    let page = liff.consent_page(&consent).await.map_err(|e| anyhow!("{e}"))?;
+    let info = ConsentInfo {
+        permissions: page.permissions.clone(),
+        consent_url: consent.consent_url.clone(),
+    };
+    let mut pages = CONSENTS.lock().unwrap();
+    pages.retain(|(id, _)| id != &link.id);
+    pages.push((link.id, page));
+    Ok(info)
+}
+
+fn view_options(link: &LiffLink, chat: Option<String>) -> LiffViewOptions {
+    LiffViewOptions {
+        chat_mid: chat,
+        liff_id: Some(link.id.clone()),
+        lang: Some(lang()),
+    }
 }
 
 /// Issue a LIFF view for `url`. Errors with `liff_consent_required` until the
-/// user agrees; it never consents silently.
+/// user agrees on LINE's consent page; it never consents silently.
 pub async fn issue(
     state: &Arc<AppState>,
     url: &str,
@@ -165,22 +242,30 @@ pub async fn issue(
     let Some(line) = state.line().await else {
         return Ok(web("ยังไม่ได้เข้าสู่ระบบ"));
     };
-    let opts = LiffViewOptions {
-        chat_mid: chat,
-        liff_id: Some(link.id.clone()),
-        lang: Some("th_TH".into()),
-    };
+    let opts = view_options(&link, chat);
     let liff = line.client.liff();
     let view = match liff.issue_view(&opts).await {
         Ok(v) => v,
-        Err(e) if consent_required(&e) => {
+        Err(e) => {
+            let Some(asked) = lliff::consent_required(&e) else {
+                return Err(anyhow!("{e}"));
+            };
             if !consent {
                 return Err(anyhow!("liff_consent_required"));
             }
-            liff.get_token(&opts).await.map_err(|e| anyhow!("{e}"))?;
+            // "Allow" on the page the user was shown, or a fresh copy of it.
+            let shown = {
+                let mut pages = CONSENTS.lock().unwrap();
+                let i = pages.iter().position(|(id, _)| id == &link.id);
+                i.map(|i| pages.remove(i).1)
+            };
+            let page = match shown {
+                Some(p) if p.consent == asked => p,
+                _ => liff.consent_page(&asked).await.map_err(|e| anyhow!("{e}"))?,
+            };
+            liff.approve(&page).await.map_err(|e| anyhow!("{e}"))?;
             liff.issue_view(&opts).await.map_err(|e| anyhow!("{e}"))?
         }
-        Err(e) => return Err(anyhow!("{e}")),
     };
     let v = view.to_json();
     let endpoint = v["view"]["url"].as_str().unwrap_or("");
@@ -224,22 +309,39 @@ pub async fn issue(
     })
 }
 
+/// Bridge commands LAAB answers; `liff.isApiAvailable` and `liff.init`
+/// read this list (`features`, as LINE for Android builds it in `rd0/e`).
+const FEATURES: &[&str] = &["closeWindow", "openWindow", "getAdvertisingId"];
+
+/// The `window._liff` bridge, with the app's granted `scopes`. A command
+/// LAAB can't do answers `CLIENT_UNSUPPORTED_OPERATION`, the code LINE for
+/// Android uses (`cd0/a`), so the app can tell "not here" from "refused".
+fn bridge(scopes: &Json) -> String {
+    let scopes = if scopes.is_array() { scopes.clone() } else { Json::Array(vec![]) };
+    BRIDGE
+        .replace("__FEATURES__", &serde_json::to_string(FEATURES).unwrap_or_default())
+        .replace("__SCOPES__", &scopes.to_string())
+}
+
 const BRIDGE: &str = r#"(function(){
   if (window._liff) return;
   function reply(type, callbackId, data, error) {
     var detail = error ? {type: type, callbackId: callbackId, error: error} : {type: type, callbackId: callbackId, data: data || {}};
     window.dispatchEvent(new CustomEvent('liffEvent', {detail: detail}));
   }
+  var features = __FEATURES__;
   window._liff = {
     // LIFF SDK 2.x in a LINE app 9.5.0 or newer waits for this list, or for
     // a "ready" event, before liff.init() goes on.
-    features: ['closeWindow', 'openWindow'],
+    features: features,
+    scopes: __SCOPES__,
     postMessage: function(type, featureToken, callbackId, params) {
       try { params = typeof params === 'string' ? JSON.parse(params) : (params || {}); } catch (e) { params = {}; }
+      var known = features.indexOf(type) >= 0;
       if (window.__laabDev) {
         var shown; try { shown = JSON.stringify(params); } catch (e) { shown = '?'; }
-        window.__laabDev.push('bridge', type === 'closeWindow' || type === 'openWindow' ? 'info' : 'warn',
-          type + ' ' + shown + (type === 'closeWindow' || type === 'openWindow' ? '' : ' → FORBIDDEN (LAAB ยังไม่รองรับ)'));
+        window.__laabDev.push('bridge', known ? 'info' : 'warn',
+          type + ' ' + shown + (known ? '' : ' → CLIENT_UNSUPPORTED_OPERATION (LAAB ยังไม่รองรับ)'));
       }
       if (type === 'closeWindow') { location.href = 'liff://close'; return; }
       if (type === 'openWindow') {
@@ -247,7 +349,9 @@ const BRIDGE: &str = r#"(function(){
         location.href = 'laab-open://open?url=' + encodeURIComponent(params.url || '');
         return;
       }
-      reply(type, callbackId, null, {code: 'FORBIDDEN', message: 'LAAB ยังไม่รองรับ ' + type});
+      // A Mac has no advertising id.
+      if (type === 'getAdvertisingId') { reply(type, callbackId, {success: true, advertisingId: null, tracking: false}); return; }
+      reply(type, callbackId, null, {code: 'CLIENT_UNSUPPORTED_OPERATION', description: 'Unsupported Operation: "' + type + '"', message: 'LAAB ยังไม่รองรับ ' + type});
     }
   };
   reply('ready');
@@ -344,6 +448,8 @@ pub fn open_window(state: &Arc<AppState>, view: &LiffView, chat: Option<String>)
                     log("info", format!("เปิด {bare}"));
                     if parse_link(s).is_some() {
                         open_external_or_liff(&nav_state, s, chat.clone());
+                    } else {
+                        open_line_link(&nav_state, s, chat.clone());
                     }
                     false
                 }
@@ -353,6 +459,12 @@ pub fn open_window(state: &Arc<AppState>, view: &LiffView, chat: Option<String>)
                         Some(link) if link.id != current && client => {
                             log("info", format!("LIFF อื่น เปิดหน้าต่างใหม่ {bare}"));
                             open_external_or_liff(&nav_state, s, chat.clone());
+                            false
+                        }
+                        // LINE opens its own https://line.me/R/… links itself.
+                        None if is_line_app_link(s) => {
+                            log("info", format!("เปิด {bare}"));
+                            open_line_link(&nav_state, s, chat.clone());
                             false
                         }
                         _ => {
@@ -371,7 +483,7 @@ pub fn open_window(state: &Arc<AppState>, view: &LiffView, chat: Option<String>)
         });
     builder = builder.initialization_script(crate::liff_devtools::CAPTURE);
     if client {
-        builder = builder.initialization_script(BRIDGE);
+        builder = builder.initialization_script(bridge(&view.info["scopes"]));
     }
     builder.build()?;
     crate::liff_devtools::opened(&app, &label, view, chat_for_log);
@@ -382,6 +494,24 @@ fn close(app: &tauri::AppHandle, label: &str) {
     if let Some(w) = app.get_webview_window(label) {
         let _ = w.close();
     }
+}
+
+/// `https://line.me/R/…`, a link LINE's app opens rather than its browser.
+fn is_line_app_link(url: &str) -> bool {
+    let lower = url.to_ascii_lowercase();
+    lower.starts_with("https://line.me/r/") || lower.starts_with("http://line.me/r/")
+}
+
+/// A LINE deep link from a LIFF app that isn't another LIFF app: a chat
+/// message opens in the main window; anything else goes to the main
+/// window's link handler, which opens what LAAB can (calendar links, …)
+/// and says so when it can't.
+fn open_line_link(state: &Arc<AppState>, url: &str, chat: Option<String>) {
+    if let Some(line_rs::link::LineLink::ChatMessage { chat_id, message_id }) = line_rs::link::LineLink::parse(url) {
+        crate::show_in_main(&state.app, &chat_id, message_id.as_deref());
+        return;
+    }
+    let _ = state.app.emit_to("main", "liff-open-url", serde_json::json!({ "url": url, "chatId": chat }));
 }
 
 /// LIFF links open as LIFF windows; anything else goes to the browser.
@@ -438,7 +568,7 @@ pub async fn share(
         let opts = LiffViewOptions {
             chat_mid: Some(chat.clone()),
             liff_id: Some(liff_id.into()),
-            lang: Some("th_TH".into()),
+            lang: Some(lang()),
         };
         let ok = async {
             let v = line
@@ -473,20 +603,26 @@ pub async fn share(
     Ok(result)
 }
 
-/// Tell the LIFF SDK how the picker ended. Inferred from the SDK source; not
-/// checked against a real account.
-pub async fn picker_result(liff_id: &str, ott: &str, success: bool) -> Result<()> {
-    let url = format!(
-        "https://access.line.me/oauth2/v2.1/liff/shareTargetPicker/result?liffId={}&ott={}",
-        encode(liff_id),
-        encode(ott)
-    );
-    reqwest::Client::new()
-        .post(url)
-        .form(&[("result", if success { "SUCCESS" } else { "CANCEL" })])
-        .send()
-        .await?;
-    Ok(())
+/// How a share-target picker ended: nothing picked is a cancel.
+pub fn picker_outcome(picked: usize, result: &ShareResult) -> PickerResult {
+    if picked == 0 {
+        PickerResult::Cancel
+    } else if result.sent > 0 {
+        PickerResult::Success
+    } else {
+        PickerResult::Failure
+    }
+}
+
+/// Tell LINE how the picker ended, which the LIFF SDK waits for:
+/// `storeShareTargetPickerResult`, as LINE for Android reports it.
+pub async fn picker_result(state: &Arc<AppState>, liff_id: &str, ott: &str, result: PickerResult) -> Result<()> {
+    let line = state.line().await.ok_or_else(|| anyhow!("not_logged_in"))?;
+    line.client
+        .liff()
+        .store_share_target_picker_result(liff_id, ott, result, None)
+        .await
+        .map_err(|e| anyhow!("{e}"))
 }
 
 #[cfg(test)]
@@ -508,6 +644,39 @@ mod tests {
         assert!(parse_link("https://line.me/R/app/1234567-AbCdEf12").is_some());
         assert!(parse_link("https://liff.line.me/nope").is_none());
         assert!(parse_link("https://example.com/1234567-AbCdEf12").is_none());
+    }
+
+    #[test]
+    fn maps_locales_to_lines_form() {
+        assert_eq!(normalize_locale("th-TH").as_deref(), Some("th_TH"));
+        assert_eq!(normalize_locale("en_TH@rg=thzzzz").as_deref(), Some("en_TH"));
+        assert_eq!(normalize_locale("ja_JP.UTF-8").as_deref(), Some("ja_JP"));
+        assert_eq!(normalize_locale("zh-Hant-TW").as_deref(), Some("zh_TW"));
+        assert_eq!(normalize_locale("ko").as_deref(), Some("ko"));
+        assert_eq!(normalize_locale(""), None);
+        assert_eq!(normalize_locale("1"), None);
+        set_account_locale(Some("en-US".into()));
+        assert_eq!(lang(), "en_US");
+        set_account_locale(None);
+    }
+
+    #[test]
+    fn the_bridge_lists_what_laab_answers() {
+        let js = bridge(&serde_json::json!(["profile", "chat_message.write"]));
+        assert!(js.contains(r#"var features = ["closeWindow","openWindow","getAdvertisingId"];"#));
+        assert!(js.contains(r#"scopes: ["profile","chat_message.write"],"#));
+        assert!(js.contains("CLIENT_UNSUPPORTED_OPERATION"));
+        assert!(!js.contains("__FEATURES__") && !js.contains("__SCOPES__"));
+        assert!(bridge(&Json::Null).contains("scopes: [],"));
+    }
+
+    #[test]
+    fn picker_outcomes() {
+        let none = ShareResult { sent: 0, failed: vec![] };
+        let one = ShareResult { sent: 1, failed: vec![] };
+        assert_eq!(picker_outcome(0, &none), PickerResult::Cancel);
+        assert_eq!(picker_outcome(2, &one), PickerResult::Success);
+        assert_eq!(picker_outcome(1, &none), PickerResult::Failure);
     }
 
     #[test]

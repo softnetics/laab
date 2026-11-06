@@ -5,27 +5,42 @@ import { clock } from "./time";
 
 export interface CallInfo {
   kind: "voice" | "video";
-  outcome: "completed" | "no_response" | "rejected" | "canceled" | "unknown";
-  phase: "start" | "end" | null;
+  outcome: "completed" | "no_response" | "rejected" | "canceled" | "busy" | "failed" | "unknown";
+  phase: "start" | "end" | "invite" | null;
   group: boolean;
   durationMs: number;
 }
 
+/** A call key, or the older `voip…` one LINE falls back to (`TYPE` →
+ *  `voipType`), for call logs stored before LAAB read those. */
+const legacyCallKeys: Record<string, string> = {
+  TYPE: "voipType",
+  RESULT: "voipResult",
+  DURATION: "voipDuration",
+  GC_EVT_TYPE: "voipGcEventType",
+  GC_MEDIA_TYPE: "voipGcMediaType",
+};
+
 export function readCall(m: Message): CallInfo | null {
   if (m.contentType !== "CALL") return null;
-  const meta = m.metadata;
-  const group = meta.TYPE === "G" || "GC_EVT_TYPE" in meta;
+  const raw = m.metadata;
+  const meta: Record<string, string | undefined> = { ...raw };
+  for (const [key, old] of Object.entries(legacyCallKeys)) if (meta[key] === undefined && raw[old] !== undefined) meta[key] = raw[old];
+  const group = meta.TYPE === "G" || meta.GC_EVT_TYPE !== undefined;
   const video = group ? meta.GC_MEDIA_TYPE === "VIDEO" || meta.GC_MEDIA_TYPE === "V" : meta.TYPE === "V";
   const outcomes: Record<string, CallInfo["outcome"]> = {
     NORMAL: "completed",
     NO_RESPONSE: "no_response",
     REJECTED: "rejected",
     CANCELED: "canceled",
+    BUSY: "busy",
+    FAIL: "failed",
   };
+  const phases: Record<string, CallInfo["phase"]> = { S: "start", E: "end", I: "invite" };
   return {
     kind: video ? "video" : "voice",
     outcome: outcomes[meta.RESULT ?? ""] ?? "unknown",
-    phase: meta.GC_EVT_TYPE === "S" ? "start" : meta.GC_EVT_TYPE === "E" ? "end" : null,
+    phase: phases[meta.GC_EVT_TYPE ?? ""] ?? null,
     group,
     durationMs: Number(meta.DURATION ?? m.durationMs ?? 0) || 0,
   };
@@ -42,6 +57,7 @@ export function duration(ms: number): string {
 /** The label inside a call bubble. */
 export function callBubbleLabel(call: CallInfo, mine: boolean): string {
   if (call.group && call.phase === "start") return "เริ่มการโทรแบบกลุ่มแล้ว";
+  if (call.group && call.phase === "invite") return "เชิญเข้าร่วมการโทรแบบกลุ่ม";
   switch (call.outcome) {
     case "completed":
       return duration(call.durationMs);
@@ -51,6 +67,11 @@ export function callBubbleLabel(call: CallInfo, mine: boolean): string {
       return mine ? "สายถูกปฏิเสธ" : "ปฏิเสธสาย";
     case "canceled":
       return mine ? "ยกเลิก" : "สายที่ไม่ได้รับ";
+    // The person called was on another call.
+    case "busy":
+      return mine ? "สายไม่ว่าง" : "สายที่ไม่ได้รับ";
+    case "failed":
+      return "โทรไม่สำเร็จ";
     default:
       return "การโทร";
   }

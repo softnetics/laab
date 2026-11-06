@@ -97,6 +97,16 @@ describe("notices", () => {
     const done = readCall(msg({ contentType: "CALL", metadata: { TYPE: "V", RESULT: "NORMAL", DURATION: "3725000" } }))!;
     expect(done.kind).toBe("video");
     expect(callBubbleLabel(done, true)).toBe("1:02:05");
+    const busy = readCall(msg({ contentType: "CALL", metadata: { TYPE: "A", RESULT: "BUSY" } }))!;
+    expect(callBubbleLabel(busy, true)).toBe("สายไม่ว่าง");
+    expect(callBubbleLabel(busy, false)).toBe("สายที่ไม่ได้รับ");
+    expect(callBubbleLabel(readCall(msg({ contentType: "CALL", metadata: { RESULT: "FAIL" } }))!, true)).toBe("โทรไม่สำเร็จ");
+    expect(callBubbleLabel(readCall(msg({ contentType: "CALL", metadata: { RESULT: "INFO" } }))!, true)).toBe("การโทร");
+    const invite = readCall(msg({ contentType: "CALL", metadata: { GC_EVT_TYPE: "I", GC_MEDIA_TYPE: "VIDEO" } }))!;
+    expect([invite.group, invite.kind, callBubbleLabel(invite, false)]).toEqual([true, "video", "เชิญเข้าร่วมการโทรแบบกลุ่ม"]);
+    // Older call logs carry voip… keys.
+    const legacy = readCall(msg({ contentType: "CALL", metadata: { voipType: "V", voipResult: "NORMAL", voipDuration: "61000" } }))!;
+    expect([legacy.kind, callBubbleLabel(legacy, false)]).toEqual(["video", "01:01"]);
   });
   it("turns group events and unsends into notice rows", () => {
     const ev = readChatEvent(msg({ contentType: "CHATEVENT", metadata: { LOC_KEY: "C_MI", LOC_ARGS: "me\u001eu2" } }))!;

@@ -2,6 +2,7 @@ import { invoke as tauriInvoke, type InvokeArgs } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { QueryClient, queryOptions, useQuery } from "@tanstack/react-query";
 import { useEffect } from "react";
+import { translateTarget } from "./translate";
 import { setUi } from "./ui";
 import type { ViewerPayload } from "./viewer";
 import type {
@@ -101,6 +102,9 @@ export const api = {
     invoke<void>("liff_dev_action", { label, action }),
   liffDevEval: (label: string, code: string) => invoke<void>("liff_dev_eval", { label, code }),
   openLiffDevtools: (focus: string | null = null) => invoke<void>("open_liff_devtools", { focus }),
+  /** What LINE's consent page for a LIFF link asks for; grants nothing. */
+  liffConsentInfo: (url: string, chatId: string | null) =>
+    invoke<{ permissions: { code: string; label: string }[]; consentUrl: string }>("liff_consent_info", { url, chatId }),
   liffShare: (window: string, liffId: string, ott: string, chatIds: string[], messages: unknown) =>
     invoke<{ sent: number; failed: string[] }>("liff_share", { window, liffId, ott, chatIds, messages }),
   openChatWindow: (chatId: string, title: string) => invoke<void>("open_chat_window", { chatId, title }),
@@ -117,7 +121,7 @@ export const api = {
   unsend: (messageId: string) => invoke<void>("unsend", { messageId }),
   editMessage: (chatId: string, messageId: string, text: string, mentions: MentionSpan[] = []) =>
     invoke<void>("edit_message", { chatId, messageId, text, mentions }),
-  translate: (text: string, target = "th") => invoke<string>("translate", { text, target }),
+  translate: (text: string, target = translateTarget()) => invoke<string>("translate", { text, target }),
   saveToKeep: (chatId: string, messageId: string) => invoke<void>("save_to_keep", { chatId, messageId }),
   hideChat: (chatId: string) => invoke<void>("hide_chat", { chatId }),
   deleteHistory: (chatId: string) => invoke<void>("delete_history", { chatId }),
@@ -142,6 +146,8 @@ export const api = {
     invoke<void>("create_calendar_event", { chatId, event, notify }),
   updateCalendarEvent: (chatId: string, eventId: string, updatedAt: number, event: CalendarEventInput, notify: boolean) =>
     invoke<void>("update_calendar_event", { chatId, eventId, updatedAt, event, notify }),
+  respondCalendarInvitation: (chatId: string, eventId: string, recurId: number | null, accept: boolean, updatedAt: number) =>
+    invoke<void>("respond_calendar_invitation", { chatId, eventId, recurId, accept, updatedAt }),
   deleteCalendarEvent: (chatId: string, eventId: string, updatedAt: number, notify: boolean) =>
     invoke<void>("delete_calendar_event", { chatId, eventId, updatedAt, notify }),
   listAlbums: (chatId: string) => invoke<Album[]>("list_albums", { chatId }),

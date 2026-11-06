@@ -401,6 +401,7 @@ async fn connected(state: Arc<AppState>, client: Client, device: Device) {
     });
 
     spawn_forwarders(&state, &line);
+    tokio::spawn(load_notification_settings(client.clone()));
     {
         let (s, c) = (state.clone(), client.clone());
         tokio::spawn(async move {
@@ -435,6 +436,21 @@ async fn connected(state: Arc<AppState>, client: Client, device: Device) {
         name_stored_files(&s).await;
         crate::actions::prefetch_calendars(&s, None).await;
     });
+}
+
+/// Read the account's settings (LINE's, shared by every device): the
+/// notification ones for the banner rules, and the account's language for
+/// LIFF apps. On failure the banner rules treat every switch as on, as
+/// before.
+async fn load_notification_settings(client: Client) {
+    match client.base.talk().get_settings(line_rs::tv!({})).await {
+        Ok(v) => {
+            use line_rs::client::settings::NotificationSettings;
+            crate::notify::set_settings(Some(NotificationSettings::from_settings(&v)));
+            crate::liff::set_account_locale(v["preferenceLocale"].as_str().map(str::to_string));
+        }
+        Err(e) => tracing::warn!("account settings: {}", e.full_message()),
+    }
 }
 
 /// Give names to E2EE files synced before LAAB read them from the payload,
@@ -655,6 +671,17 @@ async fn handle_event(state: &Arc<AppState>, line: &Arc<Line>, ev: LineEvent) {
                     )
                 };
                 apply_reaction(state, &r.message_id, &user, name.as_deref());
+                if !removed {
+                    crate::notify::maybe_notify_reaction(state, &r.message_id, &user, &line.me);
+                }
+            }
+            // Settings changed, maybe on the phone: read the notification
+            // ones again when they are among them.
+            TalkEvent::SettingsUpdated { attributes } => {
+                use line_rs::client::settings::NOTIFICATION_ATTRIBUTES;
+                if attributes.is_empty() || attributes.iter().any(|a| NOTIFICATION_ATTRIBUTES.contains(a)) {
+                    tokio::spawn(load_notification_settings(line.client.clone()));
+                }
             }
             TalkEvent::Unsend { message_id, .. } => apply_unsend(state, &message_id),
             // Invited to a group: it shows up in the list to accept or not.

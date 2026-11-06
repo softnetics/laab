@@ -909,6 +909,18 @@ pub async fn open_liff(state: S<'_>, req: LiffOpen) -> R<()> {
     crate::liff::open_window(&s, &view, req.chat_id).map_err(err)
 }
 
+/// What LINE's consent page for a LIFF link asks for, to show before the
+/// user agrees.
+#[tauri::command]
+pub async fn liff_consent_info(
+    state: S<'_>,
+    url: String,
+    chat_id: Option<String>,
+) -> R<crate::liff::ConsentInfo> {
+    let s = state.inner().clone();
+    crate::liff::consent_info(&s, &url, chat_id).await.map_err(err)
+}
+
 /// Every LIFF window opened this run, with its log.
 #[tauri::command]
 pub fn liff_dev_sessions() -> Vec<crate::liff_devtools::Session> {
@@ -995,7 +1007,10 @@ pub async fn liff_share(
             .await
             .map_err(err)?
     };
-    let _ = crate::liff::picker_result(&liff_id, &ott, result.sent > 0).await;
+    let outcome = crate::liff::picker_outcome(chat_ids.len(), &result);
+    if let Err(e) = crate::liff::picker_result(&s, &liff_id, &ott, outcome).await {
+        tracing::warn!("share picker result: {e}");
+    }
     if let Some(w) = s.app.get_webview_window(&window) {
         let _ = w.set_focus();
     }
@@ -1449,6 +1464,26 @@ pub async fn update_calendar_event(
     }
     let s = state.inner().clone();
     crate::actions::update_calendar_event(&s, &chat_id, &event_id, updated_at, &event, notify)
+        .await
+        .map_err(err)
+}
+
+/// Accept or decline an invitation to a calendar event.
+#[tauri::command]
+pub async fn respond_calendar_invitation(
+    state: S<'_>,
+    chat_id: String,
+    event_id: String,
+    recur_id: Option<i64>,
+    accept: bool,
+    updated_at: i64,
+) -> R<()> {
+    if state.demo {
+        crate::demo::respond_calendar_invitation(&chat_id, &event_id, accept);
+        return Ok(());
+    }
+    let s = state.inner().clone();
+    crate::actions::respond_calendar_invitation(&s, &chat_id, &event_id, recur_id, accept, updated_at)
         .await
         .map_err(err)
 }

@@ -175,7 +175,10 @@ pub fn message_from_json(raw: &Json, me: &str, decrypted: bool) -> Option<Messag
     let to = str_of(&raw["to"]).unwrap_or_default();
     let mine = !me.is_empty() && from == me;
     let content_type = content_type_name(&raw["contentType"]);
-    let meta = metadata(raw);
+    let mut meta = metadata(raw);
+    if content_type == "CALL" {
+        legacy_call_keys(&mut meta);
+    }
     let mut text = if decrypted {
         raw["text"].as_str().unwrap_or("").to_string()
     } else {
@@ -260,6 +263,26 @@ fn duration_label(ms: i64) -> String {
     }
 }
 
+/// Older call logs carry `voip*` keys; LINE reads them when the newer key
+/// is missing (`pn8/b.java`), so they are copied over.
+fn legacy_call_keys(meta: &mut BTreeMap<String, String>) {
+    for (new, old) in [
+        ("TYPE", "voipType"),
+        ("RESULT", "voipResult"),
+        ("DURATION", "voipDuration"),
+        ("PHONE", "voipPhone"),
+        ("GC_EVT_TYPE", "voipGcEventType"),
+        ("GC_MEDIA_TYPE", "voipGcMediaType"),
+        ("GC_CHAT_MID", "voipGcChatMid"),
+    ] {
+        if !meta.contains_key(new)
+            && let Some(v) = meta.get(old).cloned()
+        {
+            meta.insert(new.into(), v);
+        }
+    }
+}
+
 /// Call wording for previews and notifications.
 pub fn call_text(m: &Message, caller: &str) -> String {
     let meta = &m.metadata;
@@ -274,10 +297,10 @@ pub fn call_text(m: &Message, caller: &str) -> String {
         meta.get("TYPE").map(String::as_str) == Some("V")
     };
     if group {
-        return if meta.get("GC_EVT_TYPE").map(String::as_str) == Some("E") {
-            "สิ้นสุดการโทรแบบกลุ่มแล้ว".into()
-        } else {
-            format!("📞 {caller} เริ่มการโทรแบบกลุ่มแล้ว")
+        return match meta.get("GC_EVT_TYPE").map(String::as_str) {
+            Some("E") => "สิ้นสุดการโทรแบบกลุ่มแล้ว".into(),
+            Some("I") => format!("📞 {caller} เชิญเข้าร่วมการโทรแบบกลุ่ม"),
+            _ => format!("📞 {caller} เริ่มการโทรแบบกลุ่มแล้ว"),
         };
     }
     let icon = if video { "🎥" } else { "📞" };
@@ -291,7 +314,10 @@ pub fn call_text(m: &Message, caller: &str) -> String {
         Some("REJECTED") if m.mine => format!("{icon} สายถูกปฏิเสธ"),
         Some("REJECTED") => format!("{icon} ปฏิเสธสาย"),
         Some("CANCELED") if m.mine => format!("{icon} ยกเลิก"),
-        Some("NO_RESPONSE") | Some("CANCELED") => format!("{icon} สายที่ไม่ได้รับ"),
+        // The person called was on another call.
+        Some("BUSY") if m.mine => format!("{icon} สายไม่ว่าง"),
+        Some("NO_RESPONSE") | Some("CANCELED") | Some("BUSY") => format!("{icon} สายที่ไม่ได้รับ"),
+        Some("FAIL") => format!("{icon} โทรไม่สำเร็จ"),
         _ => format!("{icon} การโทร"),
     }
 }
@@ -416,6 +442,32 @@ mod tests {
         m.metadata.insert("RESULT".into(), "NORMAL".into());
         m.duration_ms = Some(185_000);
         assert_eq!(call_text(&m, "x"), "📞 เวลาโทร : 03:05");
+        m.metadata.insert("RESULT".into(), "BUSY".into());
+        assert_eq!(call_text(&m, "x"), "📞 สายที่ไม่ได้รับ");
+        m.mine = true;
+        assert_eq!(call_text(&m, "x"), "📞 สายไม่ว่าง");
+        m.metadata.insert("RESULT".into(), "FAIL".into());
+        assert_eq!(call_text(&m, "x"), "📞 โทรไม่สำเร็จ");
+        m.metadata.insert("RESULT".into(), "INFO".into());
+        assert_eq!(call_text(&m, "x"), "📞 การโทร");
+        m.metadata.clear();
+        m.metadata.insert("GC_EVT_TYPE".into(), "I".into());
+        assert_eq!(call_text(&m, "คุณ"), "📞 คุณ เชิญเข้าร่วมการโทรแบบกลุ่ม");
+    }
+
+    #[test]
+    fn reads_legacy_call_keys() {
+        let raw = serde_json::json!({"id": "1", "from": "u2", "to": "u1", "contentType": "CALL",
+            "contentMetadata": {"voipType": "V", "voipResult": "NORMAL", "voipDuration": "61000"}});
+        let m = message_from_json(&raw, "u1", true).unwrap();
+        assert_eq!(m.metadata.get("TYPE").map(String::as_str), Some("V"));
+        assert_eq!(m.duration_ms, Some(61_000));
+        assert_eq!(call_text(&m, "x"), "🎥 เวลาโทร : 01:01");
+        // The newer key wins.
+        let raw = serde_json::json!({"id": "2", "from": "u2", "to": "u1", "contentType": "CALL",
+            "contentMetadata": {"RESULT": "REJECTED", "voipResult": "NORMAL"}});
+        let m = message_from_json(&raw, "u1", true).unwrap();
+        assert_eq!(m.metadata.get("RESULT").map(String::as_str), Some("REJECTED"));
     }
 
     #[test]

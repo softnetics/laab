@@ -3,7 +3,7 @@
 // day for someone in Tokyo. On the wire an all-day event ends at midnight
 // after its last day.
 
-import type { CalendarEvent, CalendarEventInput } from "./types";
+import type { CalendarEvent, CalendarEventInput, CalendarRecurrence } from "./types";
 
 export const thaiMonths = [
   "มกราคม",
@@ -241,16 +241,36 @@ function local(date: string, time = "00:00"): number {
   return new Date(y, m - 1, d, h || 0, min || 0).getTime();
 }
 
-/** The form as what LINE stores, or why it can't be saved. */
-export function inputOf(f: EventForm, zone = localZone()): CalendarEventInput | { error: string } {
+/** Wall time `date` `time` in `zone` to epoch ms (the Mac's zone when the
+ *  zone is unknown). */
+export function zonedMs(date: string, time = "00:00", zone?: string): number {
+  if (!zone) return local(date, time);
+  const [y, m, d] = date.split("-").map(Number);
+  const [h, min] = time.split(":").map(Number);
+  const want = Date.UTC(y, m - 1, d, h || 0, min || 0);
+  // Guess, see what wall time that is in the zone, and correct by the
+  // difference; twice, for a guess that lands across a DST change.
+  let t = want;
+  for (let i = 0; i < 2; i++) {
+    const p = partsIn(t, zone);
+    t += want - Date.UTC(p.y, p.m, p.d, p.h, p.min);
+  }
+  return t;
+}
+
+/** The form as what LINE stores, or why it can't be saved. `zone` is the
+ *  event's own zone (an edit keeps it); a new event takes the Mac's. Timed
+ *  events are entered in the Mac's time, all-day ones as dates in `zone`. */
+export function inputOf(f: EventForm, zone = localZone(), reminders?: number[]): CalendarEventInput | { error: string } {
   if (!f.title.trim()) return { error: "ใส่ชื่อนัดหมายก่อน" };
   if (!f.startDate || !f.endDate) return { error: "เลือกวันที่ก่อน" };
   let start: number;
   let end: number;
   if (f.allDay) {
-    start = local(f.startDate);
-    const last = new Date(local(f.endDate));
-    end = new Date(last.getFullYear(), last.getMonth(), last.getDate() + 1).getTime();
+    start = zonedMs(f.startDate, "00:00", zone);
+    const [y, m, d] = f.endDate.split("-").map(Number);
+    const next = new Date(Date.UTC(y, m - 1, d + 1));
+    end = zonedMs(dayKey(next.getUTCFullYear(), next.getUTCMonth(), next.getUTCDate()), "00:00", zone);
   } else {
     start = local(f.startDate, f.startTime);
     end = local(f.endDate, f.endTime);
@@ -265,7 +285,210 @@ export function inputOf(f: EventForm, zone = localZone()): CalendarEventInput | 
     location: f.location,
     url: f.url,
     description: f.description,
+    ...(reminders ? { reminders } : {}),
   };
+}
+
+// -- repeats -----------------------------------------------------------------
+
+const DOW = ["SU", "MO", "TU", "WE", "TH", "FR", "SA"];
+/** Days since the epoch of a y/m(0-based)/d date. */
+const dayNum = (y: number, m: number, d: number) => Math.round(Date.UTC(y, m, d) / DAY);
+const dateOf = (n: number) => {
+  const t = new Date(n * DAY);
+  return { y: t.getUTCFullYear(), m: t.getUTCMonth(), d: t.getUTCDate() };
+};
+const daysInMonth = (y: number, m: number) => new Date(Date.UTC(y, m + 1, 0)).getUTCDate();
+
+/** A BYDAY entry: its weekday (0 = Sunday) and ordinal (0 when none). */
+function parseByDay(s: string): { dow: number; nth: number } | null {
+  const m = s.trim().toUpperCase().match(/^([+-]?\d{1,2})?(SU|MO|TU|WE|TH|FR|SA)$/);
+  return m ? { dow: DOW.indexOf(m[2]), nth: m[1] ? Number(m[1]) : 0 } : null;
+}
+
+/** The `nth` (1…5, or -1 for last) `dow` of a month, or null if there isn't one. */
+function nthWeekday(y: number, m: number, dow: number, nth: number): number | null {
+  const len = daysInMonth(y, m);
+  if (nth > 0) {
+    const first = new Date(Date.UTC(y, m, 1)).getUTCDay();
+    const d = 1 + ((dow - first + 7) % 7) + (nth - 1) * 7;
+    return d <= len ? d : null;
+  }
+  const last = new Date(Date.UTC(y, m, len)).getUTCDay();
+  const d = len - ((last - dow + 7) % 7) + (nth + 1) * 7;
+  return d >= 1 ? d : null;
+}
+
+/** The dates (day numbers) a rule gives in period `k` (the k-th day, week,
+ *  month or year from the first), in order. */
+function periodDays(r: CalendarRecurrence, first: { y: number; m: number; d: number }, k: number): number[] {
+  const start = dayNum(first.y, first.m, first.d);
+  const days = r.byDay.map(parseByDay).filter((x): x is { dow: number; nth: number } => !!x);
+  switch (r.frequency) {
+    case "daily":
+      return [start + k];
+    case "weekly": {
+      // Weeks start on Monday (iCalendar's default WKST).
+      const monday = start - ((new Date(start * DAY).getUTCDay() + 6) % 7) + k * 7;
+      const dows = days.length ? days.map((x) => x.dow) : [new Date(start * DAY).getUTCDay()];
+      return [...new Set(dows.map((dow) => monday + ((dow + 6) % 7)))].sort((a, b) => a - b);
+    }
+    case "monthly": {
+      const ym = first.y * 12 + first.m + k;
+      const y = Math.floor(ym / 12);
+      const m = ym % 12;
+      if (!days.length) return first.d <= daysInMonth(y, m) ? [dayNum(y, m, first.d)] : [];
+      const out: number[] = [];
+      for (const { dow, nth } of days) {
+        if (nth) {
+          const d = nthWeekday(y, m, dow, nth);
+          if (d) out.push(dayNum(y, m, d));
+        } else {
+          for (let n = 1; n <= 5; n++) {
+            const d = nthWeekday(y, m, dow, n);
+            if (d) out.push(dayNum(y, m, d));
+          }
+        }
+      }
+      return [...new Set(out)].sort((a, b) => a - b);
+    }
+    case "yearly": {
+      const y = first.y + k;
+      return first.d <= daysInMonth(y, first.m) ? [dayNum(y, first.m, first.d)] : [];
+    }
+    default:
+      return [];
+  }
+}
+
+/** The longest period of each frequency, in days: skipping ahead by these never skips too far. */
+const PERIOD_DAYS = { daily: 1, weekly: 7, monthly: 31, yearly: 366 } as const;
+
+/** Original starts (ms) of a recurring event's occurrences that start
+ *  before `to` and end after `from`, before exceptions and changes. */
+export function occurrenceStarts(e: CalendarEvent, from: number, to: number, limit = 1000): number[] {
+  const r = e.recurrence;
+  if (!r || !(r.frequency in PERIOD_DAYS)) return [e.start];
+  const zone = e.timezone || undefined;
+  const first = partsIn(e.start, zone);
+  const time = `${pad(first.h)}:${pad(first.min)}`;
+  const length = Math.max(0, e.end - e.start);
+  const step = Math.max(1, r.interval || 1);
+  const per = PERIOD_DAYS[r.frequency as keyof typeof PERIOD_DAYS];
+  // Skip the periods that end well before the window.
+  const behind = Math.floor((from - length - e.start) / DAY / per / step) - 1;
+  let k = Math.max(0, behind) * step;
+  const out: number[] = [];
+  const startDay = dayNum(first.y, first.m, first.d);
+  for (let guard = 0; guard < 5000 && out.length < limit; guard++, k += step) {
+    const days = periodDays(r, first, k);
+    let past = false;
+    for (const n of days) {
+      if (n < startDay) continue;
+      const d = dateOf(n);
+      const t = zonedMs(dayKey(d.y, d.m, d.d), time, zone);
+      if (t >= to || (r.until != null && t > r.until)) {
+        past = true;
+        break;
+      }
+      if (t + Math.max(length, 1) > from) out.push(t);
+    }
+    if (past) break;
+    // A month or year with no matching day can't stop the search on its own.
+    if (!days.length && k / step > 400) break;
+  }
+  return out;
+}
+
+/** One occurrence of `e`, by its original start: changed as LINE says, or
+ *  as the series has it. */
+export function occurrenceAt(e: CalendarEvent, recurId?: number): CalendarEvent {
+  if (recurId == null || !e.recurrence) return e;
+  const o = e.overrides?.find((x) => x.recurId === recurId && !x.deleted);
+  if (o) {
+    return { ...e, ...o, timezone: o.timezone || e.timezone, recurId };
+  }
+  return { ...e, start: recurId, end: recurId + (e.end - e.start), recurId };
+}
+
+/** The events and occurrences that touch `from`…`to` (epoch ms): a
+ *  recurring event becomes one entry per occurrence, without the ones LINE
+ *  says were deleted, and with changed ones as changed. */
+export function expand(events: CalendarEvent[], from: number, to: number): CalendarEvent[] {
+  const out: CalendarEvent[] = [];
+  for (const e of events) {
+    const r = e.recurrence;
+    if (!r || !(r.frequency in PERIOD_DAYS)) {
+      out.push(e);
+      continue;
+    }
+    const overrides = new Map((e.overrides ?? []).map((o) => [o.recurId, o]));
+    const except = new Set(r.exceptIds);
+    const used = new Set<number>();
+    for (const s of occurrenceStarts(e, from, to)) {
+      const o = overrides.get(s);
+      if (o) {
+        used.add(s);
+        if (!o.deleted) out.push(occurrenceAt(e, s));
+      } else if (!except.has(s)) {
+        out.push(occurrenceAt(e, s));
+      }
+    }
+    // A changed occurrence moved into the window from outside it.
+    for (const o of overrides.values()) {
+      if (!used.has(o.recurId) && !o.deleted && o.start < to && Math.max(o.end, o.start + 1) > from) out.push(occurrenceAt(e, o.recurId));
+    }
+  }
+  return out;
+}
+
+/** A unique key for an event or one occurrence of it. */
+export const occurrenceKey = (e: CalendarEvent) => (e.recurId != null ? `${e.id}:${e.recurId}` : e.id);
+
+const thaiDow = ["อาทิตย์", "จันทร์", "อังคาร", "พุธ", "พฤหัสบดี", "ศุกร์", "เสาร์"];
+const ordinal: Record<number, string> = { 1: "แรก", 2: "ที่ 2", 3: "ที่ 3", 4: "ที่ 4", 5: "ที่ 5", [-1]: "สุดท้าย" };
+
+/** "ทุกสัปดาห์ วันจันทร์ พุธ", "ทุก 2 เดือน วันศุกร์สุดท้าย", with "จนถึง …"
+ *  when it ends. Empty for a one-off or a rule LAAB can't read. */
+export function recurrenceLabel(e: CalendarEvent, thisYear = new Date().getFullYear()): string {
+  const r = e.recurrence;
+  if (!r || !(r.frequency in PERIOD_DAYS)) return "";
+  const n = Math.max(1, r.interval || 1);
+  const unit = { daily: "วัน", weekly: "สัปดาห์", monthly: "เดือน", yearly: "ปี" }[r.frequency as keyof typeof PERIOD_DAYS];
+  let text = n === 1 ? `ทุก${unit}` : `ทุก ${n} ${unit}`;
+  const days = r.byDay.map(parseByDay).filter((x): x is { dow: number; nth: number } => !!x);
+  const first = partsIn(e.start, e.timezone || undefined);
+  if (r.frequency === "weekly" && days.length) {
+    text += ` วัน${days.map((d) => thaiDow[d.dow]).join(" ")}`;
+  } else if (r.frequency === "monthly") {
+    text += days.length
+      ? ` ${days.map((d) => `วัน${thaiDow[d.dow]}${d.nth ? ordinal[d.nth] ?? `ที่ ${d.nth}` : ""}`).join(" ")}`
+      : ` วันที่ ${first.d}`;
+  } else if (r.frequency === "yearly") {
+    text += ` วันที่ ${first.d} ${thaiMonths[first.m]}`;
+  }
+  if (r.until != null) text += ` จนถึง ${dayLabel(keyOf(partsIn(r.until, e.timezone || undefined)), thisYear)}`;
+  return text;
+}
+
+/** LINE Calendar's reminder choices (`Reminder`), in the app's order. */
+export const reminderOptions: { value: number; label: string }[] = [
+  { value: 1, label: "1 ชั่วโมงก่อน" },
+  { value: 3, label: "2 ชั่วโมงก่อน" },
+  { value: 4, label: "1 วันก่อน" },
+  { value: 5, label: "2 วันก่อน" },
+  { value: 2, label: "12.00 น. วันก่อนหน้า" },
+  { value: 6, label: "12.00 น. 2 วันก่อน" },
+];
+
+export const reminderLabel = (v: number) => reminderOptions.find((o) => o.value === v)?.label ?? `แจ้งเตือน (${v})`;
+
+/** Epoch ms of the first and last day of a month grid, with a day's margin. */
+export function gridRange(year: number, month: number): [number, number] {
+  const cells = monthGrid(year, month);
+  const [fy, fm, fd] = cells[0].key.split("-").map(Number);
+  const [ly, lm, ld] = cells[cells.length - 1].key.split("-").map(Number);
+  return [Date.UTC(fy, fm - 1, fd) - 2 * DAY, Date.UTC(ly, lm - 1, ld) + 3 * DAY];
 }
 
 /** What someone types in a time field, as "HH:MM", or null if it isn't a
