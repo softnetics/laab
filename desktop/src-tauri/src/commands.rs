@@ -24,26 +24,19 @@ fn err(e: impl std::fmt::Display) -> String {
 }
 
 /// Reports a failed send (its kind only) and returns the error text.
-fn send_failed(state: &AppState, action: crate::usage::Action, e: impl std::error::Error) -> String {
-    let text = e.to_string();
-    // A timeout reads only "http: error sending request" until its sources
-    // are added, so the cause is worked out from the whole chain.
-    let mut chain = text.clone();
-    let mut source = e.source();
-    while let Some(s) = source {
-        chain.push_str(": ");
-        chain.push_str(&s.to_string());
-        source = s.source();
-    }
+fn send_failed(state: &AppState, action: crate::usage::Action, e: impl Into<line_rs::Error>) -> String {
+    let e = e.into();
     // Kept on this Mac, so a problem report the user sends can show why.
-    tracing::warn!("{} failed: {chain}", action.name());
-    crate::analytics::failed(state, crate::analytics::Failure::Send(action), &chain);
+    // `full_message` adds the causes, such as the timeout behind "error
+    // sending request".
+    tracing::warn!("{} failed: {}", action.name(), e.full_message());
+    crate::analytics::failed_with(state, crate::analytics::Failure::Send(action), &e);
     // line-rs opens each encrypted message as its recipients would before
     // sending it, and refuses one they couldn't read.
-    if text.contains("E2EE self-check failed") {
+    if matches!(&e, line_rs::Error::Crypto(m) if m.contains("E2EE self-check failed")) {
         return "ผู้รับจะเปิดข้อความที่เข้ารหัสนี้ไม่ได้ จึงยังไม่ได้ส่ง ลองออกจากระบบแล้วเข้าสู่ระบบใหม่".into();
     }
-    text
+    e.to_string()
 }
 
 #[tauri::command]
@@ -208,9 +201,8 @@ pub async fn refresh(state: S<'_>, full: Option<bool>) -> R<()> {
     line::refresh_chats(&s, full.unwrap_or(true))
         .await
         .map_err(|e| {
-            let text = e.to_string();
-            crate::analytics::failed(&s, crate::analytics::Failure::Sync, &text);
-            text
+            crate::analytics::failed_with(&s, crate::analytics::Failure::Sync, e.as_ref());
+            e.to_string()
         })
 }
 
@@ -312,12 +304,9 @@ pub async fn send_sticker(state: S<'_>, chat_id: String, sticker: Sticker) -> R<
     let input =
         MessageInput::sticker(&sticker.package_id, &sticker.sticker_id, &version).e2ee(false);
     let sent = l.client.send_message(&chat_id, input).await.map_err(|e| {
+        let owned = e.error_code() != Some(line_rs::ErrorCode::UserNotStickerOwner);
         let text = send_failed(&s, crate::usage::Action::SentSticker, e);
-        if text.contains("USER_NOT_STICKER_OWNER") {
-            "sticker_not_owned".to_string()
-        } else {
-            text
-        }
+        if owned { text } else { "sticker_not_owned".to_string() }
     })?;
     crate::usage::hit(crate::usage::Action::SentSticker);
     crate::stickers::remember(&s, &sticker);

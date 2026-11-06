@@ -147,8 +147,8 @@ impl Kick {
     }
 }
 
-/// What an error was about, worked out from its text on this machine. Only
-/// the category is sent.
+/// What an error was about, worked out on this machine. Only the category
+/// is sent.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Cause {
     Network,
@@ -166,6 +166,57 @@ pub enum Cause {
 }
 
 impl Cause {
+    /// From an error and its sources: a line-rs error is classified with its
+    /// own helpers, anything else from its text.
+    pub fn of_error(error: &(dyn std::error::Error + 'static)) -> Cause {
+        let mut source = Some(error);
+        while let Some(e) = source {
+            if let Some(e) = e.downcast_ref::<line_rs::Error>() {
+                return Cause::of_line(e);
+            }
+            source = e.source();
+        }
+        let mut text = error.to_string();
+        let mut source = error.source();
+        while let Some(s) = source {
+            text.push_str(": ");
+            text.push_str(&s.to_string());
+            source = s.source();
+        }
+        Cause::of(&text)
+    }
+
+    fn of_line(e: &line_rs::Error) -> Cause {
+        use line_rs::{Error as E, ErrorCode as C};
+        let kind = match e {
+            E::Internal { kind, .. } => kind.as_str(),
+            _ => "",
+        };
+        if kind == "MediaTooLarge"
+            || e.http_status() == Some(413)
+            || e.error_code() == Some(C::ExceedFileMaxSize)
+        {
+            Cause::TooLarge
+        } else if e.is_e2ee() {
+            Cause::E2ee
+        } else if e.is_auth_dead() || e.error_code() == Some(C::MustRefreshV3Token) {
+            Cause::Auth
+        } else if e.is_rate_limited() {
+            Cause::RateLimited
+        } else if e.is_network() {
+            Cause::Network
+        } else if kind == "ObsError" {
+            Cause::Upload
+        } else if matches!(e, E::Io(_)) {
+            Cause::File
+        } else if e.is_server() {
+            Cause::Server
+        } else {
+            Cause::of(&e.full_message())
+        }
+    }
+
+    /// From an error's text, for errors that don't come from line-rs.
     pub fn of(error: &str) -> Cause {
         let e = error.to_ascii_lowercase();
         let any = |words: &[&str]| words.iter().any(|w| e.contains(w));
@@ -362,6 +413,12 @@ pub fn signed_out(state: &AppState) {
 /// Reports a handled error, classified from its text (which isn't sent).
 pub fn failed(state: &AppState, failure: Failure, error: &str) {
     send(state, Event::Failed(failure, Cause::of(error)));
+}
+
+/// Reports a handled error, classified with [`Cause::of_error`] (the error
+/// isn't sent).
+pub fn failed_with(state: &AppState, failure: Failure, error: &(dyn std::error::Error + 'static)) {
+    send(state, Event::Failed(failure, Cause::of_error(error)));
 }
 
 /// Sends `event` in the background if the user turned statistics on.
@@ -574,6 +631,38 @@ mod tests {
             assert_eq!(body["properties"]["$process_person_profile"], false);
             assert_eq!(body["properties"]["$geoip_disable"], true);
         }
+    }
+
+    #[test]
+    fn causes_from_line_rs_errors() {
+        use line_rs::Error as E;
+        let talk = |code: &str| E::Request {
+            method: "sendMessage".into(),
+            path: "/S4".into(),
+            data: line_rs::tv!({"code": code, "reason": ""}),
+        };
+        for (error, cause) in [
+            (E::internal("MediaTooLarge", "The video is larger than 200MB."), Cause::TooLarge),
+            (E::internal("ObsError", "Object upload failed: HTTP 413"), Cause::TooLarge),
+            (E::internal("ObsError", "Object upload failed: HTTP 500"), Cause::Upload),
+            (E::internal("ObsError", "Object upload failed: HTTP 429"), Cause::RateLimited),
+            (E::internal("NoE2EEKey", "no group key"), Cause::E2ee),
+            (E::Crypto("E2EE self-check failed".into()), Cause::E2ee),
+            (talk("E2EE_RETRY_ENCRYPT"), Cause::E2ee),
+            (talk("NOT_AUTHORIZED_DEVICE"), Cause::Auth),
+            (talk("MUST_REFRESH_V3_TOKEN"), Cause::Auth),
+            (talk("ABUSE_BLOCK"), Cause::RateLimited),
+            (talk("INTERNAL_ERROR"), Cause::Server),
+            (E::internal("TimeoutError", "timed out"), Cause::Network),
+            (std::io::Error::from(std::io::ErrorKind::NotFound).into(), Cause::File),
+            (talk("NOT_A_MEMBER"), Cause::Other),
+        ] {
+            assert_eq!(Cause::of_error(&error), cause, "{error}");
+        }
+        // Found inside an anyhow chain too.
+        let wrapped = anyhow::Error::from(talk("ABUSE_BLOCK")).context("sending");
+        assert_eq!(Cause::of_error(wrapped.as_ref()), Cause::RateLimited);
+        assert_eq!(Cause::of_error(&std::io::Error::other("connection timed out")), Cause::Network);
     }
 
     #[test]

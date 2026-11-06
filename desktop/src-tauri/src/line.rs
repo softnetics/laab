@@ -97,24 +97,26 @@ fn open_storage(state: &Arc<AppState>) -> SessionStorage {
     SessionStorage(state.clone())
 }
 
+/// Whether `e` means the session is over and the user has to sign in
+/// again. line-rs's `is_auth_dead`, plus two cases LAAB also counts as dead:
+/// a request that still asks for a token refresh after line-rs tried one
+/// (`MUST_REFRESH_V3_TOKEN`, which line-rs leaves to the app), and a refresh
+/// LINE refused for any reason other than "try again" (line-rs counts only
+/// `INVALID_REQUEST`).
 fn auth_error(e: &line_rs::Error) -> bool {
-    let text = format!("{e:?} {e}");
-    [
-        "NOT_AUTHORIZED",
-        "LOGGED_OUT",
-        "AUTHENTICATION",
-        "V3_TOKEN_CLIENT_LOGGED_OUT",
-        "NOT_AUTHORIZED_DEVICE",
-    ]
-    .iter()
-    .any(|k| text.contains(k))
-        || token_dead(&text)
+    e.is_auth_dead()
+        || e.error_code() == Some(line_rs::ErrorCode::MustRefreshV3Token)
+        || matches!(
+            e,
+            line_rs::Error::Request { path, data, .. }
+                if path == line_rs::request::TOKEN_REFRESH_PATH
+                    && data["errorCode"].as_str() != Some("RETRY_REQUIRED")
+        )
 }
 
-/// Whether an error says the access token expired and LINE will not renew
-/// it: the `refresh` call itself was refused (other than "try again"), or a
-/// request still asks for a refresh after line-rs tried one. line-rs ends the
-/// session itself only for the logout reasons, not for these.
+/// [`auth_error`] for the text of a `RefreshError` log event, which line-rs
+/// sends as text: the `refresh` call was refused (other than "try again"),
+/// or a request still asks for a refresh.
 fn token_dead(text: &str) -> bool {
     (text.contains("request refresh(") && !text.contains("RETRY_REQUIRED"))
         || text.contains("MUST_REFRESH_V3_TOKEN")
@@ -153,16 +155,25 @@ fn logged<T, E: std::fmt::Display>(what: &str, result: std::result::Result<T, E>
 }
 
 /// Ask the server whether the session still works. A dead token ends it
-/// here; a logout reason makes line-rs emit `KickedOut`; a network error
-/// changes nothing.
+/// here; a logout reason makes line-rs emit `KickedOut`, which ends it
+/// instead; a network error changes nothing.
 async fn check_session(state: Arc<AppState>, line: Arc<Line>) {
     if let Err(e) = line.client.base.talk().get_server_time().await
-        && token_dead(&e.to_string())
+        && auth_error(&e)
+        && !kicked_out(&e)
     {
-        tracing::warn!("session expired: {e}");
+        tracing::warn!("session expired: {}", e.full_message());
         analytics::failed(&state, analytics::Failure::SessionEnded { kicked: None }, "");
         session_ended(state, line, EXPIRED).await;
     }
+}
+
+/// Whether line-rs ends the session itself for `e` and emits `KickedOut`:
+/// a logout reason (LAAB signs in as a secondary device), or a request on a
+/// client already kicked out or closed.
+fn kicked_out(e: &line_rs::Error) -> bool {
+    line_rs::base::LogoutReason::from_error_for(e, true).is_some()
+        || matches!(e, line_rs::Error::Internal { kind, .. } if kind == "LoggedOut" || kind == "ClientClosed")
 }
 
 /// Resume the saved session, or show the signed-out screen.
@@ -192,8 +203,8 @@ pub async fn start(state: Arc<AppState>) {
             if auth_error(&e) {
                 clear_auth(&state);
             }
-            tracing::warn!("token login failed: {e:?}");
-            analytics::failed(&state, analytics::Failure::Login(analytics::Login::Saved), &format!("{e:?} {e}"));
+            tracing::warn!("token login failed: {}", e.full_message());
+            analytics::failed_with(&state, analytics::Failure::Login(analytics::Login::Saved), &e);
             state.update_session(|s| {
                 s.state = "signed_out".into();
                 s.status = if auth_error(&e) {
@@ -245,7 +256,7 @@ pub async fn login_qr(state: Arc<AppState>) -> Result<()> {
             Ok(())
         }
         Err(e) => {
-            analytics::failed(&state, analytics::Failure::Login(analytics::Login::Qr), &format!("{e:?} {e}"));
+            analytics::failed_with(&state, analytics::Failure::Login(analytics::Login::Qr), &e);
             state.update_session(|s| {
                 s.state = "signed_out".into();
                 s.qr_url = None;
@@ -294,7 +305,7 @@ pub async fn login_password(
             Ok(())
         }
         Err(e) => {
-            analytics::failed(&state, analytics::Failure::Login(analytics::Login::Password), &format!("{e:?} {e}"));
+            analytics::failed_with(&state, analytics::Failure::Login(analytics::Login::Password), &e);
             state.update_session(|s| {
                 s.state = "signed_out".into();
                 s.pin = None;
@@ -1485,6 +1496,20 @@ mod tests {
 
     #[test]
     fn a_refused_refresh_ends_the_session() {
+        let at = |path: &str, data: Value| line_rs::Error::Request {
+            method: "m".into(),
+            path: path.into(),
+            data,
+        };
+        let refresh = line_rs::request::TOKEN_REFRESH_PATH;
+        assert!(auth_error(&at(refresh, tv!({"errorCode": "INVALID_REQUEST"}))));
+        assert!(auth_error(&at(refresh, tv!({"errorCode": "SOMETHING_ELSE"}))));
+        assert!(!auth_error(&at(refresh, tv!({"errorCode": "RETRY_REQUIRED"}))));
+        assert!(auth_error(&at("/S4", tv!({"code": "MUST_REFRESH_V3_TOKEN"}))));
+        assert!(auth_error(&at("/S4", tv!({"code": "NOT_AUTHORIZED_DEVICE"}))));
+        assert!(!auth_error(&at("/S4", tv!({"code": "INVALID_REQUEST"}))));
+        assert!(!auth_error(&line_rs::Error::internal("TimeoutError", "timed out")));
+
         let failed = |method: &str, data: Value| {
             line_rs::Error::Request { method: method.into(), path: "/p".into(), data }.to_string()
         };
@@ -1493,5 +1518,17 @@ mod tests {
         assert!(token_dead(&failed("sync", tv!({"code": "MUST_REFRESH_V3_TOKEN"}))));
         assert!(!token_dead(&failed("sendMessage", tv!({"code": "INVALID_REQUEST"}))));
         assert!(!token_dead("http: connection reset"));
+    }
+
+    #[test]
+    fn line_rs_ends_a_kicked_session_itself() {
+        let talk = |code: &str| line_rs::Error::Request {
+            method: "getServerTime".into(),
+            path: "/S4".into(),
+            data: tv!({"code": code, "reason": ""}),
+        };
+        assert!(kicked_out(&talk("AUTHENTICATION_FAILED")));
+        assert!(kicked_out(&talk("NOT_AUTHORIZED_DEVICE")));
+        assert!(!kicked_out(&talk("MUST_REFRESH_V3_TOKEN")));
     }
 }
