@@ -108,7 +108,7 @@ pub fn sniff_mime(data: &[u8], path: &Path) -> &'static str {
     }
 }
 
-fn respond(status: StatusCode, body: Vec<u8>, mime: &str) -> Response<Vec<u8>> {
+pub(crate) fn respond(status: StatusCode, body: Vec<u8>, mime: &str) -> Response<Vec<u8>> {
     Response::builder()
         .status(status)
         .header(header::CONTENT_TYPE, mime)
@@ -139,7 +139,7 @@ pub fn byte_range(header: &str, len: u64) -> Option<(u64, u64)> {
     (start <= end && end < len).then_some((start, end))
 }
 
-fn file_response(path: &Path, range: Option<&str>) -> Option<Response<Vec<u8>>> {
+pub(crate) fn file_response(path: &Path, range: Option<&str>) -> Option<Response<Vec<u8>>> {
     let mut file = crate::vault::CacheFile::open(path)
         .inspect_err(|e| tracing::warn!("{e:#}"))
         .ok()?;
@@ -174,6 +174,17 @@ pub async fn handle(state: Arc<AppState>, req: Request<Vec<u8>>) -> Response<Vec
         .split('/')
         .map(decode)
         .collect();
+    let range = req
+        .headers()
+        .get(header::RANGE)
+        .and_then(|v| v.to_str().ok());
+    if let [kind, chat, id] = parts.as_slice()
+        && kind == "message"
+        && query(&req, "preview").is_none()
+        && let Some(res) = stream_video(&state, chat, id, range).await
+    {
+        return res;
+    }
     let result = match parts
         .iter()
         .map(String::as_str)
@@ -205,10 +216,6 @@ pub async fn handle(state: Arc<AppState>, req: Request<Vec<u8>>) -> Response<Vec
         }
         _ => Err(anyhow!("unknown media path")),
     };
-    let range = req
-        .headers()
-        .get(header::RANGE)
-        .and_then(|v| v.to_str().ok());
     match result.ok().and_then(|p| file_response(&p, range)) {
         Some(r) => r,
         None => respond(StatusCode::NOT_FOUND, Vec::new(), "text/plain"),
@@ -451,6 +458,35 @@ async fn message_media(
             .update_media(id, Some(&saved.to_string_lossy()), None);
     }
     Ok(saved)
+}
+
+/// A video message that isn't cached yet plays while it downloads (see
+/// `stream.rs`). `None` for anything else.
+async fn stream_video(
+    state: &Arc<AppState>,
+    chat: &str,
+    id: &str,
+    range: Option<&str>,
+) -> Option<Response<Vec<u8>>> {
+    if state.demo || cached_media(&state.paths.media(), id, false).is_some() {
+        return None;
+    }
+    let message = state.store().message(id).ok().flatten()?;
+    if message.content_type != "VIDEO" {
+        return None;
+    }
+    let line = state.line().await?;
+    let not_found = || respond(StatusCode::NOT_FOUND, Vec::new(), "text/plain");
+    if let Err(e) = crate::line::ensure_media_message(state, &line, chat, id).await {
+        tracing::debug!("video {id}: {e:#}");
+        return Some(not_found());
+    }
+    let target = state.paths.media().join(format!("{}.full", safe_name(id)));
+    Some(
+        crate::stream::serve(state, &line, id, &target, range)
+            .await
+            .unwrap_or_else(not_found),
+    )
 }
 
 async fn sticker(state: &AppState, id: &str, anim: bool) -> Result<PathBuf> {

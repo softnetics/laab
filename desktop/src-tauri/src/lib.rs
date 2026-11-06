@@ -28,6 +28,7 @@ mod session;
 mod state;
 mod stickers;
 mod store;
+mod stream;
 mod traffic_lights;
 mod usage;
 mod vault;
