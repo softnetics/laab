@@ -38,6 +38,19 @@ async fn talk_seq(l: &Line) -> Result<i64> {
 
 // -- messages ---------------------------------------------------------------
 
+/// LINE's refusal of an edit or unsend, in Thai when it says why.
+fn refused(e: line_rs::Error) -> anyhow::Error {
+    use line_rs::ErrorCode as C;
+    let text = match e.error_code() {
+        Some(C::NotPremium) => "การแก้ไขข้อความใช้ได้เฉพาะสมาชิก LINE Premium",
+        Some(C::MessageNotEditable) => "ข้อความนี้แก้ไขไม่ได้",
+        Some(C::MessageNotEditableTimelimit) => "เลยเวลาที่ LINE ให้แก้ไขข้อความนี้แล้ว",
+        Some(C::MessageNotDestructible) => "ยกเลิกข้อความนี้ไม่ได้แล้ว LINE ให้ยกเลิกได้ภายใน 24 ชั่วโมงหลังส่ง",
+        _ => return e.into(),
+    };
+    anyhow!(text)
+}
+
 /// Unsend one of our messages for everyone.
 pub async fn unsend(state: &Arc<AppState>, message_id: &str) -> Result<()> {
     let l = line(state).await?;
@@ -46,7 +59,8 @@ pub async fn unsend(state: &Arc<AppState>, message_id: &str) -> Result<()> {
         .base
         .talk()
         .call("unsendMessage", tv!({"seq": seq, "messageId": message_id}))
-        .await?;
+        .await
+        .map_err(refused)?;
     line::apply_unsend(state, message_id);
     Ok(())
 }
@@ -90,7 +104,10 @@ pub async fn edit(
     }
     let l = line(state).await?;
     let raw = edit_target(line::stored_raw(state, message_id), &l.me, chat_id, message_id, mentions);
-    TalkMessage::new(l.client.clone(), raw).edit(text).await?;
+    TalkMessage::new(l.client.clone(), raw)
+        .edit(text)
+        .await
+        .map_err(refused)?;
     let _ = line::fetch_history(state, chat_id).await;
     Ok(())
 }
@@ -1224,5 +1241,18 @@ mod tests {
         assert_eq!(edited["from"].as_str(), Some("u-me"));
         assert_eq!(edited["to"].as_str(), Some("c1"));
         assert!(edited["contentMetadata"]["MENTION"].is_null());
+    }
+
+    #[test]
+    fn edit_and_unsend_refusals_read_in_thai() {
+        let talk = |code: &str| line_rs::Error::Request {
+            method: "editMessage".into(),
+            path: "/S4".into(),
+            data: tv!({"code": code, "reason": ""}),
+        };
+        assert!(refused(talk("NOT_PREMIUM")).to_string().contains("LINE Premium"));
+        assert!(refused(talk("MESSAGE_NOT_EDITABLE_TIMELIMIT")).to_string().contains("เลยเวลา"));
+        assert!(refused(talk("MESSAGE_NOT_DESTRUCTIBLE")).to_string().contains("24 ชั่วโมง"));
+        assert!(refused(talk("NOT_A_MEMBER")).to_string().contains("NOT_A_MEMBER"));
     }
 }
