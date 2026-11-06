@@ -24,13 +24,23 @@ fn err(e: impl std::fmt::Display) -> String {
 }
 
 /// Reports a failed send (its kind only) and returns the error text.
-fn send_failed(state: &AppState, action: crate::usage::Action, e: impl std::fmt::Display) -> String {
+fn send_failed(state: &AppState, action: crate::usage::Action, e: impl std::error::Error) -> String {
     let text = e.to_string();
-    crate::analytics::failed(state, crate::analytics::Failure::Send(action), &text);
+    // A timeout reads only "http: error sending request" until its sources
+    // are added, so the cause is worked out from the whole chain.
+    let mut chain = text.clone();
+    let mut source = e.source();
+    while let Some(s) = source {
+        chain.push_str(": ");
+        chain.push_str(&s.to_string());
+        source = s.source();
+    }
+    // Kept on this Mac, so a problem report the user sends can show why.
+    tracing::warn!("{} failed: {chain}", action.name());
+    crate::analytics::failed(state, crate::analytics::Failure::Send(action), &chain);
     // line-rs opens each encrypted message as its recipients would before
     // sending it, and refuses one they couldn't read.
     if text.contains("E2EE self-check failed") {
-        tracing::warn!("send refused: {text}");
         return "ผู้รับจะเปิดข้อความที่เข้ารหัสนี้ไม่ได้ จึงยังไม่ได้ส่ง ลองออกจากระบบแล้วเข้าสู่ระบบใหม่".into();
     }
     text
@@ -350,7 +360,10 @@ pub async fn send_files(state: S<'_>, chat_id: String, paths: Vec<String>) -> R<
             .unwrap_or("file")
             .to_string();
         s.status(format!("กำลังส่ง {name} ({}/{})", i + 1, paths.len()));
-        let data = tokio::fs::read(p).await.map_err(err)?;
+        let data = tokio::fs::read(p).await.map_err(|e| {
+            let text = send_failed(&s, crate::usage::Action::SentFile, e);
+            format!("เปิด {name} ไม่ได้: {text}")
+        })?;
         let ext = p
             .extension()
             .and_then(|e| e.to_str())

@@ -98,6 +98,13 @@ pub enum Cause {
     Auth,
     RateLimited,
     Server,
+    /// Letter Sealing: missing keys, or a message recipients couldn't open.
+    E2ee,
+    /// LINE's object storage refused or lost an upload.
+    Upload,
+    TooLarge,
+    /// Reading the file on this Mac.
+    File,
     Other,
 }
 
@@ -105,7 +112,15 @@ impl Cause {
     pub fn of(error: &str) -> Cause {
         let e = error.to_ascii_lowercase();
         let any = |words: &[&str]| words.iter().any(|w| e.contains(w));
-        if any(&["not_authorized", "logged_out", "authentication", "token", "unauthorized"]) {
+        if any(&["413", "too large", "too_large", "size_limit"]) {
+            Cause::TooLarge
+        } else if any(&["e2ee", "letter sealing", "keymaterial"]) {
+            Cause::E2ee
+        } else if any(&["obserror", "upload failed"]) {
+            Cause::Upload
+        } else if any(&["io:", "no such file", "permission denied", "operation not permitted"]) {
+            Cause::File
+        } else if any(&["not_authorized", "logged_out", "authentication", "token", "unauthorized"]) {
             Cause::Auth
         } else if any(&["rate", "too_many", "429", "abuse"]) {
             Cause::RateLimited
@@ -124,6 +139,10 @@ impl Cause {
             Cause::Auth => "auth",
             Cause::RateLimited => "rate_limited",
             Cause::Server => "server",
+            Cause::E2ee => "e2ee",
+            Cause::Upload => "upload",
+            Cause::TooLarge => "too_large",
+            Cause::File => "file",
             Cause::Other => "other",
         }
     }
@@ -394,6 +413,23 @@ mod tests {
     /// Guards against an event growing a property by accident: everything
     /// sent is listed here.
     use crate::crash::Frame;
+
+    #[test]
+    fn causes_from_error_text() {
+        for (error, cause) in [
+            ("ObsError: Object upload failed: HTTP 413", Cause::TooLarge),
+            ("ObsError: Object upload failed: HTTP 500", Cause::Upload),
+            ("ObsError: Object upload failed: no object id", Cause::Upload),
+            ("NoE2EEKey: no group key", Cause::E2ee),
+            ("E2EE self-check failed", Cause::E2ee),
+            ("No such file or directory (os error 2)", Cause::File),
+            ("http: error sending request: operation timed out", Cause::Network),
+            (r#"request sendMessage(/S4) failed: {"code":"NOT_AUTHORIZED_DEVICE"}"#, Cause::Auth),
+            ("something else", Cause::Other),
+        ] {
+            assert_eq!(Cause::of(error), cause, "{error}");
+        }
+    }
 
     #[test]
     fn empty_host_falls_back_to_default() {
