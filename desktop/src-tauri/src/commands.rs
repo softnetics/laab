@@ -399,19 +399,36 @@ async fn audio_duration_ms(path: &std::path::Path) -> Option<u64> {
     (secs.is_finite() && secs > 0.0).then(|| (secs * 1000.0).round() as u64)
 }
 
-async fn send_file(s: &AppState, chat: &line_rs::client::Chat, path: &str) -> Result<(), String> {
-    let p = std::path::Path::new(path);
-    let name = p
+fn file_name(path: &str) -> &str {
+    std::path::Path::new(path)
         .file_name()
         .and_then(|n| n.to_str())
         .unwrap_or("file")
-        .to_string();
-    let ext = p
+}
+
+fn file_kind(path: &str) -> ObjType {
+    let ext = std::path::Path::new(path)
         .extension()
         .and_then(|e| e.to_str())
         .unwrap_or("")
         .to_ascii_lowercase();
-    let kind = media_kind(&ext);
+    media_kind(&ext)
+}
+
+/// A file read and ready to send.
+struct Prepared {
+    name: String,
+    kind: ObjType,
+    file: ObsFile,
+    opts: MediaOptions,
+}
+
+/// Read `path` and work out what LINE's app sends with it: a photo's size,
+/// a video's length and thumbnail, an audio clip's length.
+async fn prepare_file(s: &AppState, path: &str) -> Result<Prepared, String> {
+    let p = std::path::Path::new(path);
+    let name = file_name(path).to_string();
+    let kind = file_kind(path);
     // Checked before reading, so a huge file isn't loaded only to be refused.
     if let Ok(meta) = tokio::fs::metadata(p).await
         && line_rs::obs::check_media_size(kind, meta.len() as usize).is_err()
@@ -426,15 +443,39 @@ async fn send_file(s: &AppState, chat: &line_rs::client::Chat, path: &str) -> Re
     let mut opts = MediaOptions::new();
     match kind {
         ObjType::Gif => opts = opts.animated(true),
+        ObjType::Image => {
+            if let crate::probe::Probe { width: Some(w), height: Some(h), .. } = crate::probe::image(p).await {
+                opts = opts.size(w, h);
+            }
+        }
+        ObjType::Video => {
+            let probe = crate::probe::video(p).await;
+            if let Some(ms) = probe.duration_ms {
+                opts = opts.duration_ms(ms);
+            }
+            if let Some(jpeg) = probe.preview {
+                opts = opts.preview(jpeg);
+            }
+        }
         ObjType::Audio => {
             if let Some(ms) = audio_duration_ms(p).await {
                 opts = opts.duration_ms(ms);
             }
         }
-        _ => {}
+        ObjType::File => {}
     }
     let file = ObsFile::new(data).name(name.clone());
-    match chat.send_media_with(kind, file, opts).await {
+    Ok(Prepared { name, kind, file, opts })
+}
+
+/// Count a sent file, or say in Thai why it wasn't sent.
+fn sent_result(
+    s: &AppState,
+    name: &str,
+    kind: ObjType,
+    res: line_rs::Result<line_rs::obs::SentMedia>,
+) -> Result<(), String> {
+    match res {
         Ok(_) => {
             crate::usage::hit(crate::usage::Action::SentFile);
             Ok(())
@@ -445,6 +486,12 @@ async fn send_file(s: &AppState, chat: &line_rs::client::Chat, path: &str) -> Re
             Err(if large { format!("{name}: {}", too_large(kind)) } else { format!("ส่ง {name} ไม่สำเร็จ: {text}") })
         }
     }
+}
+
+async fn send_file(s: &AppState, chat: &line_rs::client::Chat, path: &str) -> Result<(), String> {
+    let f = prepare_file(s, path).await?;
+    let res = chat.send_media_with(f.kind, f.file, f.opts).await;
+    sent_result(s, &f.name, f.kind, res)
 }
 
 /// Sends the files one by one, going on past one that fails, and returns
@@ -459,11 +506,7 @@ pub async fn send_files(state: S<'_>, chat_id: String, paths: Vec<String>) -> R<
     let chat = l.chat(&chat_id);
     let mut failed = Vec::new();
     for (i, path) in paths.iter().enumerate() {
-        let name = std::path::Path::new(path)
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("file");
-        s.status(format!("กำลังส่ง {name} ({}/{})", i + 1, paths.len()));
+        s.status(format!("กำลังส่ง {} ({}/{})", file_name(path), i + 1, paths.len()));
         if let Err(error) = send_file(&s, &chat, path).await {
             failed.push(FileFailure { path: path.clone(), error });
         }
