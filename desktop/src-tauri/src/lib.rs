@@ -13,6 +13,9 @@ mod liff;
 mod liff_devtools;
 mod line;
 mod logfile;
+mod mcp;
+mod mcp_bridge;
+mod mcp_tools;
 mod media;
 mod model;
 mod notify;
@@ -120,6 +123,11 @@ fn alert(message: &str, info: &str) {
     }
 }
 
+/// `LAAB mcp`: pipe stdio to the running app's MCP server.
+pub fn mcp_bridge(args: &[String]) -> i32 {
+    mcp_bridge::run(args)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     use tracing_subscriber::prelude::*;
@@ -174,6 +182,7 @@ pub fn run() {
             let state = AppState::new(app.handle().clone(), paths, demo, store);
             app.manage(state.clone());
             analytics::startup(&state);
+            mcp::start(&state);
             if SET_ASIDE.load(std::sync::atomic::Ordering::Relaxed) {
                 analytics::failed(&state, analytics::Failure::DatabaseUnreadable, "");
             }
@@ -268,6 +277,7 @@ pub fn run() {
             commands::open_chat_window,
             commands::is_demo,
             commands::analytics_status,
+            commands::want_feature,
             commands::set_analytics,
             commands::report_preview,
             commands::send_report,
@@ -296,6 +306,12 @@ pub fn run() {
             commands::create_note,
             commands::delete_note,
             commands::list_albums,
+            commands::calendar_events,
+            commands::all_calendar_events,
+            commands::cached_calendar,
+            commands::create_calendar_event,
+            commands::update_calendar_event,
+            commands::delete_calendar_event,
             commands::album_photos,
             commands::create_album,
             commands::rename_album,
@@ -313,6 +329,11 @@ pub fn run() {
             commands::quit,
             commands::note_detail,
             commands::add_comment,
+            commands::mcp_settings,
+            commands::set_mcp_settings,
+            commands::mcp_activity,
+            commands::clear_mcp_activity,
+            commands::mcp_setup,
         ])
         .build(tauri::generate_context!())
         .expect("error while building LAAB")
@@ -330,6 +351,7 @@ pub fn run() {
             }
             if let RunEvent::Exit = event {
                 cache::clear_open_copies();
+                mcp::shutdown(&app.state::<Arc<AppState>>());
             }
             let _ = (app, event);
         });

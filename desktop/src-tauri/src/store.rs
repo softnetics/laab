@@ -598,6 +598,20 @@ impl Store {
         Ok(list)
     }
 
+    /// The `limit` messages of a chat sent before `before` (ms), oldest first.
+    pub fn messages_before(&self, chat_id: &str, before: f64, limit: usize) -> Result<Vec<Message>> {
+        let sql = format!(
+            "SELECT * FROM (SELECT {} FROM messages WHERE chat_id=? AND created<? ORDER BY created DESC LIMIT ?) ORDER BY created",
+            Self::MESSAGE_COLUMNS
+        );
+        let mut stmt = self.db.prepare(&sql)?;
+        let mut list: Vec<Message> = stmt
+            .query_map(params![chat_id, before, limit as i64], Self::message_row)?
+            .collect::<rusqlite::Result<_>>()?;
+        self.attach_reactions(&mut list)?;
+        Ok(list)
+    }
+
     pub fn message(&self, id: &str) -> Result<Option<Message>> {
         let sql = format!("SELECT {} FROM messages WHERE id=?", Self::MESSAGE_COLUMNS);
         let mut list: Vec<Message> = self

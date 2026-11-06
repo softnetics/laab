@@ -108,8 +108,10 @@ function boxStyle(n: Node, defaultPad?: number): CSSProperties {
 
 function flexOf(n: Node, horizontal: boolean): CSSProperties {
   const noFlex = ["icon", "spacer", "separator"].includes(n.type);
-  const f = typeof n.flex === "number" ? n.flex : noFlex ? 0 : 1;
-  if (!horizontal) return f > 0 && n.type === "filler" ? { flex: 1 } : {};
+  // A set width (in a row) or height (in a column) is kept, as in LINE.
+  const fixed = horizontal ? n.width != null : n.height != null;
+  const f = typeof n.flex === "number" ? n.flex : noFlex || fixed ? 0 : 1;
+  if (!horizontal) return f > 0 && n.type === "filler" ? { flex: 1 } : fixed ? { flexShrink: 0 } : {};
   return f <= 0 ? { flex: "0 0 auto" } : { flex: `${f} 1 0%`, minWidth: 0 };
 }
 
@@ -208,6 +210,7 @@ function Component({
           style={{
             ...outer,
             width: full ? "100%" : undefined,
+            minWidth: 0,
             display: "flex",
             justifyContent: n.align === "start" ? "flex-start" : n.align === "end" ? "flex-end" : "center",
             ...(clickable.style ?? {}),
@@ -219,9 +222,11 @@ function Component({
             draggable={false}
             style={{
               width: w,
+              // LINE shrinks an image to its box, like an icon in a 42px box.
+              maxWidth: "100%",
               aspectRatio: `${rw || 1} / ${rh || 1}`,
               objectFit: n.aspectMode === "cover" ? "cover" : "contain",
-              background: n.backgroundColor ?? "#EDEEF0",
+              background: n.backgroundColor,
             }}
           />
         </div>

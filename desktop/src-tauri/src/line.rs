@@ -382,6 +382,7 @@ async fn connected(state: Arc<AppState>, client: Client, device: Device) {
             s.status(format!("โหลดรายชื่อแชทไม่สำเร็จ: {e}"));
         }
         name_stored_files(&s).await;
+        crate::actions::prefetch_calendars(&s, None).await;
     });
 }
 
@@ -513,7 +514,11 @@ async fn handle_event(state: &Arc<AppState>, line: &Arc<Line>, ev: LineEvent) {
         LineEvent::Message(m) | LineEvent::MessageEdit(m) => {
             let ct = m.content_type();
             line.remember_media(&m.raw, &ct);
-            let json = m.raw.to_json();
+            // line-rs decrypts text but not an E2EE file's payload, which
+            // holds its name; without this a file that arrives live, or that
+            // we just sent, has no name until LAAB restarts.
+            let raw = with_e2ee_file_name(line, m.raw.clone()).await;
+            let json = raw.to_json();
             let Some(mut msg) = convert::message_from_json(&json, &line.me, true) else {
                 return;
             };
@@ -531,6 +536,10 @@ async fn handle_event(state: &Arc<AppState>, line: &Arc<Line>, ev: LineEvent) {
                 }
                 apply_read(state, &chat_mid, &reader_mid, &message_id);
             }
+            TalkEvent::ChatChecked {
+                chat_mid,
+                message_id,
+            } => apply_checked(state, &chat_mid, &message_id),
             TalkEvent::Reaction(r) => {
                 let user = if r.reactor_mid.is_empty() {
                     line.me.clone()
@@ -611,6 +620,26 @@ pub fn apply_read(state: &AppState, chat: &str, reader: &str, message_id: &str) 
         let _ = store.set_read(chat, reader, &next);
         drop(store);
         state.reads_changed(chat);
+    }
+}
+
+/// We read a chat, maybe on the phone: lower its unread count to what came
+/// after the message we read through.
+pub fn apply_checked(state: &AppState, chat: &str, message_id: &str) {
+    let store = state.store();
+    let Ok(Some(row)) = store.chat(chat) else {
+        return;
+    };
+    if row.unread <= 0 {
+        return;
+    }
+    let recent = store.messages(chat, 500).unwrap_or_default();
+    let others = recent.iter().filter(|m| !m.mine).map(|m| m.id.as_str());
+    let unread = reads::unread_after(row.unread, message_id, others);
+    if unread != row.unread {
+        let _ = store.set_unread(chat, unread);
+        drop(store);
+        state.chats_changed();
     }
 }
 

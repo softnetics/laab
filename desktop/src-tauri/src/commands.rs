@@ -27,6 +27,12 @@ fn err(e: impl std::fmt::Display) -> String {
 fn send_failed(state: &AppState, action: crate::usage::Action, e: impl std::fmt::Display) -> String {
     let text = e.to_string();
     crate::analytics::failed(state, crate::analytics::Failure::Send(action), &text);
+    // line-rs opens each encrypted message as its recipients would before
+    // sending it, and refuses one they couldn't read.
+    if text.contains("E2EE self-check failed") {
+        tracing::warn!("send refused: {text}");
+        return "ผู้รับจะเปิดข้อความที่เข้ารหัสนี้ไม่ได้ จึงยังไม่ได้ส่ง ลองออกจากระบบแล้วเข้าสู่ระบบใหม่".into();
+    }
     text
 }
 
@@ -155,6 +161,7 @@ pub async fn open_chat(state: S<'_>, chat_id: String) -> R<Option<String>> {
         let _ = line::fetch_history(&s, &chat_id).await;
         acknowledge(&s, &chat_id).await;
         let _ = line::read_status(&s, &chat_id).await;
+        crate::actions::prefetch_calendars(&s, Some(&chat_id)).await;
         if chat_id.starts_with('c') || chat_id.starts_with('r') {
             let _ = line::load_members(&s, &chat_id, false).await;
         }
@@ -825,6 +832,14 @@ pub fn is_demo(state: S<'_>) -> bool {
     state.demo
 }
 
+/// "อยากได้ฟีเจอร์นี้": counted only with statistics on, like every event.
+#[tauri::command]
+pub fn want_feature(state: S<'_>, feature: String) -> R<()> {
+    let f = crate::analytics::Feature::parse(&feature).ok_or_else(|| format!("unknown feature {feature}"))?;
+    crate::analytics::send(&state, crate::analytics::Event::FeatureWanted(f));
+    Ok(())
+}
+
 #[tauri::command]
 pub fn analytics_status(state: S<'_>) -> crate::analytics::Status {
     crate::analytics::status(&state)
@@ -1161,6 +1176,95 @@ pub async fn delete_note(state: S<'_>, chat_id: String, post_id: String) -> R<()
 }
 
 #[tauri::command]
+pub async fn calendar_events(
+    state: S<'_>,
+    chat_id: String,
+) -> R<Vec<crate::actions::CalendarEvent>> {
+    crate::usage::hit(crate::usage::Action::OpenedCalendar);
+    if state.demo {
+        return Ok(crate::demo::calendar_events(&chat_id));
+    }
+    let s = state.inner().clone();
+    crate::actions::mark_calendar_used(&s);
+    crate::actions::calendar_events(&s, &chat_id)
+        .await
+        .map_err(err)
+}
+
+/// The events a calendar window (a chat id, or `all`) last loaded, to show
+/// while it loads fresh ones.
+#[tauri::command]
+pub fn cached_calendar(state: S<'_>, chat_id: String) -> Option<crate::actions::AllCalendars> {
+    crate::actions::cached_calendar(state.inner(), &chat_id)
+}
+
+/// Every calendar's events, for the rail's ปฏิทิน window.
+#[tauri::command]
+pub async fn all_calendar_events(state: S<'_>) -> R<crate::actions::AllCalendars> {
+    crate::usage::hit(crate::usage::Action::OpenedCalendar);
+    if state.demo {
+        return Ok(crate::demo::all_calendar_events());
+    }
+    let s = state.inner().clone();
+    crate::actions::mark_calendar_used(&s);
+    crate::actions::all_calendar_events(&s).await.map_err(err)
+}
+
+#[tauri::command]
+pub async fn create_calendar_event(
+    state: S<'_>,
+    chat_id: String,
+    event: crate::actions::CalendarEventInput,
+    notify: bool,
+) -> R<()> {
+    if state.demo {
+        crate::demo::save_calendar_event(&chat_id, None, &event);
+        return Ok(());
+    }
+    let s = state.inner().clone();
+    crate::actions::create_calendar_event(&s, &chat_id, &event, notify)
+        .await
+        .map_err(err)
+}
+
+#[tauri::command]
+pub async fn update_calendar_event(
+    state: S<'_>,
+    chat_id: String,
+    event_id: String,
+    updated_at: i64,
+    event: crate::actions::CalendarEventInput,
+    notify: bool,
+) -> R<()> {
+    if state.demo {
+        crate::demo::save_calendar_event(&chat_id, Some(&event_id), &event);
+        return Ok(());
+    }
+    let s = state.inner().clone();
+    crate::actions::update_calendar_event(&s, &chat_id, &event_id, updated_at, &event, notify)
+        .await
+        .map_err(err)
+}
+
+#[tauri::command]
+pub async fn delete_calendar_event(
+    state: S<'_>,
+    chat_id: String,
+    event_id: String,
+    updated_at: i64,
+    notify: bool,
+) -> R<()> {
+    if state.demo {
+        crate::demo::delete_calendar_event(&chat_id, &event_id);
+        return Ok(());
+    }
+    let s = state.inner().clone();
+    crate::actions::delete_calendar_event(&s, &chat_id, &event_id, updated_at, notify)
+        .await
+        .map_err(err)
+}
+
+#[tauri::command]
 pub async fn list_albums(state: S<'_>, chat_id: String) -> R<Vec<crate::actions::Album>> {
     let s = live!(state);
     crate::actions::list_albums(&s, &chat_id).await.map_err(err)
@@ -1325,10 +1429,10 @@ pub fn open_aux_window(
         let _ = w.unminimize();
         return w.set_focus().map_err(err);
     }
-    let (w, h) = if kind == "media" {
-        (420.0, 640.0)
-    } else {
-        (327.0, 643.0)
+    let (w, h) = match kind.as_str() {
+        "media" => (420.0, 640.0),
+        "calendar" => (360.0, 643.0),
+        _ => (327.0, 643.0),
     };
     WebviewWindowBuilder::new(
         &app,
@@ -1422,6 +1526,31 @@ pub async fn message_bytes(state: S<'_>, chat_id: String, message_id: String) ->
     let path = download(state, chat_id, message_id, None).await?;
     let data = tokio::fs::read(path).await.map_err(err)?;
     Ok(tauri::ipc::Response::new(data))
+}
+
+#[tauri::command]
+pub fn mcp_settings() -> crate::mcp::Settings {
+    crate::mcp::settings()
+}
+
+#[tauri::command]
+pub fn set_mcp_settings(state: S<'_>, settings: crate::mcp::Settings) -> R<()> {
+    crate::mcp::set_settings(&state, settings).map_err(err)
+}
+
+#[tauri::command]
+pub fn mcp_activity() -> Vec<crate::mcp::Activity> {
+    crate::mcp::activity()
+}
+
+#[tauri::command]
+pub fn clear_mcp_activity(state: S<'_>) {
+    crate::mcp::clear_activity(&state);
+}
+
+#[tauri::command]
+pub fn mcp_setup(state: S<'_>) -> crate::mcp::Setup {
+    crate::mcp::setup(&state)
 }
 
 #[cfg(test)]

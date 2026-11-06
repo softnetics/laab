@@ -31,10 +31,12 @@ pub enum Action {
     CreatedFolder,
     Refreshed,
     OpenedDeepLink,
+    UsedMcp,
+    OpenedCalendar,
 }
 
 impl Action {
-    pub const ALL: [Action; 11] = [
+    pub const ALL: [Action; 13] = [
         Action::OpenedChat,
         Action::SentText,
         Action::SentSticker,
@@ -46,6 +48,8 @@ impl Action {
         Action::CreatedFolder,
         Action::Refreshed,
         Action::OpenedDeepLink,
+        Action::UsedMcp,
+        Action::OpenedCalendar,
     ];
 
     pub fn name(self) -> &'static str {
@@ -61,6 +65,8 @@ impl Action {
             Action::CreatedFolder => "created_folder",
             Action::Refreshed => "refreshed",
             Action::OpenedDeepLink => "opened_deep_link",
+            Action::UsedMcp => "used_mcp",
+            Action::OpenedCalendar => "opened_calendar",
         }
     }
 
@@ -74,7 +80,11 @@ static TRAIL: Mutex<VecDeque<Action>> = Mutex::new(VecDeque::new());
 
 /// Notes that the user did `action`.
 pub fn hit(action: Action) {
-    *COUNTED.lock().unwrap_or_else(|e| e.into_inner()).entry(action).or_default() += 1;
+    *COUNTED
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .entry(action)
+        .or_default() += 1;
     let mut trail = TRAIL.lock().unwrap_or_else(|e| e.into_inner());
     if trail.len() == CRUMBS {
         trail.pop_front();
@@ -137,7 +147,11 @@ pub fn flush(state: &AppState) {
     let today = today();
     let (day, mut stored) = {
         let store = state.store();
-        let day = store.get_kv(DAY).ok().flatten().and_then(|d| d.parse::<u64>().ok());
+        let day = store
+            .get_kv(DAY)
+            .ok()
+            .flatten()
+            .and_then(|d| d.parse::<u64>().ok());
         let stored: BTreeMap<String, u32> = store
             .get_kv(COUNTS)
             .ok()

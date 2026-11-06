@@ -77,3 +77,22 @@ export const Spinner = ({ size = 14 }: { size?: number }) => (
     style={{ width: size, height: size }}
   />
 );
+
+/** The on/off switch macOS uses for settings that apply right away. */
+export function Switch({ checked, onChange, label }: { checked: boolean; onChange: (v: boolean) => void; label: string }) {
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={checked}
+      aria-label={label}
+      onClick={() => onChange(!checked)}
+      className={`group relative h-[22px] w-[38px] shrink-0 rounded-full transition-colors duration-200 ease-out outline-none focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-line-green ${checked ? "bg-line-green shadow-[inset_0_0_0_0.5px_rgba(0,0,0,0.12)]" : "bg-[light-dark(#e3e3e6,#58585b)] shadow-[inset_0_0_0_0.5px_light-dark(rgba(0,0,0,0.08),rgba(255,255,255,0.08))]"}`}
+    >
+      {/* The knob stretches while pressed, toward the side it will travel to, as on macOS. */}
+      <span
+        className={`absolute top-[1.5px] left-[1.5px] h-[19px] w-[19px] rounded-full bg-white shadow-[0_0_0_0.5px_rgba(0,0,0,0.06),0_0.5px_1.5px_rgba(0,0,0,0.35)] transition-[translate,width] duration-200 ease-[cubic-bezier(0.25,1,0.5,1)] group-active:w-[23px] motion-reduce:transition-none ${checked ? "translate-x-[16px] group-active:translate-x-[12px]" : ""}`}
+      />
+    </button>
+  );
+}

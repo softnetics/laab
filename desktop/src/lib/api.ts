@@ -5,8 +5,14 @@ import { useEffect } from "react";
 import { setUi } from "./ui";
 import type { ViewerPayload } from "./viewer";
 import type {
+  AllCalendars,
+  CalendarEvent,
+  CalendarEventInput,
   Album,
   AnalyticsStatus,
+  McpActivity,
+  McpSettings,
+  McpSetup,
   AlbumPhoto,
   ChatList,
   ChatMember,
@@ -115,6 +121,16 @@ export const api = {
   noteDetail: (chatId: string, postId: string) => invoke<NoteDetail>("note_detail", { chatId, postId }),
   addComment: (chatId: string, postId: string, text: string) => invoke<void>("add_comment", { chatId, postId, text }),
   deleteNote: (chatId: string, postId: string) => invoke<void>("delete_note", { chatId, postId }),
+  calendarEvents: (chatId: string) => invoke<CalendarEvent[]>("calendar_events", { chatId }),
+  allCalendarEvents: () => invoke<AllCalendars>("all_calendar_events"),
+  /** What a calendar window (a chat id, or ALL_CALENDARS) last loaded. */
+  cachedCalendar: (chatId: string) => invoke<AllCalendars | null>("cached_calendar", { chatId }),
+  createCalendarEvent: (chatId: string, event: CalendarEventInput, notify: boolean) =>
+    invoke<void>("create_calendar_event", { chatId, event, notify }),
+  updateCalendarEvent: (chatId: string, eventId: string, updatedAt: number, event: CalendarEventInput, notify: boolean) =>
+    invoke<void>("update_calendar_event", { chatId, eventId, updatedAt, event, notify }),
+  deleteCalendarEvent: (chatId: string, eventId: string, updatedAt: number, notify: boolean) =>
+    invoke<void>("delete_calendar_event", { chatId, eventId, updatedAt, notify }),
   listAlbums: (chatId: string) => invoke<Album[]>("list_albums", { chatId }),
   albumPhotos: (chatId: string, albumId: string, limit?: number) =>
     invoke<AlbumPhoto[]>("album_photos", { chatId, albumId, limit: limit ?? null }),
@@ -127,9 +143,9 @@ export const api = {
   saveText: (path: string, text: string) => invoke<void>("save_text", { path, text }),
   saveAttachment: (chatId: string, messageId: string, dest: string | null = null) =>
     invoke<string>("save_attachment", { chatId, messageId, dest }),
-  /** LINE-style separate windows: `albums` (tab albums/notes) or `media`
-   *  (tab media/links/files). */
-  openAuxWindow: (kind: "albums" | "media", chatId: string, title: string, tab?: string, post?: string) =>
+  /** LINE-style separate windows: `albums` (tab albums/notes), `media`
+   *  (tab media/links/files) or `calendar` (`post` is the day to open on). */
+  openAuxWindow: (kind: "albums" | "media" | "calendar", chatId: string, title: string, tab?: string, post?: string) =>
     invoke<void>("open_aux_window", { kind, chatId, title, tab: tab ?? null, post: post ?? null }),
   /** The one photo/video viewer window; see `lib/viewer.ts`. */
   openViewer: (payload: ViewerPayload) => invoke<void>("open_viewer", { payload }),
@@ -140,6 +156,11 @@ export const api = {
   revealPath: (path: string) => invoke<void>("reveal_path", { path }),
   cacheSize: () => invoke<number>("cache_size"),
   clearCache: () => invoke<void>("clear_cache"),
+  mcpSettings: () => invoke<McpSettings>("mcp_settings"),
+  setMcpSettings: (settings: McpSettings) => invoke<void>("set_mcp_settings", { settings }),
+  mcpActivity: () => invoke<McpActivity[]>("mcp_activity"),
+  clearMcpActivity: () => invoke<void>("clear_mcp_activity"),
+  mcpSetup: () => invoke<McpSetup>("mcp_setup"),
 };
 
 /** How many stored messages a chat shows; scrolling up raises it. */
@@ -159,6 +180,8 @@ export const q = {
   stickers: queryOptions({ queryKey: ["stickers"], queryFn: api.stickers, staleTime: 10 * 60_000 }),
   isDemo: queryOptions({ queryKey: ["demo"], queryFn: api.isDemo }),
   analytics: queryOptions({ queryKey: ["analytics"], queryFn: api.analyticsStatus }),
+  mcp: queryOptions({ queryKey: ["mcp"], queryFn: api.mcpSettings }),
+  mcpActivity: queryOptions({ queryKey: ["mcp-activity"], queryFn: api.mcpActivity }),
 };
 
 export const useSession = () => useQuery(q.session).data;
@@ -189,6 +212,14 @@ export function useBackendEvents() {
         queryClient.invalidateQueries({ queryKey: ["people"] });
       }),
       listen<{ chatId: string }>("messages-changed", (e) => queryClient.invalidateQueries({ queryKey: ["messages", e.payload.chatId] })),
+      listen("mcp-changed", () => {
+        queryClient.invalidateQueries({ queryKey: ["mcp"] });
+        queryClient.invalidateQueries({ queryKey: ["mcp-setup"] });
+      }),
+      listen("mcp-activity", () => {
+        queryClient.invalidateQueries({ queryKey: ["mcp-activity"] });
+        queryClient.invalidateQueries({ queryKey: ["mcp-setup"] });
+      }),
       listen<{ chatId: string }>("reads-changed", (e) => queryClient.invalidateQueries({ queryKey: ["reads", e.payload.chatId] })),
       listen<{ chatId: string }>("members-changed", (e) => {
         queryClient.invalidateQueries({ queryKey: ["members", e.payload.chatId] });

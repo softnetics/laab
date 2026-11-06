@@ -5,8 +5,9 @@ import { setAnalytics } from "../lib/analytics";
 import { api, errorText, q, queryClient, useChatList, useSession } from "../lib/api";
 import { openChat } from "../lib/nav";
 import { notice, setUi, useUi } from "../lib/ui";
+import { ALL_CALENDARS } from "../lib/calendar";
 import { checkNow } from "../lib/updater";
-import { BookmarkIcon, BubbleIcon, MoreIcon, PersonIcon, PersonPlusIcon } from "./Icons";
+import { BookmarkIcon, BubbleIcon, CalendarIcon, MoreIcon, PersonIcon, PersonPlusIcon } from "./Icons";
 import { itemClass, popupClass, Separator } from "./kit";
 
 function RailButton({
@@ -77,6 +78,13 @@ export function Rail() {
         <PersonPlusIcon size={23} />
       </RailButton>
       <div className="flex-1" />
+      <RailButton
+        title="ปฏิทิน"
+        disabled={!me}
+        onClick={() => api.openAuxWindow("calendar", ALL_CALENDARS, "ปฏิทิน").catch((e) => notice(errorText(e)))}
+      >
+        <CalendarIcon size={21} />
+      </RailButton>
       <RailButton title="Keep Memo" disabled={!me} onClick={() => me && (setUi({ railPage: "chats" }), openChat(me))}>
         <BookmarkIcon size={21} />
       </RailButton>
@@ -115,6 +123,9 @@ export function Rail() {
                   ส่งสถิติการใช้งาน
                 </Menu.CheckboxItem>
               )}
+              <Menu.Item className={itemClass} onClick={() => setUi({ sheet: { kind: "mcp" } })}>
+                MCP (ให้ AI ใช้ LAAB)…
+              </Menu.Item>
               <Menu.Item className={itemClass} onClick={clearCache}>
                 ล้าง cache
                 {cacheBytes != null && <span className="ml-auto text-secondary">{megabytes(cacheBytes)}</span>}

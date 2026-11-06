@@ -425,6 +425,169 @@ pub fn seed(store: &mut Store, paths: &Paths) -> Result<()> {
 }
 
 /// Local midnight in milliseconds.
+/// The demo's calendars, seeded on first look and edited in memory.
+static CALENDAR: std::sync::Mutex<BTreeMap<String, Vec<crate::actions::CalendarEvent>>> =
+    std::sync::Mutex::new(BTreeMap::new());
+
+fn with_calendar<T>(
+    chat_id: &str,
+    f: impl FnOnce(&mut Vec<crate::actions::CalendarEvent>) -> T,
+) -> T {
+    let mut all = CALENDAR.lock().unwrap_or_else(|e| e.into_inner());
+    let events = all
+        .entry(chat_id.to_string())
+        .or_insert_with(|| seed_calendar(chat_id));
+    f(events)
+}
+
+pub fn calendar_events(chat_id: &str) -> Vec<crate::actions::CalendarEvent> {
+    with_calendar(chat_id, |events| {
+        events.sort_by_key(|e| (e.start, e.end));
+        events.clone()
+    })
+}
+
+/// The demo's calendars with events, as the rail's ปฏิทิน window lists them.
+const DEMO_CALENDARS: [(&str, &str); 2] = [
+    ("c_harvest", "ทีม Harvest App"),
+    ("c_run", "ชมรมวิ่งเช้าวันอาทิตย์"),
+];
+
+pub fn all_calendar_events() -> crate::actions::AllCalendars {
+    let mut events: Vec<_> = DEMO_CALENDARS
+        .iter()
+        .flat_map(|(id, _)| calendar_events(id))
+        .collect();
+    events.sort_by_key(|e| (e.start, e.end));
+    crate::actions::AllCalendars {
+        calendars: DEMO_CALENDARS
+            .iter()
+            .map(|(id, name)| crate::actions::CalendarInfo {
+                chat_id: id.to_string(),
+                name: name.to_string(),
+            })
+            .collect(),
+        events,
+    }
+}
+
+pub fn save_calendar_event(
+    chat_id: &str,
+    id: Option<&str>,
+    input: &crate::actions::CalendarEventInput,
+) {
+    let now = crate::state::now_ms() as i64;
+    with_calendar(chat_id, |events| {
+        let event = crate::actions::CalendarEvent {
+            id: id.map_or_else(|| format!("demo-{now}"), str::to_string),
+            title: input.title.trim().to_string(),
+            start: input.start,
+            end: input.end,
+            all_day: input.all_day,
+            timezone: input.timezone.clone(),
+            location: input.location.trim().to_string(),
+            url: input.url.trim().to_string(),
+            description: input.description.trim_end().to_string(),
+            creator: "me".into(),
+            updated_at: now,
+            editable: true,
+            chat_id: chat_id.to_string(),
+        };
+        match events.iter_mut().find(|e| Some(e.id.as_str()) == id) {
+            Some(old) => {
+                *old = crate::actions::CalendarEvent {
+                    creator: old.creator.clone(),
+                    ..event
+                }
+            }
+            None => events.push(event),
+        }
+    });
+}
+
+pub fn delete_calendar_event(chat_id: &str, id: &str) {
+    with_calendar(chat_id, |events| events.retain(|e| e.id != id));
+}
+
+/// LINE Calendar events for two of the demo's groups, around today.
+fn seed_calendar(chat_id: &str) -> Vec<crate::actions::CalendarEvent> {
+    let today = chrono_like_today() as i64;
+    let (minute, hour, day) = (60_000, 3_600_000, 86_400_000);
+    let event = |id: &str,
+                 title: &str,
+                 (start, end): (i64, i64),
+                 all_day: bool,
+                 location: &str,
+                 description: &str,
+                 creator: &str| {
+        crate::actions::CalendarEvent {
+            id: id.into(),
+            title: title.into(),
+            start,
+            end,
+            all_day,
+            timezone: "Asia/Bangkok".into(),
+            location: location.into(),
+            url: String::new(),
+            description: description.into(),
+            creator: creator.into(),
+            updated_at: today,
+            editable: true,
+            chat_id: chat_id.to_string(),
+        }
+    };
+    let at = |d: i64, h: i64, m: i64, mins: i64| {
+        let start = today + d * day + h * hour + m * minute;
+        (start, start + mins * minute)
+    };
+    let whole = |d: i64, days: i64| (today + d * day, today + (d + days) * day);
+    match chat_id {
+        "c_harvest" => vec![
+            event(
+                "ev1",
+                "Sprint review",
+                at(-6, 14, 0, 60),
+                false,
+                "ห้องประชุม 3",
+                "",
+                "u_toey",
+            ),
+            event(
+                "ev2",
+                "Demo ลูกค้า Harvest",
+                at(0, 15, 0, 90),
+                false,
+                "Google Meet",
+                "เตรียม flow ชำระเงินให้พร้อมก่อนบ่ายสอง\nลิงก์: https://meet.google.com/abc-defg-hij",
+                "me",
+            ),
+            event("ev3", "Release 2.4", whole(3, 1), true, "", "", "u_arm"),
+            event(
+                "ev4",
+                "Retro + ข้าวเย็น",
+                at(8, 18, 0, 180),
+                false,
+                "ร้านส้มตำหน้าออฟฟิศ",
+                "",
+                "u_toey",
+            ),
+        ],
+        "c_run" => vec![
+            event(
+                "ev5",
+                "วิ่งยาว 15 กม.",
+                at(5, 5, 30, 150),
+                false,
+                "สวนลุมพินี ประตู 2",
+                "เจอกันตีห้าครึ่ง เอาน้ำมาเองนะ",
+                "u_lead",
+            ),
+            event("ev6", "Bangkok Marathon", whole(24, 2), true, "", "", "me"),
+        ],
+        _ => vec![],
+    }
+}
+
 fn chrono_like_today() -> f64 {
     let now = crate::state::now_ms();
     let offset = local_offset_ms();

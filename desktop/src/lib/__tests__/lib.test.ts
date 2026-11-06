@@ -90,6 +90,10 @@ describe("notices", () => {
     const ev = readChatEvent(msg({ contentType: "CHATEVENT", metadata: { LOC_KEY: "C_MI", LOC_ARGS: "me\u001eu2" } }))!;
     expect(chatEventText(ev, name)).toBe("Nara เพิ่ม O เข้ากลุ่ม");
     expect(chatEventText({ key: "C_MA", args: ["me"] }, name)).toBe("Nara เพิ่มประกาศ");
+    expect(chatEventText({ key: "A_MI", args: ["me", "u2"] }, name)).toBe("Nara เพิ่ม O เข้ากลุ่ม");
+    expect(chatEventText({ key: "A_MC", args: ["me", "u2"] }, name)).toBe("Nara สร้างกลุ่มนี้");
+    expect(chatEventText({ key: "C_ML", args: ["u2"] }, name)).toBe("O ออกจากกลุ่ม");
+    expect(chatEventText({ key: "X_YZ", args: ["u2"] }, name)).toBe("มีการเปลี่ยนแปลงในกลุ่ม");
     expect(noticeFor(msg({ unsent: 1, senderId: "u2" }), name)?.text).toBe("O ยกเลิกข้อความ");
     expect(noticeFor(msg({ unsent: 1, mine: true }), name)?.text).toBe("ยกเลิกข้อความแล้ว");
     expect(isBlank(msg({ text: "  " }))).toBe(true);
@@ -106,12 +110,39 @@ describe("notices", () => {
       ],
       name,
     );
-    expect(rows.map((r) => [r.message.id, r.runStart, r.runEnd])).toEqual([
-      ["a", true, false],
-      ["b", false, true],
-      ["c", true, true],
-      ["d", true, true],
-      ["e", true, true],
+    expect(rows.map((r) => [r.message.id, r.runStart])).toEqual([
+      ["a", true],
+      ["b", false],
+      ["c", true],
+      ["d", true],
+      ["e", true],
+    ]);
+  });
+  it("puts photos sent together in one grid", () => {
+    const t = new Date(2026, 9, 21, 14, 57, 5).getTime();
+    const photo = (id: string, at: number, gid?: string, more: Partial<Message> = {}) =>
+      msg({ id, createdTime: t + at, contentType: "IMAGE", metadata: gid ? { GID: gid } : {}, ...more });
+    const rows = buildRows(
+      [
+        photo("a", 0, "g1"),
+        photo("b", 0, "g1"),
+        photo("c", 1_000, "g1"),
+        photo("d", 2_000, "g2"), // another batch right after
+        photo("e", 2_000, "g2"),
+        photo("f", 3_000), // sent on its own
+        photo("g", 4_000), // also on its own, though only a second later
+        photo("h", 5_000, "g3"),
+        photo("i", 5_000, "g3", { unsent: 1 }),
+      ],
+      name,
+    );
+    expect(rows.map((r) => [r.message.id, r.photos?.map((m) => m.id) ?? null])).toEqual([
+      ["a", ["a", "b", "c"]],
+      ["d", ["d", "e"]],
+      ["f", null],
+      ["g", null],
+      ["h", null],
+      ["i", null],
     ]);
   });
   it("hides silent unsends and starts runs after notices", () => {

@@ -1,7 +1,7 @@
 import { Menu } from "@base-ui/react/menu";
 import { useQuery } from "@tanstack/react-query";
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
-import { save } from "@tauri-apps/plugin-dialog";
+import { open as openDialog, save } from "@tauri-apps/plugin-dialog";
 import { memo, useState } from "react";
 import { api, errorText, mediaUrl, q, queryClient } from "../lib/api";
 import { copyImage } from "../lib/clipboardImage";
@@ -104,6 +104,45 @@ function Attachment({ m, ctx }: { m: Message; ctx: RowContext }) {
   return m.contentType === "FILE" ? <FileBubble m={m} ctx={ctx} /> : <MediaBubble m={m} ctx={ctx} />;
 }
 
+/** Photos sent together, as LINE shows them: two per row, and a last odd
+ *  one across the whole width. Each opens on its own. */
+function PhotoGrid({ photos, ctx }: { photos: Message[]; ctx: RowContext }) {
+  const dev = useUi((s) => s.developerMode);
+  const odd = photos.length % 2 === 1;
+  return (
+    <div className={`flex flex-col ${photos[0].mine ? "items-end" : "items-start"}`}>
+      <div className="grid w-[300px] grid-cols-2 gap-0.5 overflow-hidden rounded-[2px]">
+        {photos.map((p, i) => {
+          const wide = odd && i === photos.length - 1;
+          return (
+            // Its own menu, so save, reply and the rest act on the photo clicked.
+            <Ctx key={p.id} menu={rowMenu(p, dev, ctx)} className={wide ? "col-span-2 aspect-[2/1]" : "aspect-square"}>
+              <GridPhoto m={p} ctx={ctx} className="h-full w-full" />
+            </Ctx>
+          );
+        })}
+      </div>
+      <MediaLinks items={photos} ctx={ctx} />
+    </div>
+  );
+}
+
+function GridPhoto({ m, ctx, className }: { m: Message; ctx: RowContext; className: string }) {
+  const [failed, setFailed] = useState(false);
+  const src = m.imagePath ? mediaUrl.local(m.imagePath) : mediaUrl.message(ctx.chatId, m.id, true);
+  return (
+    <div className={`relative cursor-pointer bg-incoming ${className}`} aria-label="เปิดรูป" {...pressable(() => viewMessage(ctx.chatId, m))}>
+      {failed ? (
+        <div className="grid h-full w-full place-items-center text-secondary">
+          <PhotoIcon size={24} />
+        </div>
+      ) : (
+        <img src={src} onError={() => setFailed(true)} draggable={false} className="block h-full w-full object-cover" alt="" />
+      )}
+    </div>
+  );
+}
+
 function FileBubble({ m, ctx }: { m: Message; ctx: RowContext }) {
   const { state, open } = useOpener(m, ctx);
   const caption = state === "loading" ? "กำลังดาวน์โหลด…" : state !== "idle" ? state : m.filePath ? "คลิกเพื่อเปิด" : "คลิกเพื่อดาวน์โหลด";
@@ -137,12 +176,6 @@ function MediaBubble({ m, ctx }: { m: Message; ctx: RowContext }) {
   const video = m.contentType === "VIDEO";
   // A downloaded video's imagePath is the video itself, not a picture.
   const src = m.imagePath && !video ? mediaUrl.local(m.imagePath) : mediaUrl.message(ctx.chatId, m.id, true);
-  const run = (p: Promise<unknown>, done: (r: unknown) => string) => p.then((r) => notice(done(r))).catch((e) => notice(errorText(e)));
-  const saveAs = async () => {
-    const dest = await save({ defaultPath: m.fileName ?? (video ? `LINE_${m.id}.mp4` : `LINE_${m.id}.jpg`) });
-    if (dest) run(api.saveAttachment(ctx.chatId, m.id, dest), () => "บันทึกแล้ว");
-  };
-  const link = "hover:text-primary";
   return (
     <div className={`flex flex-col ${m.mine ? "items-end" : "items-start"}`}>
       {/* LINE for Mac: square corners, and links under every photo/video. */}
@@ -173,25 +206,55 @@ function MediaBubble({ m, ctx }: { m: Message; ctx: RowContext }) {
           </div>
         )}
       </div>
-      {
-        <div className="mt-1 flex gap-1.5 text-[11.5px] text-secondary">
-          <button className={link} onClick={() => run(api.saveAttachment(ctx.chatId, m.id), (p) => `บันทึกไว้ที่ ${p}`)}>
-            บันทึก
-          </button>
+      <MediaLinks items={[m]} ctx={ctx} />
+    </div>
+  );
+}
+
+const fileNameOf = (m: Message) => m.fileName ?? (m.contentType === "VIDEO" ? `LINE_${m.id}.mp4` : `LINE_${m.id}.jpg`);
+
+/** LINE for Mac's links under a photo, a video or photos sent together.
+ *  Under a grid they act on every photo in it. */
+function MediaLinks({ items, ctx }: { items: Message[]; ctx: RowContext }) {
+  const one = items.length === 1;
+  // One at a time, so a big batch doesn't start every download at once.
+  const each = async <T,>(f: (m: Message) => Promise<T>) => {
+    const out: T[] = [];
+    for (const m of items) out.push(await f(m));
+    return out;
+  };
+  const run = <T,>(p: Promise<T>, done: (r: T) => string) => p.then((r) => notice(done(r))).catch((e) => notice(errorText(e)));
+  const saved = (paths: string[]) => (one ? `บันทึกไว้ที่ ${paths[0]}` : `บันทึก ${paths.length} รูปไว้ที่ ${paths[0].replace(/\/[^/]*$/, "")}`);
+  const saveAs = async () => {
+    if (one) {
+      const dest = await save({ defaultPath: fileNameOf(items[0]) });
+      if (dest) run(api.saveAttachment(ctx.chatId, items[0].id, dest), () => "บันทึกแล้ว");
+      return;
+    }
+    const dir = await openDialog({ directory: true, title: "เลือกโฟลเดอร์ที่จะบันทึกรูป" });
+    if (typeof dir === "string") run(each((m) => api.saveAttachment(ctx.chatId, m.id, `${dir}/${fileNameOf(m)}`)), saved);
+  };
+  const link = "hover:text-primary";
+  return (
+    <div className="mt-1 flex gap-1.5 text-[11.5px] text-secondary">
+      <button className={link} onClick={() => run(each((m) => api.saveAttachment(ctx.chatId, m.id)), saved)}>
+        บันทึก
+      </button>
+      <span>|</span>
+      <button className={link} onClick={saveAs}>
+        บันทึกเป็น…
+      </button>
+      {ctx.chatId !== ctx.me && (
+        <>
           <span>|</span>
-          <button className={link} onClick={saveAs}>
-            บันทึกเป็น…
+          <button
+            className={link}
+            onClick={() => run(each((m) => api.saveToKeep(ctx.chatId, m.id)), () => (one ? "ส่งไปยัง Keep Memo แล้ว" : `ส่ง ${items.length} รูปไปยัง Keep Memo แล้ว`))}
+          >
+            ส่งไปยัง Keep Memo
           </button>
-          {ctx.chatId !== ctx.me && (
-            <>
-              <span>|</span>
-              <button className={link} onClick={() => run(api.saveToKeep(ctx.chatId, m.id), () => "ส่งไปยัง Keep Memo แล้ว")}>
-                ส่งไปยัง Keep Memo
-              </button>
-            </>
-          )}
-        </div>
-      }
+        </>
+      )}
     </div>
   );
 }
@@ -536,16 +599,16 @@ export const MessageRow = memo(function MessageRow({
   m,
   ctx,
   runStart,
-  runEnd,
   readers,
   highlight,
   current,
+  photos,
 }: {
   m: Message;
   ctx: RowContext;
+  /** Photos sent together with `m` (the first), drawn as one grid. */
+  photos?: Message[];
   runStart: boolean;
-  /** Last of its group: LINE shows the time and read mark only here. */
-  runEnd: boolean;
   readers: Reader[];
   highlight?: [number, number][];
   current?: boolean;
@@ -562,22 +625,15 @@ export const MessageRow = memo(function MessageRow({
   // Hovering shows the reaction button beside the read mark and time, not
   // in their place: replacing them made "อ่านแล้ว N" impossible to click.
   const showReact = (hover || picking) && ctx.signedIn;
+  // LINE puts the time (and read mark) beside every message, even several
+  // in the same minute; only the avatar and name are shared by a run.
   const meta = (
     <div className={`relative flex shrink-0 flex-col justify-end gap-px self-end pb-0.5 ${m.mine ? "items-end" : "items-start"}`}>
-      {runEnd ? (
-        <div className={`flex flex-col gap-px ${m.mine ? "items-end" : "items-start"}`}>
-          <ReadMark direct={!ctx.group} readers={readers} onOpen={ctx.loadMembers} />
-          <span className="text-[11px] text-secondary">{clock(m.createdTime)}</span>
-        </div>
-      ) : (
-        // Mid-group: no time, but keep room for the hover reaction button.
-        <div className="h-7 w-7" />
-      )}
-      <div
-        className={`absolute bottom-0 ${
-          runEnd ? (m.mine ? "right-full mr-1.5" : "left-full ml-1.5") : m.mine ? "right-0" : "left-0"
-        } ${showReact ? "" : "invisible"}`}
-      >
+      <div className={`flex flex-col gap-px ${m.mine ? "items-end" : "items-start"}`}>
+        <ReadMark direct={!ctx.group} readers={readers} onOpen={ctx.loadMembers} />
+        <span className="text-[11px] text-secondary">{clock((photos?.[photos.length - 1] ?? m).createdTime)}</span>
+      </div>
+      <div className={`absolute bottom-0 ${m.mine ? "right-full mr-1.5" : "left-full ml-1.5"} ${showReact ? "" : "invisible"}`}>
         <ReactButton mine={myReaction} onPick={react} onOpenChange={setPicking} />
       </div>
     </div>
@@ -585,7 +641,11 @@ export const MessageRow = memo(function MessageRow({
   const bubble = (
     <div className="relative">
       <Ctx menu={rowMenu(m, dev, ctx)}>
-        <Content m={m} ctx={ctx} tail={tail} highlight={highlight} current={current} />
+        {photos && photos.length > 1 ? (
+          <PhotoGrid photos={photos} ctx={ctx} />
+        ) : (
+          <Content m={m} ctx={ctx} tail={tail} highlight={highlight} current={current} />
+        )}
       </Ctx>
       {translation && (
         <div className={`selectable mt-1 max-w-[420px] rounded-xl bg-field px-3 py-1.5 text-[12.5px] ${m.mine ? "ml-auto" : ""}`}>

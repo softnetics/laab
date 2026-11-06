@@ -280,3 +280,45 @@ export const WarningIcon = (p: P) => (
     <path d="M12 2.5c.6 0 1.1.3 1.4.8l9.2 16a1.6 1.6 0 0 1-1.4 2.4H2.8a1.6 1.6 0 0 1-1.4-2.4l9.2-16c.3-.5.8-.8 1.4-.8ZM11 9h2v6h-2V9Zm1 7.5a1.25 1.25 0 1 0 0 2.5 1.25 1.25 0 0 0 0-2.5Z" />
   </svg>
 );
+export const PlugIcon = (p: P) => (
+  <svg {...base(p)} fill="none" stroke="currentColor" strokeWidth={p.strokeWidth ?? 2} strokeLinecap="round" strokeLinejoin="round">
+    <path d="M9 3v4M15 3v4M6.5 7h11v3.5a5.5 5.5 0 0 1-11 0V7ZM12 16v5" />
+  </svg>
+);
+const outline = (p: P) => ({
+  ...base(p),
+  fill: "none",
+  stroke: "currentColor",
+  strokeWidth: p.strokeWidth ?? 1.8,
+  strokeLinecap: "round" as const,
+  strokeLinejoin: "round" as const,
+});
+export const ClockIcon = (p: P) => (
+  <svg {...outline(p)}>
+    <circle cx="12" cy="12" r="8.5" />
+    <path d="M12 7.5V12l3 2" />
+  </svg>
+);
+export const PlaceIcon = (p: P) => (
+  <svg {...outline(p)}>
+    <path d="M12 21s-6.5-5.6-6.5-11a6.5 6.5 0 0 1 13 0c0 5.4-6.5 11-6.5 11Z" />
+    <circle cx="12" cy="10" r="2.3" />
+  </svg>
+);
+export const LinkIcon = (p: P) => (
+  <svg {...outline(p)}>
+    <path d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1" />
+    <path d="M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1" />
+  </svg>
+);
+export const TextIcon = (p: P) => (
+  <svg {...outline(p)}>
+    <path d="M5 6.5h14M5 11.5h14M5 16.5h9" />
+  </svg>
+);
+export const CalendarIcon = (p: P) => (
+  <svg {...base(p)} fill="none" stroke="currentColor" strokeWidth={p.strokeWidth ?? 2} strokeLinecap="round" strokeLinejoin="round">
+    <rect x="4" y="5.5" width="16" height="15" rx="3" />
+    <path d="M8 3.5v4M16 3.5v4M4 10.5h16" />
+  </svg>
+);

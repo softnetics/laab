@@ -8,13 +8,23 @@ export interface Row {
   dayStart: boolean;
   /** First message of a group: avatar and name (or the bubble tail). */
   runStart: boolean;
-  /** Last message of a group: time and read mark. */
-  runEnd: boolean;
   notice: boolean;
+  /** Photos sent together, shown as one grid; `message` is the first. */
+  photos?: Message[];
 }
 
-// LINE for Mac groups messages by sender and minute: one avatar at the
-// start, one time at the end. Photos, videos and calls always stand alone.
+// LINE shows photos sent together as a grid. It marks them with a shared
+// group id (`GID`, with `GSEQ` and `GTOTAL`); photos sent one by one have
+// none and stand alone, however close together they come.
+const joinsPhotos = (prev: Message, m: Message) =>
+  m.contentType === "IMAGE" &&
+  prev.contentType === "IMAGE" &&
+  !m.unsent &&
+  !prev.unsent &&
+  !!m.metadata.GID &&
+  m.metadata.GID === prev.metadata.GID;
+
+// LINE groups messages by sender and minute under one avatar and name. Photos, videos and calls always stand alone.
 // (Checked against LINE for Mac 2026-10-22.)
 const STANDALONE = new Set(["IMAGE", "VIDEO", "CALL"]);
 const minute = (t: number) => Math.floor((t > 1e11 ? t : t * 1000) / 60_000);
@@ -36,14 +46,18 @@ export function buildRows(messages: Message[], name: (mid: string) => string): R
   let prevNotice = false;
   for (const m of messages) {
     if (m.unsent === 2) continue;
+    const last = rows[rows.length - 1];
+    if (prev && last && !last.notice && joinsPhotos(prev, m)) {
+      last.photos = [...(last.photos ?? [last.message]), m];
+      prev = m;
+      continue;
+    }
     const notice = noticeFor(m, name) != null;
     const dayStart = !prev || !sameDay(prev.createdTime, m.createdTime);
     const runStart = !prev || dayStart || prevNotice || notice || !sameGroup(prev, m);
-    if (runStart && rows.length) rows[rows.length - 1].runEnd = true;
-    rows.push({ message: m, dayStart, runStart, runEnd: false, notice });
+    rows.push({ message: m, dayStart, runStart, notice });
     prev = m;
     prevNotice = notice;
   }
-  if (rows.length) rows[rows.length - 1].runEnd = true;
   return rows;
 }

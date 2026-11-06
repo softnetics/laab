@@ -13,6 +13,7 @@ export function Popover({
   side = "top",
   align = "center",
   className = "",
+  keepFocus = false,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -23,6 +24,8 @@ export function Popover({
   side?: "top" | "bottom" | "left" | "right";
   align?: "start" | "center" | "end";
   className?: string;
+  /** Leave focus where it is, for a list under a text field. */
+  keepFocus?: boolean;
 }) {
   useEffect(() => (open ? pushDismiss(() => onOpenChange(false)) : undefined), [open, onOpenChange]);
   return (
@@ -30,7 +33,13 @@ export function Popover({
       {trigger && <P.Trigger render={trigger} />}
       <P.Portal>
         <P.Positioner side={side} align={align} sideOffset={6} anchor={anchor ?? undefined} className="z-50">
-          <P.Popup className={`${popoverClass} ${className}`}>{children}</P.Popup>
+          <P.Popup
+            className={`${popoverClass} ${className}`}
+            initialFocus={keepFocus ? false : undefined}
+            finalFocus={keepFocus ? false : undefined}
+          >
+            {children}
+          </P.Popup>
         </P.Positioner>
       </P.Portal>
     </P.Root>

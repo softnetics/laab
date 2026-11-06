@@ -141,6 +141,7 @@ export function HeaderMenu({ chat, secure }: { chat: Chat; secure: boolean }) {
       <Item onClick={() => run(api.setMuted(chat.id, !chat.muted))}>{chat.muted ? "เปิดแจ้งเตือน" : "ปิดแจ้งเตือน"}</Item>
       <Separator />
       {group && <Item onClick={() => run(api.openAuxWindow("albums", chat.id, chat.name, "albums"))}>อัลบั้ม</Item>}
+      <Item onClick={() => run(api.openAuxWindow("calendar", chat.id, chat.name))}>ปฏิทิน</Item>
       <Item onClick={() => run(api.openAuxWindow("media", chat.id, chat.name, "media"))}>รูป & วิดีโอ</Item>
       <Item onClick={() => run(api.openAuxWindow("media", chat.id, chat.name, "files"))}>ไฟล์</Item>
       <Item onClick={() => run(api.openAuxWindow("media", chat.id, chat.name, "links"))}>ลิงก์</Item>

@@ -79,6 +79,39 @@ export type SearchKind = "chat" | "message" | "file";
 /** Usage statistics: `unavailable` in demo mode and in builds without a PostHog key. */
 export type AnalyticsStatus = "unavailable" | "unasked" | "on" | "off";
 
+export type McpAccess = "off" | "ask" | "on";
+export type McpGroup = "read" | "send" | "manage" | "account";
+export type McpLevels = Record<McpGroup, McpAccess>;
+/** A rule's levels; null (or missing) follows the next rule down. */
+export type McpOverrides = Partial<Record<McpGroup, McpAccess | null>>;
+export type McpRuleKind = "chat" | "folder" | "type";
+export interface McpRule {
+  kind: McpRuleKind;
+  /** Chat id, folder id, or `dm` / `group` / `bot`. */
+  id: string;
+  levels: McpOverrides;
+}
+export interface McpSettings {
+  enabled: boolean;
+  defaults: McpLevels;
+  rules: McpRule[];
+}
+export interface McpActivity {
+  time: number;
+  client: string;
+  tool: string;
+  summary: string;
+  outcome: "ok" | "denied" | "error";
+}
+export interface McpSetup {
+  listening: boolean;
+  clients: number;
+  socket: string;
+  command: string;
+  args: string[];
+  env: [string, string][];
+}
+
 export interface SearchHit {
   kind: SearchKind;
   chatId: string;
@@ -146,6 +179,39 @@ export interface NotePost {
   likeCount: number;
   commentCount: number;
 }
+
+/** An event on a chat's LINE Calendar. Times are epoch ms; an all-day
+ *  event ends at midnight after its last day, in `timezone`. */
+export interface CalendarEvent {
+  id: string;
+  title: string;
+  start: number;
+  end: number;
+  allDay: boolean;
+  timezone: string;
+  location: string;
+  url: string;
+  description: string;
+  /** Mid of who made it. */
+  creator: string;
+  /** LINE's client_updated_at, sent back on edit and delete. */
+  updatedAt: number;
+  editable: boolean;
+  /** Whose calendar: a chat mid, or `cal:` and an id for the user's own
+   *  calendar. Edits and deletes go here. */
+  chatId: string;
+}
+
+/** Every calendar the user can see, for the rail's ปฏิทิน window. */
+export interface AllCalendars {
+  calendars: { chatId: string; name: string }[];
+  events: CalendarEvent[];
+}
+
+export type CalendarEventInput = Pick<
+  CalendarEvent,
+  "title" | "start" | "end" | "allDay" | "timezone" | "location" | "url" | "description"
+>;
 
 export interface Album {
   id: string;

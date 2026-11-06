@@ -1,3 +1,4 @@
+import { listen } from "@tauri-apps/api/event";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState } from "react";
 import { api, errorText } from "../lib/api";
@@ -14,9 +15,9 @@ import {
   targets,
 } from "../lib/mentions";
 import type { ChatMember, DraftMention } from "../lib/types";
-import { notice, pushDismiss, setUi, useUi } from "../lib/ui";
+import { pushDismiss, setUi, useUi } from "../lib/ui";
 import { Avatar } from "./Avatar";
-import { CloseIcon, PaperclipIcon, SmileIcon } from "./Icons";
+import { CloseIcon, PaperclipIcon, SmileIcon, WarningIcon } from "./Icons";
 
 const LINE_HEIGHT = 20;
 const MAX_LINES = 6;
@@ -57,6 +58,9 @@ export const Composer = forwardRef<
   useEffect(() => () => {
     if (pendingImage) URL.revokeObjectURL(pendingImage.preview);
   }, [pendingImage]);
+  // A send that failed stays above the box until it is retried, closed, or
+  // something else goes out: a passing status line is easy to miss.
+  const [failure, setFailure] = useState<{ title: string; detail: string; retry: (() => void) | null } | null>(null);
   const pickerOpenedAt = useRef(0);
   const focusRequest = useUi((s) => s.composerFocus);
   const mentionRequest = useUi((s) => s.mentionRequest);
@@ -82,9 +86,11 @@ export const Composer = forwardRef<
   };
   useEffect(() => (mode ? pushDismiss(endMode) : undefined));
 
-  // Per-chat drafts survive switching chats and relaunching.
+  // Per-chat drafts survive switching chats and relaunching. An AI app can
+  // write one through MCP (`draft-changed`), shown even while the chat is open.
   useEffect(() => {
     let live = true;
+    setFailure(null);
     setText("");
     setMentions([]);
     api.draft(chatId).then((d) => {
@@ -92,8 +98,17 @@ export const Composer = forwardRef<
       setText(d.text);
       setMentions(d.mentions);
     });
+    const off = listen<{ chatId: string }>("draft-changed", (e) => {
+      if (e.payload.chatId !== chatId) return;
+      api.draft(chatId).then((d) => {
+        if (!live || !d) return;
+        setText(d.text);
+        setMentions(d.mentions);
+      });
+    });
     return () => {
       live = false;
+      off.then((f) => f());
     };
   }, [chatId]);
   const saveTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
@@ -190,10 +205,11 @@ export const Composer = forwardRef<
           else await api.sendText(chatId, caption, captionMentions, mode?.kind === "reply" ? mode.message.id : null);
         }
         if (mode) setUi({ composerMode: null });
+        setFailure(null);
       } catch (e) {
         setText(caption);
         setMentions(mentions);
-        notice(`ส่งรูปไม่สำเร็จ: ${errorText(e)}`);
+        setFailure({ title: "ส่งรูปหรือข้อความไม่สำเร็จ", detail: errorText(e), retry: () => sendLatest.current() });
       } finally {
         setSending(false);
       }
@@ -214,20 +230,31 @@ export const Composer = forwardRef<
         await api.sendText(chatId, body, spans, current?.kind === "reply" ? current.message.id : null);
       }
       if (current) setUi({ composerMode: null });
+      setFailure(null);
     } catch (e) {
       setText(body);
-      notice(current?.kind === "edit" ? errorText(e) : `ส่งข้อความไม่สำเร็จ: ${errorText(e)}`);
+      setFailure({ title: current?.kind === "edit" ? "แก้ไขข้อความไม่สำเร็จ" : "ยังไม่ได้ส่งข้อความนี้", detail: errorText(e), retry: () => sendLatest.current() });
     } finally {
       setSending(false);
     }
   };
 
+  // Retry sends what is in the box now, which may have been changed since.
+  const sendLatest = useRef(send);
+  sendLatest.current = send;
+
   const attach = async () => {
     const files = await openDialog({ multiple: true, directory: false });
     if (!files) return;
     const paths = Array.isArray(files) ? files : [files];
-    api.sendFiles(chatId, paths).catch((e) => notice(errorText(e)));
+    sendFiles(paths);
   };
+  const sendFiles = (paths: string[]) =>
+    api.sendFiles(chatId, paths).then(
+      () => setFailure(null),
+      (e) => setFailure({ title: paths.length > 1 ? "ยังไม่ได้ส่งไฟล์เหล่านี้" : "ยังไม่ได้ส่งไฟล์นี้", detail: errorText(e), retry: () => sendFiles(paths) }),
+    );
+  useEffect(() => (failure ? pushDismiss(() => setFailure(null)) : undefined), [failure]);
 
   const onPaste = (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
     if (disabled || mode?.kind === "edit") return;
@@ -245,7 +272,7 @@ export const Composer = forwardRef<
         return { bytes, name, preview: URL.createObjectURL(new Blob([new Uint8Array(bytes).buffer as ArrayBuffer], { type: file?.type || "image/png" })) };
       });
     };
-    stage().catch((err) => notice(errorText(err)));
+    stage().catch((err) => setFailure({ title: "วางรูปไม่สำเร็จ", detail: errorText(err), retry: null }));
   };
 
   const onKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -335,6 +362,33 @@ export const Composer = forwardRef<
           ) : (
             <PickerList candidates={candidates} index={pickIndex} setIndex={setPickIndex} openedAt={pickerOpenedAt} onPick={pick} />
           )}
+        </div>
+      )}
+      {failure && (
+        <div
+          role="alert"
+          className="-mx-[14px] -mt-3 mb-3 flex items-start gap-2.5 border-b border-badge-red/25 bg-badge-red/10 px-[14px] py-2.5"
+          onClick={(e) => e.stopPropagation()}
+        >
+          <span className="mt-px shrink-0 text-badge-red">
+            <WarningIcon size={16} />
+          </span>
+          <div className="min-w-0 flex-1 leading-snug">
+            <div className="text-[13.5px] font-medium text-badge-red">{failure.title}</div>
+            <div className="selectable text-[12.5px] text-pretty text-primary/80">{failure.detail}</div>
+          </div>
+          {failure.retry && (
+            <button
+              onClick={() => failure.retry?.()}
+              disabled={sending}
+              className="h-7 shrink-0 rounded-md bg-badge-red px-3 text-[12.5px] font-medium text-white hover:bg-badge-red/90 disabled:opacity-50"
+            >
+              ลองอีกครั้ง
+            </button>
+          )}
+          <button title="ปิด" onClick={() => setFailure(null)} className="grid h-7 w-6 shrink-0 place-items-center text-secondary hover:text-primary">
+            <CloseIcon size={15} />
+          </button>
         </div>
       )}
       {mode && (

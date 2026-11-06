@@ -146,6 +146,30 @@ pub enum Event {
     Failed(Failure, Cause),
     /// A panic, a native crash or an uncaught webview error.
     Exception(Exception),
+    /// The user pressed "อยากได้ฟีเจอร์นี้" on something LAAB can't do yet.
+    FeatureWanted(Feature),
+}
+
+/// Features LAAB doesn't have yet, for [`Event::FeatureWanted`]. A fixed
+/// list, so the event can't carry anything from LINE or the user.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Feature {
+    Calendar,
+}
+
+impl Feature {
+    pub fn parse(name: &str) -> Option<Feature> {
+        match name {
+            "calendar" => Some(Feature::Calendar),
+            _ => None,
+        }
+    }
+
+    fn name(self) -> &'static str {
+        match self {
+            Feature::Calendar => "calendar",
+        }
+    }
 }
 
 impl Event {
@@ -158,6 +182,7 @@ impl Event {
             Event::DailyUsage { .. } => "daily_usage",
             Event::Failed(f, _) => f.name(),
             Event::Exception(_) => "$exception",
+            Event::FeatureWanted(_) => "feature_wanted",
         }
     }
 
@@ -178,6 +203,7 @@ impl Event {
                 "cause": cause.name(),
                 "breadcrumbs": crate::usage::crumbs(),
             }),
+            Event::FeatureWanted(f) => json!({ "feature": f.name() }),
             Event::Exception(e) => json!({
                 "$exception_list": e.list(),
                 "breadcrumbs": e.crumbs,
@@ -410,6 +436,7 @@ mod tests {
             Event::Failed(Failure::Login(Login::Saved), Cause::Network),
             Event::Failed(Failure::Send(Action::SentText), Cause::Other),
             Event::Exception(exception),
+            Event::FeatureWanted(Feature::Calendar),
         ];
         let counts: Vec<String> = Action::ALL.iter().map(|a| format!("n_{}", a.name())).collect();
         for event in events {
@@ -435,6 +462,7 @@ mod tests {
                         "breadcrumbs",
                         "$exception_list",
                         "crashed_version",
+                        "feature",
                     ]
                     .contains(&key.as_str())
                         || counts.contains(key),

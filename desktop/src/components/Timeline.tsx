@@ -211,8 +211,11 @@ export function Timeline({
                   m={r.message}
                   ctx={ctx}
                   runStart={r.runStart}
-                  runEnd={r.runEnd}
-                  readers={marks[r.message.id] ? readerList(marks[r.message.id], ctx.name, people, members) : NO_READERS}
+                  photos={r.photos}
+                  readers={(() => {
+                    const id = (r.photos?.[r.photos.length - 1] ?? r.message).id;
+                    return marks[id] ? readerList(marks[id], ctx.name, people, members) : NO_READERS;
+                  })()}
                   highlight={search && hitSet.has(r.message.id) ? ranges(r.message.text, search.query) : undefined}
                   current={r.message.id === currentHit}
                 />
