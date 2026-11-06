@@ -933,6 +933,21 @@ fn shown_calendars(all: Vec<cal::Calendar>) -> Vec<cal::Calendar> {
         .collect()
 }
 
+/// Chats whose calendar is known to exist this session.
+static CHAT_CALENDARS: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+
+/// Makes sure a chat has a calendar before the first write to it, as LINE
+/// does (GetChatCalendar, then CreateChatCalendar). The user's own
+/// calendars (`cal:`) always exist.
+async fn ensure_calendar(l: &Line, chat_id: &str) -> Result<()> {
+    if chat_id.starts_with("cal:") || CHAT_CALENDARS.lock().unwrap().iter().any(|c| c == chat_id) {
+        return Ok(());
+    }
+    l.client.base.ensure_chat_calendar(chat_id).await?;
+    CHAT_CALENDARS.lock().unwrap().push(chat_id.to_string());
+    Ok(())
+}
+
 /// The event as LINE has it now, for an edit to start from.
 async fn fetch_event(l: &Line, chat_id: &str, event_id: &str) -> Result<Option<cal::Event>> {
     Ok(l
@@ -953,6 +968,7 @@ pub async fn create_calendar_event(
     notify: bool,
 ) -> Result<()> {
     let l = line(state).await?;
+    ensure_calendar(&l, chat_id).await?;
     let id = new_event_id();
     l.client
         .base
