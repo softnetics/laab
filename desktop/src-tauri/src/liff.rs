@@ -148,7 +148,7 @@ fn normalize_locale(raw: &str) -> Option<String> {
         return None;
     }
     // A script subtag (zh_Hant_TW) is skipped; the region is the last part.
-    let region = parts.filter(|p| p.len() == 2).last().map(str::to_ascii_uppercase);
+    let region = parts.rfind(|p| p.len() == 2).map(str::to_ascii_uppercase);
     Some(match region {
         Some(r) => format!("{lang}_{r}"),
         None => lang,

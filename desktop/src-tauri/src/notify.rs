@@ -137,6 +137,7 @@ pub fn maybe_notify(state: &Arc<AppState>, chat: &Chat, msg: &Message) {
 /// account has reaction notifications on (LINE's `notificationReaction`).
 /// Not in a muted chat or the chat being looked at, and not in the first
 /// 30 s after launch, when the events missed while LAAB was closed arrive.
+#[allow(clippy::too_many_arguments)] // one flag per rule keeps the decision table readable
 pub fn should_notify_reaction(
     chat: &Chat,
     message_mine: bool,
@@ -152,7 +153,7 @@ pub fn should_notify_reaction(
         && !already
         && !chat.muted
         && now_ms - launched_ms > 30_000.0
-        && !(focus.active && focus.chat.as_deref() == Some(chat.id.as_str()))
+        && (!focus.active || focus.chat.as_deref() != Some(chat.id.as_str()))
         && account_allows(settings, now_ms)
         && NotificationSettings::on(settings.reaction)
 }
