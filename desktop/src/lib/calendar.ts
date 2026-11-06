@@ -406,7 +406,8 @@ export function occurrenceAt(e: CalendarEvent, recurId?: number): CalendarEvent 
   if (recurId == null || !e.recurrence) return e;
   const o = e.overrides?.find((x) => x.recurId === recurId && !x.deleted);
   if (o) {
-    return { ...e, ...o, timezone: o.timezone || e.timezone, recurId };
+    // An occurrence changed on its own has its own answers, when LINE lists any.
+    return { ...e, ...o, timezone: o.timezone || e.timezone, invitees: o.invitees?.length ? o.invitees : e.invitees, recurId };
   }
   return { ...e, start: recurId, end: recurId + (e.end - e.start), recurId };
 }

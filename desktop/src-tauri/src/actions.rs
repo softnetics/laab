@@ -1100,6 +1100,8 @@ pub struct CalendarOverride {
     pub location: String,
     pub url: String,
     pub description: String,
+    /// Who is invited to this occurrence and their answers to it.
+    pub invitees: Vec<CalendarInvitee>,
 }
 
 #[derive(Debug, Clone, Default, Serialize)]
@@ -1150,6 +1152,17 @@ fn status_name(s: InvitationStatus) -> &'static str {
     }
 }
 
+fn invitees(list: Vec<cal::Invitee>, me: &str) -> Vec<CalendarInvitee> {
+    list.into_iter()
+        .map(|i| CalendarInvitee {
+            me: !me.is_empty() && i.invitee_id == me,
+            mid: i.invitee_id,
+            status: status_name(i.status),
+            updated_at: i.client_updated_at,
+        })
+        .collect()
+}
+
 fn calendar_event(e: cal::Event, chat_id: &str, me: &str) -> CalendarEvent {
     let recurrence = e.recurrence.map(|r| CalendarRecurrence {
         frequency: match r.frequency {
@@ -1178,6 +1191,7 @@ fn calendar_event(e: cal::Event, chat_id: &str, me: &str) -> CalendarEvent {
             location: c.location,
             url: c.url,
             description: c.description,
+            invitees: invitees(c.invitees, me),
         })
         .collect();
     CalendarEvent {
@@ -1197,16 +1211,7 @@ fn calendar_event(e: cal::Event, chat_id: &str, me: &str) -> CalendarEvent {
         recurrence,
         overrides,
         reminders: e.reminders.iter().map(|r| r.raw()).collect(),
-        invitees: e
-            .invitees
-            .into_iter()
-            .map(|i| CalendarInvitee {
-                me: !me.is_empty() && i.invitee_id == me,
-                mid: i.invitee_id,
-                status: status_name(i.status),
-                updated_at: i.client_updated_at,
-            })
-            .collect(),
+        invitees: invitees(e.invitees, me),
         color_id: e.color_id,
     }
 }

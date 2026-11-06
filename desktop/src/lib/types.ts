@@ -243,6 +243,8 @@ export interface CalendarOverride {
   location: string;
   url: string;
   description: string;
+  /** This occurrence's invitees and their answers to it. */
+  invitees?: CalendarInvitee[];
 }
 
 export interface CalendarInvitee {

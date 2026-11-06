@@ -386,7 +386,9 @@ function Detail({
     if (!mine || answering) return;
     setAnswering(true);
     api
-      .respondCalendarInvitation(chatId, e.id, null, accept, mine.updatedAt)
+      // One occurrence of a repeating event is answered for by its recur_id,
+      // as LINE for Android answers for the event it shows (rv0/j.b).
+      .respondCalendarInvitation(chatId, e.id, e.recurId ?? null, accept, mine.updatedAt)
       .then(refresh)
       .catch((err) => notice(errorText(err)))
       .finally(() => setAnswering(false));
@@ -500,7 +502,7 @@ function Detail({
         </div>
         {mine && (
           <div className="mt-3 flex items-center gap-2">
-            <span className="flex-1 text-[12.5px] text-secondary">{repeats ? "ไปนัดชุดนี้ไหม" : "ไปนัดนี้ไหม"}</span>
+            <span className="flex-1 text-[12.5px] text-secondary">{e.recurId != null ? "ไปนัดครั้งนี้ไหม" : "ไปนัดนี้ไหม"}</span>
             {(["accepted", "declined"] as const).map((s) => (
               <button
                 key={s}

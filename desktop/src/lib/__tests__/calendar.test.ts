@@ -279,3 +279,22 @@ describe("repeat editor", () => {
     expect(repeatOf({ ...base, frequency: "none" }, start).until).toBeNull();
   });
 });
+
+describe("answers per occurrence", () => {
+  const me = (status: "accepted" | "declined" | "needsAction") => [{ mid: "u1", status, me: true, updatedAt: 1 }];
+  const series = ev({
+    start: 0,
+    end: 3_600_000,
+    recurrence: { frequency: "daily", interval: 1, until: null, byDay: [], exceptIds: [] },
+    invitees: me("needsAction"),
+    overrides: [
+      { recurId: 86_400_000, deleted: false, title: "t", start: 86_400_000, end: 90_000_000, allDay: false, timezone: "", location: "", url: "", description: "", invitees: me("declined") },
+      { recurId: 172_800_000, deleted: false, title: "t", start: 172_800_000, end: 176_400_000, allDay: false, timezone: "", location: "", url: "", description: "" },
+    ],
+  });
+  it("shows the occurrence's own answer when LINE has one", () => {
+    expect(occurrenceAt(series, 86_400_000).invitees?.[0].status).toBe("declined");
+    expect(occurrenceAt(series, 172_800_000).invitees?.[0].status).toBe("needsAction");
+    expect(occurrenceAt(series, 259_200_000)).toMatchObject({ recurId: 259_200_000, invitees: me("needsAction") });
+  });
+});
