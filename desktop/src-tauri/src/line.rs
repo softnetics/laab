@@ -320,8 +320,14 @@ pub async fn login_password(
 
 pub async fn logout(state: Arc<AppState>) {
     if let Some(line) = state.line.write().await.take() {
-        let _ = line.client.base.auth().logout_z().await;
+        // Stopped first, so a refresh or kick-out during logout isn't
+        // handled as a session of its own.
         line.stop();
+        // logoutV2, as LINE's apps do; line-rs refreshes the token if it
+        // has to and falls back to logoutZ. Signed out here either way.
+        if let Err(e) = line.client.base.auth().logout().await {
+            tracing::warn!("logging out of LINE: {}", e.full_message());
+        }
     }
     clear_auth(&state);
     let _ = state.store().session_clear();
