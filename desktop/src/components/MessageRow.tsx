@@ -632,7 +632,9 @@ export const MessageRow = memo(function MessageRow({
     </div>
   );
   const bubble = (
-    <div className="relative">
+    // min-w-0: a reply quote is one truncated line, and without it the
+    // bubble keeps that whole line's width and pushes the row past the view.
+    <div className="relative min-w-0">
       <Ctx menu={rowMenu(m, dev, ctx)}>
         {photos && photos.length > 1 ? (
           <PhotoGrid photos={photos} ctx={ctx} />
@@ -680,7 +682,7 @@ export const MessageRow = memo(function MessageRow({
           </div>
           <div className={`flex min-w-0 flex-col ${tail ? "pl-2" : ""}`}>
             {runStart && ctx.group && m.senderId && <span className="mb-1 text-[12px] text-secondary">{ctx.name(m.senderId)}</span>}
-            <div className="flex items-end gap-1.5">
+            <div className="flex min-w-0 items-end gap-1.5">
               {bubble}
               {meta}
             </div>
