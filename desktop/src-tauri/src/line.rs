@@ -438,13 +438,18 @@ async fn connected(state: Arc<AppState>, client: Client, device: Device) {
     });
 }
 
-/// Read the account's notification settings (LINE's, shared by every
-/// device) for the banner rules. On failure the rules treat every switch as
-/// on, as before.
+/// Read the account's settings (LINE's, shared by every device): the
+/// notification ones for the banner rules, and the account's language for
+/// LIFF apps. On failure the banner rules treat every switch as on, as
+/// before.
 async fn load_notification_settings(client: Client) {
-    match client.notification_settings().await {
-        Ok(s) => crate::notify::set_settings(Some(s)),
-        Err(e) => tracing::warn!("notification settings: {}", e.full_message()),
+    match client.base.talk().get_settings(line_rs::tv!({})).await {
+        Ok(v) => {
+            use line_rs::client::settings::NotificationSettings;
+            crate::notify::set_settings(Some(NotificationSettings::from_settings(&v)));
+            crate::liff::set_account_locale(v["preferenceLocale"].as_str().map(str::to_string));
+        }
+        Err(e) => tracing::warn!("account settings: {}", e.full_message()),
     }
 }
 

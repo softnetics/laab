@@ -132,6 +132,53 @@ pub fn client_url(endpoint: &str, link: &LiffLink, tokens: &[(&str, String)]) ->
     Ok(format!("{url}#{}", fragment.join("&")))
 }
 
+/// The account's language as LINE has it (`preferenceLocale`), once read.
+static ACCOUNT_LOCALE: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+pub fn set_account_locale(locale: Option<String>) {
+    *ACCOUNT_LOCALE.lock().unwrap() = locale.and_then(|l| normalize_locale(&l));
+}
+
+/// `th_TH` from `th-TH`, `en_TH@rg=thzzzz` or `th`; None for nothing usable.
+fn normalize_locale(raw: &str) -> Option<String> {
+    let base = raw.split(['@', '.']).next()?.trim().replace('-', "_");
+    let mut parts = base.split('_').filter(|p| !p.is_empty());
+    let lang = parts.next()?.to_ascii_lowercase();
+    if lang.len() < 2 || !lang.bytes().all(|b| b.is_ascii_alphabetic()) {
+        return None;
+    }
+    // A script subtag (zh_Hant_TW) is skipped; the region is the last part.
+    let region = parts.filter(|p| p.len() == 2).last().map(str::to_ascii_uppercase);
+    Some(match region {
+        Some(r) => format!("{lang}_{r}"),
+        None => lang,
+    })
+}
+
+/// The Mac's locale (`AppleLocale`), read once.
+fn mac_locale() -> Option<String> {
+    static MAC: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+    MAC.get_or_init(|| {
+        let out = std::process::Command::new("defaults")
+            .args(["read", "-g", "AppleLocale"])
+            .output()
+            .ok()?;
+        normalize_locale(String::from_utf8_lossy(&out.stdout).trim())
+    })
+    .clone()
+}
+
+/// The language LIFF apps are opened in, as LINE sends it in
+/// issueLiffView: the account's, else the Mac's, else Thai.
+pub fn lang() -> String {
+    ACCOUNT_LOCALE
+        .lock()
+        .unwrap()
+        .clone()
+        .or_else(mac_locale)
+        .unwrap_or_else(|| "th_TH".into())
+}
+
 /// LINE's consent pages fetched for the user to agree to, by LIFF id, so
 /// "Allow" posts the very page they saw.
 static CONSENTS: std::sync::Mutex<Vec<(String, ConsentPage)>> = std::sync::Mutex::new(Vec::new());
@@ -171,7 +218,7 @@ fn view_options(link: &LiffLink, chat: Option<String>) -> LiffViewOptions {
     LiffViewOptions {
         chat_mid: chat,
         liff_id: Some(link.id.clone()),
-        lang: Some("th_TH".into()),
+        lang: Some(lang()),
     }
 }
 
@@ -476,7 +523,7 @@ pub async fn share(
         let opts = LiffViewOptions {
             chat_mid: Some(chat.clone()),
             liff_id: Some(liff_id.into()),
-            lang: Some("th_TH".into()),
+            lang: Some(lang()),
         };
         let ok = async {
             let v = line
@@ -546,6 +593,20 @@ mod tests {
         assert!(parse_link("https://line.me/R/app/1234567-AbCdEf12").is_some());
         assert!(parse_link("https://liff.line.me/nope").is_none());
         assert!(parse_link("https://example.com/1234567-AbCdEf12").is_none());
+    }
+
+    #[test]
+    fn maps_locales_to_lines_form() {
+        assert_eq!(normalize_locale("th-TH").as_deref(), Some("th_TH"));
+        assert_eq!(normalize_locale("en_TH@rg=thzzzz").as_deref(), Some("en_TH"));
+        assert_eq!(normalize_locale("ja_JP.UTF-8").as_deref(), Some("ja_JP"));
+        assert_eq!(normalize_locale("zh-Hant-TW").as_deref(), Some("zh_TW"));
+        assert_eq!(normalize_locale("ko").as_deref(), Some("ko"));
+        assert_eq!(normalize_locale(""), None);
+        assert_eq!(normalize_locale("1"), None);
+        set_account_locale(Some("en-US".into()));
+        assert_eq!(lang(), "en_US");
+        set_account_locale(None);
     }
 
     #[test]
