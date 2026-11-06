@@ -119,13 +119,11 @@ pub async fn edit(
     Ok(())
 }
 
-/// Translate `text` into `target` (e.g. `th`). Desktop REST call; unverified.
+/// Translate `text` into `target` (LINE's code: `th`, `en`, `zh-TW`, …).
+/// Desktop REST call; unverified.
 pub async fn translate(state: &Arc<AppState>, text: &str, target: &str) -> Result<String> {
     let l = line(state).await?;
-    let reply = l
-        .client
-        .base
-        .rest()
+    let reply = translate_client(&l)
         .translate(&TranslateText::new(text, target), None)
         .await?;
     reply["translatedText"]
@@ -134,6 +132,21 @@ pub async fn translate(state: &Arc<AppState>, text: &str, target: &str) -> Resul
         .map(str::to_string)
         .filter(|t| !t.is_empty())
         .ok_or_else(|| anyhow!("translate_empty"))
+}
+
+/// The REST client translations go through, one per LINE session, so the
+/// channel token it gets (LINE's translate channel, or the timeline one it
+/// falls back to) lasts from one translation to the next.
+fn translate_client(l: &Line) -> Arc<line_rs::rest::RestClient> {
+    static CLIENT: std::sync::Mutex<Option<Arc<line_rs::rest::RestClient>>> = std::sync::Mutex::new(None);
+    let mut slot = CLIENT.lock().unwrap();
+    // The same session: the client wraps this very BaseClient.
+    if let Some(c) = slot.as_ref().filter(|c| std::ptr::eq(&**c.client(), &*l.client.base)) {
+        return c.clone();
+    }
+    let c = Arc::new(l.client.base.rest());
+    *slot = Some(c.clone());
+    c
 }
 
 /// Keep Memo is the chat with yourself; "save to Keep" sends a copy there.
