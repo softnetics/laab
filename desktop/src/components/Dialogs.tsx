@@ -6,6 +6,9 @@ import { Avatar } from "./Avatar";
 import { CreateGroup, GroupMembers, useSheetChat } from "./GroupSheets";
 import { Spinner } from "./kit";
 import { McpSheet } from "./McpSheet";
+import { DatePicker, TimeField } from "./DateTimePicker";
+import { joinPicker, outOfRange, pickerLabel, splitPicker } from "../lib/datetimePicker";
+import type { PickerAction, PickerStart } from "../lib/types";
 import { buttonClass, Sheet } from "./Sheet";
 
 const inputClass = "selectable h-9 rounded-md bg-field px-3 text-[14px] outline-none placeholder:text-secondary";
@@ -213,9 +216,77 @@ export function Sheets() {
       >
         {group && <GroupMembers key={group.id} chat={group} onDone={close} />}
       </Sheet>
+      <Sheet
+        open={sheet?.kind === "datetime-picker"}
+        onClose={close}
+        className="w-[340px]"
+        title={sheet?.kind === "datetime-picker" ? (sheet.label ?? pickerTitle[sheet.action.mode]) : undefined}
+      >
+        {sheet?.kind === "datetime-picker" && (
+          <DateTimePickSheet chatId={sheet.chatId} messageId={sheet.messageId} action={sheet.action} start={sheet.start} onDone={close} />
+        )}
+      </Sheet>
       <Sheet open={sheet?.kind === "mcp"} onClose={close} className="h-[min(680px,calc(100vh-48px))] w-[min(760px,calc(100vw-48px))]">
         {sheet?.kind === "mcp" && <McpSheet onDone={close} />}
       </Sheet>
     </>
+  );
+}
+
+const pickerTitle: Record<PickerAction["mode"], string> = { date: "เลือกวันที่", time: "เลือกเวลา", datetime: "เลือกวันและเวลา" };
+
+/** A bot's datetime picker button: pick, then send it back to the bot. */
+function DateTimePickSheet({
+  chatId,
+  messageId,
+  action,
+  start,
+  onDone,
+}: {
+  chatId: string;
+  messageId: string;
+  action: PickerAction;
+  start: PickerStart;
+  onDone: () => void;
+}) {
+  const mode = action.mode;
+  const [date, setDate] = useState(() => splitPicker(mode, start.start).date);
+  const [time, setTime] = useState(() => splitPicker(mode, start.start).time);
+  const [busy, setBusy] = useState(false);
+  const value = joinPicker(mode, date, time);
+  const problem = outOfRange(mode, value, start.min, start.max);
+  const send = async () => {
+    if (busy || problem) return;
+    setBusy(true);
+    try {
+      await api.sendDatetimePostback(chatId, messageId, action, value);
+      onDone();
+      notice(`ส่ง ${pickerLabel(mode, value)} แล้ว`);
+    } catch (e) {
+      notice(errorText(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <div className="flex flex-col gap-3 px-5 pt-3 pb-4">
+      <div className="flex items-center justify-center gap-2">
+        {mode !== "time" && <DatePicker label="วันที่" value={date} onChange={setDate} />}
+        {mode !== "date" && <TimeField label="เวลา" value={time} onChange={setTime} />}
+      </div>
+      {problem && (
+        <p role="alert" className="text-center text-[12px] text-badge-red">
+          {problem}
+        </p>
+      )}
+      <div className="flex justify-end gap-2">
+        <button className={buttonClass()} onClick={onDone}>
+          ยกเลิก
+        </button>
+        <button className={buttonClass(true)} disabled={busy || !!problem} onClick={send}>
+          {busy ? <Spinner size={11} /> : "ส่ง"}
+        </button>
+      </div>
+    </div>
   );
 }

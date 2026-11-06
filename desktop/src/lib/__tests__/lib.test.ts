@@ -9,6 +9,7 @@ import { linkify, liffId } from "../links";
 import { adjacentChat, filterChats, folderName, groupRows, listPreview } from "../chatList";
 import { nextReaction, topTypes } from "../reactions";
 import { dayHeader, fullStamp, listLabel } from "../time";
+import { joinPicker, outOfRange, pickerNow, splitPicker } from "../datetimePicker";
 import type { ChatList, Message } from "../types";
 
 const msg = (p: Partial<Message>): Message => ({
@@ -299,5 +300,24 @@ describe("animated photos", () => {
     expect(isAnimated(photo("not json"))).toBe(false);
     expect(isAnimated(photo())).toBe(false);
     expect(isAnimated(msg({ contentType: "VIDEO", metadata: { MEDIA_CONTENT_INFO: '{"animated":true}' } }))).toBe(false);
+  });
+});
+
+describe("datetime picker buttons", () => {
+  it("formats now in the mode's format", () => {
+    const d = new Date(2026, 10, 6, 9, 5);
+    expect(pickerNow("date", d)).toBe("2026-11-06");
+    expect(pickerNow("time", d)).toBe("09:05");
+    expect(pickerNow("datetime", d)).toBe("2026-11-06T09:05");
+  });
+  it("splits and joins the fields", () => {
+    expect(splitPicker("datetime", "2026-11-06T09:05")).toEqual({ date: "2026-11-06", time: "09:05" });
+    expect(joinPicker("datetime", "2026-11-06", "09:05")).toBe("2026-11-06T09:05");
+    expect(joinPicker("time", "", "21:30")).toBe("21:30");
+  });
+  it("says when a value is out of the bot's range", () => {
+    expect(outOfRange("time", "09:00", "10:00", null)).toBe("เลือกได้ตั้งแต่ 10.00 น.");
+    expect(outOfRange("time", "19:00", null, "18:30")).toBe("เลือกได้ถึง 18.30 น.");
+    expect(outOfRange("time", "12:00", "10:00", "18:00")).toBeNull();
   });
 });

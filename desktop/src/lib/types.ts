@@ -364,3 +364,20 @@ export interface LiffDevSession {
   closed: boolean;
   events: LiffDevEvent[];
 }
+
+/** A flex or template datetime picker button, as the message has it. */
+export interface PickerAction {
+  data: string;
+  mode: "date" | "time" | "datetime";
+  initial: string | null;
+  max: string | null;
+  min: string | null;
+}
+
+/** How LINE would show a picker for a button: `start` and the bounds are in the mode's format. */
+export interface PickerStart {
+  show: boolean;
+  start: string;
+  min: string | null;
+  max: string | null;
+}

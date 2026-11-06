@@ -13,6 +13,11 @@ export type FlexAction = {
   text?: string;
   displayText?: string;
   clipboardText?: string;
+  /** datetimepicker: `date`, `time` or `datetime`, and its bounds in that format. */
+  mode?: string;
+  initial?: string;
+  max?: string;
+  min?: string;
 };
 
 const SPACE: Record<string, number> = { none: 0, xs: 2, sm: 4, md: 8, lg: 12, xl: 16, xxl: 20 };

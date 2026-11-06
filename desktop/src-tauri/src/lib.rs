@@ -268,6 +268,8 @@ pub fn run() {
             commands::raw_message,
             commands::send_postback,
             commands::send_message_button,
+            commands::datetime_picker,
+            commands::send_datetime_postback,
             commands::friends,
             commands::accept_invitation,
             commands::accept_message_request,
