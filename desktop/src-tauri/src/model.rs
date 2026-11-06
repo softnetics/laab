@@ -150,4 +150,7 @@ pub struct Session {
     pub profile: Option<Profile>,
     pub sync_done: usize,
     pub sync_total: usize,
+    /// Whether the account has LINE Premium; `None` until LINE says.
+    /// Editing a message needs it.
+    pub premium: Option<bool>,
 }

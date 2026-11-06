@@ -393,6 +393,15 @@ async fn connected(state: Arc<AppState>, client: Client, device: Device) {
     });
 
     spawn_forwarders(&state, &line);
+    {
+        let (s, c) = (state.clone(), client.clone());
+        tokio::spawn(async move {
+            match c.premium_status().await {
+                Ok(p) => s.update_session(|x| x.premium = Some(p.active)),
+                Err(e) => tracing::warn!("premium status: {}", e.full_message()),
+            }
+        });
+    }
     *line.listen.lock().unwrap() = Some(client.listen(ListenOptions {
         talk: true,
         square: false,

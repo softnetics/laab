@@ -470,6 +470,8 @@ function rowMenu(m: Message, dev: boolean, ctx?: RowContext) {
   const live = sent && m.unsent === 0;
   const status = queryClient.getQueryData(q.analytics.queryKey);
   const reportable = !!status && status !== "unavailable";
+  // Editing needs LINE Premium; hide it once LINE says the account has none.
+  const canEdit = queryClient.getQueryData(q.session.queryKey)?.premium !== false;
   return (
     <>
       {live && item("ตอบกลับ", () => setUi({ composerMode: { chatId: ctx.chatId, kind: "reply", message: m }, composerFocus: Date.now() }))}
@@ -477,6 +479,7 @@ function rowMenu(m: Message, dev: boolean, ctx?: RowContext) {
       {m.mine &&
         live &&
         text &&
+        canEdit &&
         item(
           <>
             แก้ไข <span className="h-1.5 w-1.5 rounded-full bg-line-green" />

@@ -149,6 +149,8 @@ export interface Session {
   profile: Profile | null;
   syncDone: number;
   syncTotal: number;
+  /** LINE Premium; null until LINE says. Editing needs it. */
+  premium: boolean | null;
 }
 
 export interface Person {

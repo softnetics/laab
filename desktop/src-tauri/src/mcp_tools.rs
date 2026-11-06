@@ -674,6 +674,7 @@ async fn run(ctx: &Ctx, name: &str, args: &Value, trace: &mut Trace) -> R<Vec<Va
                 "me": s.profile.map(|p| json!({ "mid": p.mid, "name": p.display_name })),
                 "demo": state.demo,
                 "sync": { "done": s.sync_done, "total": s.sync_total },
+                "premium": s.premium,
                 "now": time(crate::state::now_ms()),
                 "defaults": settings.defaults,
                 "hasPerChatRules": !settings.rules.is_empty(),
