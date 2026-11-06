@@ -20,6 +20,7 @@ mod media;
 mod model;
 mod notify;
 mod paths;
+mod probe;
 mod reads;
 mod report;
 mod richmenu;

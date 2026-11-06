@@ -134,7 +134,66 @@ pub async fn translate(state: &Arc<AppState>, text: &str, target: &str) -> Resul
         .ok_or_else(|| anyhow!("translate_empty"))
 }
 
+/// What `copy.obs` needs to send a stored E2EE media message to `to`
+/// again: its object, the key from its decrypted `payload`, and the size,
+/// name, length and picture size LINE shows. `None` for anything else.
+fn forward_request(to: &str, content_type: &str, raw: &Value, payload: &Json) -> Option<line_rs::obs::ForwardMedia> {
+    use line_rs::obs::{ForwardMedia, MediaOptions, ObjType};
+    let meta = &raw["contentMetadata"];
+    let text = |key: &str| meta[key].as_str().filter(|v| !v.is_empty());
+    let info: Json = text("MEDIA_CONTENT_INFO")
+        .and_then(|i| serde_json::from_str(i).ok())
+        .unwrap_or_default();
+    let o_type = match content_type {
+        "IMAGE" if info["animated"] == true || info["extension"] == "gif" => ObjType::Gif,
+        "IMAGE" => ObjType::Image,
+        "VIDEO" => ObjType::Video,
+        "AUDIO" => ObjType::Audio,
+        "FILE" => ObjType::File,
+        _ => return None,
+    };
+    let mut opts = MediaOptions::new();
+    if let Some(ms) = text("DURATION").and_then(|d| d.parse().ok()) {
+        opts = opts.duration_ms(ms);
+    }
+    if let (Some(w), Some(h)) = (info["width"].as_u64(), info["height"].as_u64()) {
+        opts = opts.size(w as u32, h as u32);
+    }
+    let file_name = payload["fileName"]
+        .as_str()
+        .filter(|n| !n.is_empty())
+        .map(str::to_string)
+        .or_else(|| info["extension"].as_str().map(|ext| format!("image.{ext}")));
+    Some(ForwardMedia {
+        to: to.to_string(),
+        o_type,
+        src_oid: text("OID")?.to_string(),
+        src_message_id: raw["id"].as_str().filter(|v| !v.is_empty())?.to_string(),
+        key_material: payload["keyMaterial"].as_str().filter(|k| !k.is_empty())?.to_string(),
+        file_size: text("FILE_SIZE").and_then(|s| s.parse().ok()).unwrap_or(0),
+        file_name,
+        opts,
+    })
+}
+
+/// Send a stored E2EE media message to Keep by having LINE copy its
+/// encrypted object (`copy.obs`), as LINE's app forwards, so nothing is
+/// downloaded or uploaded again.
+async fn keep_by_copy(state: &AppState, l: &Line, message_id: &str, content_type: &str) -> Result<()> {
+    let raw = line::stored_raw(state, message_id).ok_or_else(|| anyhow!("no stored message"))?;
+    if raw["chunks"].as_list().is_none_or(|c| c.is_empty()) {
+        bail!("not an E2EE message");
+    }
+    let payload = l.client.base.decrypt_e2ee_data_message(&raw).await?;
+    let request = forward_request(&l.me, content_type, &raw, &payload)
+        .ok_or_else(|| anyhow!("nothing to copy"))?;
+    l.client.base.obs().forward_media(request).await?;
+    Ok(())
+}
+
 /// Keep Memo is the chat with yourself; "save to Keep" sends a copy there.
+/// Media is copied on LINE's side when it can be, else downloaded and sent
+/// again.
 pub async fn save_to_keep(state: &Arc<AppState>, chat_id: &str, message_id: &str) -> Result<()> {
     let l = line(state).await?;
     let m = state
@@ -142,15 +201,21 @@ pub async fn save_to_keep(state: &Arc<AppState>, chat_id: &str, message_id: &str
         .message(message_id)?
         .ok_or_else(|| anyhow!("message_not_found"))?;
     match m.content_type.as_str() {
-        "IMAGE" | "VIDEO" | "FILE" => {
+        kind @ ("IMAGE" | "VIDEO" | "AUDIO" | "FILE") => {
+            match keep_by_copy(state, &l, message_id, kind).await {
+                Ok(()) => return Ok(()),
+                Err(e) => tracing::info!("copy to Keep failed, sending the file again: {e}"),
+            }
             let path = crate::media::download_file(state, chat_id, message_id, m.file_name.clone())
                 .await?;
             let data = crate::vault::read(&path)?;
             let name = m.file_name.clone().unwrap_or_else(|| "file".into());
             let chat = l.chat(&l.me);
-            let sent = match m.content_type.as_str() {
+            let duration = m.duration_ms.and_then(|d| u64::try_from(d).ok());
+            let sent = match kind {
                 "IMAGE" => chat.send_image(data, Some(&name)).await,
-                "VIDEO" => chat.send_video(data, Some(&name), None).await,
+                "VIDEO" => chat.send_video(data, Some(&name), duration).await,
+                "AUDIO" => chat.send_audio(data, Some(&name), duration).await,
                 _ => chat.send_file(data, &name).await,
             };
             sent.map_err(|e| anyhow!("{e}"))?;
@@ -1157,6 +1222,51 @@ pub async fn delete_album(state: &Arc<AppState>, chat_id: &str, album_id: &str) 
 mod tests {
     use super::*;
     use serde_json::json;
+
+    fn stored(meta: Value) -> Value {
+        let mut raw = tv!({"id": "777", "to": "u-friend"});
+        raw.insert("contentMetadata", meta);
+        raw
+    }
+
+    #[test]
+    fn keep_copies_a_photo_with_its_key_and_size() {
+        let raw = stored(tv!({"OID": "SRC", "SID": "emi", "FILE_SIZE": "2048",
+            "MEDIA_CONTENT_INFO": "{\"category\":\"original\",\"extension\":\"png\",\"width\":40,\"height\":30}"}));
+        let f = forward_request("u-me", "IMAGE", &raw, &json!({"keyMaterial": "KEY"})).unwrap();
+        assert_eq!(f.to, "u-me");
+        assert_eq!(f.o_type, line_rs::obs::ObjType::Image);
+        assert_eq!((f.src_oid.as_str(), f.src_message_id.as_str()), ("SRC", "777"));
+        assert_eq!(f.key_material, "KEY");
+        assert_eq!(f.file_size, 2048);
+        assert_eq!(f.file_name.as_deref(), Some("image.png"));
+        assert_eq!((f.opts.width, f.opts.height), (Some(40), Some(30)));
+    }
+
+    #[test]
+    fn keep_copies_gifs_clips_and_files_as_what_they_are() {
+        use line_rs::obs::ObjType;
+        let gif = stored(tv!({"OID": "o", "MEDIA_CONTENT_INFO": "{\"extension\":\"gif\",\"animated\":true}"}));
+        let key = json!({"keyMaterial": "K"});
+        assert_eq!(forward_request("u", "IMAGE", &gif, &key).unwrap().o_type, ObjType::Gif);
+
+        let voice = stored(tv!({"OID": "o", "DURATION": "3100"}));
+        let f = forward_request("u", "AUDIO", &voice, &key).unwrap();
+        assert_eq!((f.o_type, f.opts.duration_ms), (ObjType::Audio, Some(3100)));
+
+        let file = stored(tv!({"OID": "o", "FILE_SIZE": "9"}));
+        let f = forward_request("u", "FILE", &file, &json!({"keyMaterial": "K", "fileName": "report.pdf"})).unwrap();
+        assert_eq!((f.o_type, f.file_name.as_deref()), (ObjType::File, Some("report.pdf")));
+    }
+
+    #[test]
+    fn keep_sends_again_what_it_cannot_copy() {
+        let key = json!({"keyMaterial": "K"});
+        // No object, no key, or not media.
+        assert!(forward_request("u", "IMAGE", &stored(tv!({"SID": "emi"})), &key).is_none());
+        assert!(forward_request("u", "VIDEO", &stored(tv!({"OID": "o"})), &json!({})).is_none());
+        assert!(forward_request("u", "STICKER", &stored(tv!({"OID": "o"})), &key).is_none());
+    }
 
     #[test]
     fn parses_note_feed() {

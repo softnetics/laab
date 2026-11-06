@@ -399,19 +399,61 @@ async fn audio_duration_ms(path: &std::path::Path) -> Option<u64> {
     (secs.is_finite() && secs > 0.0).then(|| (secs * 1000.0).round() as u64)
 }
 
-async fn send_file(s: &AppState, chat: &line_rs::client::Chat, path: &str) -> Result<(), String> {
-    let p = std::path::Path::new(path);
-    let name = p
+fn file_name(path: &str) -> &str {
+    std::path::Path::new(path)
         .file_name()
         .and_then(|n| n.to_str())
         .unwrap_or("file")
-        .to_string();
-    let ext = p
+}
+
+fn file_kind(path: &str) -> ObjType {
+    let ext = std::path::Path::new(path)
         .extension()
         .and_then(|e| e.to_str())
         .unwrap_or("")
         .to_ascii_lowercase();
-    let kind = media_kind(&ext);
+    media_kind(&ext)
+}
+
+/// One step of sending a pick: a file alone, or photos as one group.
+#[derive(Debug, PartialEq)]
+enum SendStep {
+    One(usize),
+    Group(Vec<usize>),
+}
+
+/// How a pick goes out: two or more photos go together as one photo group
+/// where the first of them was, as LINE's app sends them; everything else
+/// one by one, in order. GIFs go alone, as moving pictures.
+fn send_plan(paths: &[String]) -> Vec<SendStep> {
+    let photos: Vec<usize> = (0..paths.len())
+        .filter(|&i| file_kind(&paths[i]) == ObjType::Image)
+        .collect();
+    let mut steps = Vec::new();
+    for i in 0..paths.len() {
+        if photos.len() < 2 || !photos.contains(&i) {
+            steps.push(SendStep::One(i));
+        } else if photos[0] == i {
+            steps.push(SendStep::Group(photos.clone()));
+        }
+    }
+    steps
+}
+
+/// A file read and ready to send.
+struct Prepared {
+    name: String,
+    kind: ObjType,
+    file: ObsFile,
+    opts: MediaOptions,
+}
+
+/// Read `path` and work out what LINE's app sends with it: a photo's size,
+/// a video's length and thumbnail, an audio clip's length.
+async fn prepare_file(s: &AppState, path: &str) -> Result<Prepared, String> {
+    let p = std::path::Path::new(path);
+    let name = file_name(path).to_string();
+    let kind = file_kind(path);
     // Checked before reading, so a huge file isn't loaded only to be refused.
     if let Ok(meta) = tokio::fs::metadata(p).await
         && line_rs::obs::check_media_size(kind, meta.len() as usize).is_err()
@@ -426,15 +468,39 @@ async fn send_file(s: &AppState, chat: &line_rs::client::Chat, path: &str) -> Re
     let mut opts = MediaOptions::new();
     match kind {
         ObjType::Gif => opts = opts.animated(true),
+        ObjType::Image => {
+            if let crate::probe::Probe { width: Some(w), height: Some(h), .. } = crate::probe::image(p).await {
+                opts = opts.size(w, h);
+            }
+        }
+        ObjType::Video => {
+            let probe = crate::probe::video(p).await;
+            if let Some(ms) = probe.duration_ms {
+                opts = opts.duration_ms(ms);
+            }
+            if let Some(jpeg) = probe.preview {
+                opts = opts.preview(jpeg);
+            }
+        }
         ObjType::Audio => {
             if let Some(ms) = audio_duration_ms(p).await {
                 opts = opts.duration_ms(ms);
             }
         }
-        _ => {}
+        ObjType::File => {}
     }
     let file = ObsFile::new(data).name(name.clone());
-    match chat.send_media_with(kind, file, opts).await {
+    Ok(Prepared { name, kind, file, opts })
+}
+
+/// Count a sent file, or say in Thai why it wasn't sent.
+fn sent_result(
+    s: &AppState,
+    name: &str,
+    kind: ObjType,
+    res: line_rs::Result<line_rs::obs::SentMedia>,
+) -> Result<(), String> {
+    match res {
         Ok(_) => {
             crate::usage::hit(crate::usage::Action::SentFile);
             Ok(())
@@ -447,8 +513,41 @@ async fn send_file(s: &AppState, chat: &line_rs::client::Chat, path: &str) -> Re
     }
 }
 
-/// Sends the files one by one, going on past one that fails, and returns
-/// the ones that failed so Retry sends only those.
+async fn send_file(s: &AppState, chat: &line_rs::client::Chat, path: &str) -> Result<(), String> {
+    let f = prepare_file(s, path).await?;
+    let res = chat.send_media_with(f.kind, f.file, f.opts).await;
+    sent_result(s, &f.name, f.kind, res)
+}
+
+/// Send photos as one photo group; one result per path, in order.
+async fn send_photo_group(
+    s: &AppState,
+    chat: &line_rs::client::Chat,
+    paths: &[&String],
+) -> Vec<Result<(), String>> {
+    let mut results: Vec<Result<(), String>> = Vec::with_capacity(paths.len());
+    let mut ready = Vec::new();
+    for (i, path) in paths.iter().enumerate() {
+        match prepare_file(s, path).await {
+            Ok(f) => {
+                ready.push((i, f));
+                results.push(Ok(()));
+            }
+            Err(e) => results.push(Err(e)),
+        }
+    }
+    let names: Vec<(usize, String)> = ready.iter().map(|(i, f)| (*i, f.name.clone())).collect();
+    let images = ready.into_iter().map(|(_, f)| (f.file, f.opts)).collect();
+    let sent = chat.send_image_group(images).await;
+    for ((i, name), res) in names.into_iter().zip(sent) {
+        results[i] = sent_result(s, &name, ObjType::Image, res);
+    }
+    results
+}
+
+/// Sends the files, going on past one that fails, and returns the ones
+/// that failed so Retry sends only those. Two or more photos go as one
+/// photo group (see [`send_plan`]).
 #[tauri::command]
 pub async fn send_files(state: S<'_>, chat_id: String, paths: Vec<String>) -> R<Vec<FileFailure>> {
     let s = state.inner().clone();
@@ -458,14 +557,26 @@ pub async fn send_files(state: S<'_>, chat_id: String, paths: Vec<String>) -> R<
     let l = s.line().await.ok_or("not_logged_in")?;
     let chat = l.chat(&chat_id);
     let mut failed = Vec::new();
-    for (i, path) in paths.iter().enumerate() {
-        let name = std::path::Path::new(path)
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("file");
-        s.status(format!("กำลังส่ง {name} ({}/{})", i + 1, paths.len()));
-        if let Err(error) = send_file(&s, &chat, path).await {
-            failed.push(FileFailure { path: path.clone(), error });
+    let mut done = 0;
+    for step in send_plan(&paths) {
+        match step {
+            SendStep::One(i) => {
+                done += 1;
+                s.status(format!("กำลังส่ง {} ({done}/{})", file_name(&paths[i]), paths.len()));
+                if let Err(error) = send_file(&s, &chat, &paths[i]).await {
+                    failed.push(FileFailure { path: paths[i].clone(), error });
+                }
+            }
+            SendStep::Group(group) => {
+                done += group.len();
+                s.status(format!("กำลังส่งรูป {} รูป ({done}/{})", group.len(), paths.len()));
+                let group: Vec<&String> = group.iter().map(|&i| &paths[i]).collect();
+                for (path, res) in group.iter().zip(send_photo_group(&s, &chat, &group).await) {
+                    if let Err(error) = res {
+                        failed.push(FileFailure { path: (*path).clone(), error });
+                    }
+                }
+            }
         }
     }
     s.status("เชื่อม LINE แล้ว");
@@ -1650,6 +1761,19 @@ mod tests {
         assert_eq!(media_kind("m4a"), ObjType::Audio);
         assert_eq!(media_kind("mp3"), ObjType::Audio);
         assert_eq!(media_kind("pdf"), ObjType::File);
+    }
+
+    #[test]
+    fn two_or_more_photos_go_as_one_group_where_the_first_was() {
+        let paths = |names: &[&str]| names.iter().map(|n| format!("/tmp/{n}")).collect::<Vec<_>>();
+        assert_eq!(
+            send_plan(&paths(&["a.pdf", "b.JPG", "c.mov", "d.png", "e.gif", "f.heic"])),
+            [SendStep::One(0), SendStep::Group(vec![1, 3, 5]), SendStep::One(2), SendStep::One(4)]
+        );
+        // One photo, or GIFs only, go one by one.
+        assert_eq!(send_plan(&paths(&["a.jpg", "b.mov"])), [SendStep::One(0), SendStep::One(1)]);
+        assert_eq!(send_plan(&paths(&["a.gif", "b.gif"])), [SendStep::One(0), SendStep::One(1)]);
+        assert_eq!(send_plan(&[]), []);
     }
 
     #[cfg(target_os = "macos")]
