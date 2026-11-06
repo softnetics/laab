@@ -107,7 +107,12 @@ pub async fn edit(
     TalkMessage::new(l.client.clone(), raw)
         .edit(text)
         .await
-        .map_err(refused)?;
+        .map_err(|e| {
+            if e.error_code() == Some(line_rs::ErrorCode::NotPremium) {
+                line::remember_premium(state, false);
+            }
+            refused(e)
+        })?;
     let _ = line::fetch_history(state, chat_id).await;
     Ok(())
 }

@@ -148,6 +148,14 @@ async fn session_ended(state: Arc<AppState>, line: Arc<Line>, status: &str) {
     });
 }
 
+const PREMIUM_KEY: &str = "premium";
+
+/// Record whether the account has LINE Premium, for the UI and next launch.
+pub fn remember_premium(state: &AppState, premium: bool) {
+    logged("saving premium", state.store().set_kv(PREMIUM_KEY, if premium { "1" } else { "0" }));
+    state.update_session(|x| x.premium = Some(premium));
+}
+
 /// Logs an error the app carries on after, so the log shows why something
 /// went missing.
 fn logged<T, E: std::fmt::Display>(what: &str, result: std::result::Result<T, E>) {
@@ -397,8 +405,14 @@ async fn connected(state: Arc<AppState>, client: Client, device: Device) {
         let (s, c) = (state.clone(), client.clone());
         tokio::spawn(async move {
             match c.premium_status().await {
-                Ok(p) => s.update_session(|x| x.premium = Some(p.active)),
-                Err(e) => tracing::warn!("premium status: {}", e.full_message()),
+                Ok(p) => remember_premium(&s, p.active),
+                Err(e) => {
+                    // Not every region answers the status call; fall back to
+                    // what an earlier edit taught us.
+                    tracing::warn!("premium status: {}", e.full_message());
+                    let known = s.store().get_kv(PREMIUM_KEY).ok().flatten().map(|v| v == "1");
+                    s.update_session(|x| x.premium = known);
+                }
             }
         });
     }
