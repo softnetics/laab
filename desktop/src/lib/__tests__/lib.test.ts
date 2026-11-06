@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { compareIds, later, placement, readersOf } from "../reads";
-import { backspaceMention, composingQuery, insertMention, matching, present, targets, ALL_MEMBER } from "../mentions";
+import { backspaceMention, composingQuery, fromSpans, insertMention, matching, present, targets, ALL_MEMBER } from "../mentions";
 import { callBubbleLabel, chatEventText, noticeFor, readCall, readChatEvent, isBlank } from "../notices";
 import { buildRows } from "../timeline";
 import { findHits, ranges } from "../inChatSearch";
@@ -67,6 +67,18 @@ describe("mentions", () => {
     const m = [{ mid: "u1", all: false, label: "@Arthit" }];
     expect(present("@Arthi x", m)).toEqual([]);
     expect(backspaceMention("hi @Arthit", 10, m)).toEqual({ text: "hi ", caret: 3, mentions: [] });
+  });
+  it("takes a sent message's mentions back into the composer to edit", () => {
+    const text = "@Arthit @All hi";
+    const m = fromSpans(text, [
+      { start: 8, end: 12, all: true },
+      { start: 0, end: 7, mid: "u1" },
+    ]);
+    expect(targets(text, m)).toEqual([
+      { start: 0, end: 7, mid: "u1" },
+      { start: 8, end: 12, all: true },
+    ]);
+    expect(fromSpans("hi there", [{ start: 0, end: 2, mid: "u1" }])).toEqual([]);
   });
   it("matches members, All by either name", () => {
     const members = [ALL_MEMBER, { mid: "u1", name: "Arthit" }];

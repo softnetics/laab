@@ -1189,7 +1189,7 @@ async fn run(ctx: &Ctx, name: &str, args: &Value, trace: &mut Trace) -> R<Vec<Va
                 return Err("only the user's own messages can be edited".into());
             }
             gate(ctx, trace, Manage, &[scope], format!("แก้ข้อความใน {}\n\nจาก: {}\nเป็น: {}", dir.quoted(&m.chat_id), clip(&m.text, 300), t)).await?;
-            commands::edit_message(st(), m.chat_id, id, t).await?;
+            commands::edit_message(st(), m.chat_id, id, t, None).await?;
             done("edited")
         }
         "unsend_message" => {

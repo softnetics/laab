@@ -112,7 +112,8 @@ export const api = {
   richMenu: (chatId: string) => invoke<RichMenu | null>("rich_menu", { chatId }),
   loginPassword: (identifier: string, password: string) => invoke<void>("login_password", { identifier, password }),
   unsend: (messageId: string) => invoke<void>("unsend", { messageId }),
-  editMessage: (chatId: string, messageId: string, text: string) => invoke<void>("edit_message", { chatId, messageId, text }),
+  editMessage: (chatId: string, messageId: string, text: string, mentions: MentionSpan[] = []) =>
+    invoke<void>("edit_message", { chatId, messageId, text, mentions }),
   translate: (text: string, target = "th") => invoke<string>("translate", { text, target }),
   saveToKeep: (chatId: string, messageId: string) => invoke<void>("save_to_keep", { chatId, messageId }),
   hideChat: (chatId: string) => invoke<void>("hide_chat", { chatId }),

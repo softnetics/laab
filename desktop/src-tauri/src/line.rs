@@ -440,6 +440,11 @@ async fn name_stored_files(state: &Arc<AppState>) {
     }
 }
 
+/// The raw (decrypted) message stored for `message_id`, as line-rs takes it.
+pub fn stored_raw(state: &AppState, message_id: &str) -> Option<Value> {
+    raw_from_store(&state.store().raw_message(message_id).ok()??)
+}
+
 /// A raw message as stored (JSON, binary chunks in base64) back as the
 /// thrift value line-rs decrypts.
 fn raw_from_store(json: &str) -> Option<Value> {

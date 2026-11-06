@@ -11,18 +11,21 @@
 use std::sync::Arc;
 
 use anyhow::{Result, anyhow, bail};
+use line_rs::client::TalkMessage;
 use line_rs::client::calendar::{EventInput, EventTarget, new_event_id};
 use line_rs::link::LineLink;
 use line_rs::rest::translate::TranslateText;
 use line_rs::service::moa::{DownloadPhotoOptions, GetAlbumsOptions, GetPhotosOptions};
 use line_rs::service::relation::AddFriendByMidOptions;
+use line_rs::thrift::Value;
 use line_rs::timeline::{CreatePost, ListPost, PostMedia};
 use line_rs::tv;
 use serde::Serialize;
 use serde_json::Value as Json;
 
-use crate::convert::{num_of, str_of};
+use crate::convert::{self, num_of, str_of};
 use crate::line::{self, Line};
+use crate::model::MentionSpan;
 use crate::state::{AppState, now_ms};
 
 async fn line(state: &Arc<AppState>) -> Result<Arc<Line>> {
@@ -48,25 +51,46 @@ pub async fn unsend(state: &Arc<AppState>, message_id: &str) -> Result<()> {
     Ok(())
 }
 
-/// Replace the text of one of our messages (Premium; unverified).
+/// The message to edit, with `mentions` as its `MENTION` metadata: line-rs
+/// keeps the metadata it finds, and the old offsets would be wrong for the
+/// new text.
+fn edit_target(raw: Option<Value>, me: &str, chat_id: &str, message_id: &str, mentions: &[MentionSpan]) -> Value {
+    let mut raw = raw.unwrap_or_else(|| tv!({"id": message_id, "contentType": "NONE"}));
+    if raw["from"].as_str().is_none_or(str::is_empty) {
+        raw.insert("from", me);
+    }
+    if raw["to"].as_str().is_none_or(str::is_empty) {
+        raw.insert("to", chat_id);
+    }
+    let mut meta: line_rs::thrift::Map = raw["contentMetadata"]
+        .entries()
+        .into_iter()
+        .filter(|(k, _)| k != "MENTION")
+        .map(|(k, v)| (k, v.clone()))
+        .collect();
+    if let Some(m) = convert::mention_metadata(mentions) {
+        meta.insert("MENTION".into(), Value::String(m));
+    }
+    raw.insert("contentMetadata", Value::Struct(meta));
+    raw
+}
+
+/// Replace the text of one of our messages (Premium; unverified). line-rs
+/// edits the stored message as LINE for Android does: same chat type,
+/// encrypted again if the original was or the chat now uses Letter Sealing.
 pub async fn edit(
     state: &Arc<AppState>,
     chat_id: &str,
     message_id: &str,
     text: &str,
+    mentions: &[MentionSpan],
 ) -> Result<()> {
     if text.trim().is_empty() {
         bail!("empty_message");
     }
     let l = line(state).await?;
-    l.client
-        .base
-        .talk()
-        .edit_message(
-            tv!({"from": l.me.clone(), "to": chat_id, "id": message_id, "text": text,
-            "contentType": "NONE", "contentMetadata": {}}),
-        )
-        .await?;
+    let raw = edit_target(line::stored_raw(state, message_id), &l.me, chat_id, message_id, mentions);
+    TalkMessage::new(l.client.clone(), raw).edit(text).await?;
     let _ = line::fetch_history(state, chat_id).await;
     Ok(())
 }
@@ -1183,5 +1207,22 @@ mod tests {
         };
         let out = input.to_line();
         assert_eq!((out.start_time, out.end_time), (1_793_703_600, 1_793_707_200));
+    }
+
+    #[test]
+    fn an_edit_carries_the_new_mentions_and_keeps_the_rest() {
+        let raw = tv!({"id": "9", "from": "u-me", "to": "c1", "toType": 2,
+            "contentMetadata": {"MENTION": "{\"MENTIONEES\":[]}", "e2eeVersion": "2", "OBS_POP": "x"}});
+        let span = MentionSpan { start: 0, end: 4, mid: Some("u2".into()), all: false };
+        let edited = edit_target(Some(raw), "u-me", "c1", "9", &[span]);
+        let meta = &edited["contentMetadata"];
+        assert_eq!(meta["OBS_POP"].as_str(), Some("x"));
+        assert!(meta["MENTION"].as_str().unwrap().contains("\"M\":\"u2\""));
+        assert_eq!(edited["toType"].as_i64(), Some(2));
+
+        let edited = edit_target(None, "u-me", "c1", "9", &[]);
+        assert_eq!(edited["from"].as_str(), Some("u-me"));
+        assert_eq!(edited["to"].as_str(), Some("c1"));
+        assert!(edited["contentMetadata"]["MENTION"].is_null());
     }
 }

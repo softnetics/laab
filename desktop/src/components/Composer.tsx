@@ -6,6 +6,7 @@ import {
   ALL_MEMBER,
   backspaceMention,
   composingQuery,
+  fromSpans,
   insertMention,
   locate,
   matching,
@@ -68,7 +69,7 @@ export const Composer = forwardRef<
     if (mode?.kind === "edit") {
       savedDraft.current = { text, mentions };
       setText(mode.message.text);
-      setMentions([]);
+      setMentions(fromSpans(mode.message.text, mode.message.mentions ?? []));
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [mode?.kind, mode?.message.id]);
@@ -172,7 +173,7 @@ export const Composer = forwardRef<
     setMentions([]);
     try {
       if (current?.kind === "edit") {
-        await api.editMessage(chatId, current.message.id, body);
+        await api.editMessage(chatId, current.message.id, body, spans);
         savedDraft.current = null;
       } else {
         const replyTo = current?.kind === "reply" ? current.message.id : null;

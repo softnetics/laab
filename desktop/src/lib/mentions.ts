@@ -85,6 +85,15 @@ export function present(text: string, mentions: DraftMention[]): DraftMention[] 
   return kept;
 }
 
+/** The composer's mentions for a sent message's text, to edit it. */
+export function fromSpans(text: string, spans: MentionSpan[]): DraftMention[] {
+  const mentions = [...spans]
+    .sort((a, b) => a.start - b.start)
+    .map((s) => ({ mid: s.all ? ALL_MEMBER.mid : (s.mid ?? ""), all: !!s.all, label: text.slice(s.start, s.end) }))
+    .filter((m) => m.label.startsWith("@") && (m.all || m.mid));
+  return present(text, mentions);
+}
+
 export function targets(text: string, mentions: DraftMention[]): MentionSpan[] {
   return locate(text, mentions).map((l) =>
     l.all ? { start: l.start, end: l.end, all: true } : { start: l.start, end: l.end, mid: l.mid },

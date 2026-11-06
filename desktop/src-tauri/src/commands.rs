@@ -1121,9 +1121,10 @@ pub async fn edit_message(
     chat_id: String,
     message_id: String,
     text: String,
+    mentions: Option<Vec<MentionSpan>>,
 ) -> R<()> {
     let s = live!(state);
-    crate::actions::edit(&s, &chat_id, &message_id, &text)
+    crate::actions::edit(&s, &chat_id, &message_id, &text, &mentions.unwrap_or_default())
         .await
         .map_err(|e| format!("แก้ไขข้อความไม่สำเร็จ: {e}"))
 }
