@@ -40,6 +40,8 @@ pub struct Line {
     /// Raw (decrypted) media messages, kept so attachments can be downloaded.
     media: Mutex<HashMap<String, Value>>,
     syncing: AtomicBool,
+    /// A catch-up after missed events is waiting to run (see [`resync`]).
+    resync_pending: AtomicBool,
 }
 
 impl Drop for Line {
@@ -360,6 +362,7 @@ async fn connected(state: Arc<AppState>, client: Client, device: Device) {
         boxes: Mutex::new(HashMap::new()),
         media: Mutex::new(HashMap::new()),
         syncing: AtomicBool::new(false),
+        resync_pending: AtomicBool::new(false),
     });
     if let Some(old) = state.line.write().await.replace(line.clone()) {
         old.stop();
@@ -462,7 +465,11 @@ fn spawn_forwarders(state: &Arc<AppState>, line: &Arc<Line>) {
                     let Some(line) = l.upgrade() else { break };
                     handle_event(&s, &line, ev).await;
                 }
-                Err(RecvError::Lagged(n)) => tracing::warn!("dropped {n} LINE events"),
+                Err(RecvError::Lagged(n)) => {
+                    tracing::warn!("dropped {n} LINE events");
+                    let Some(line) = l.upgrade() else { break };
+                    resync(&s, line);
+                }
                 Err(RecvError::Closed) => break,
             }
         }
@@ -517,7 +524,18 @@ fn spawn_forwarders(state: &Arc<AppState>, line: &Arc<Line>) {
                         tokio::spawn(check_session(s.clone(), line));
                     }
                 }
-                Ok(_) | Err(RecvError::Lagged(_)) => {}
+                // LINE won't replay what changed since the saved revision.
+                Ok(line_rs::ClientEvent::FullSyncRequired { categories, .. }) => {
+                    tracing::info!("LINE asked for a full sync: {categories:?}");
+                    let Some(line) = l.upgrade() else { break };
+                    resync(&s, line);
+                }
+                Err(RecvError::Lagged(n)) => {
+                    tracing::warn!("dropped {n} LINE session events");
+                    let Some(line) = l.upgrade() else { break };
+                    resync(&s, line);
+                }
+                Ok(_) => {}
                 Err(RecvError::Closed) => break,
             }
         }
@@ -526,6 +544,29 @@ fn spawn_forwarders(state: &Arc<AppState>, line: &Arc<Line>) {
         .lock()
         .unwrap()
         .extend([talk.abort_handle(), base.abort_handle()]);
+}
+
+/// How long [`resync`] waits, so a burst of requests runs it once.
+const RESYNC_DELAY: Duration = Duration::from_secs(3);
+
+/// Reload the chat list and catch up on the history of chats that changed,
+/// after events were missed: LINE asked for a full sync, or LAAB fell behind
+/// on line-rs's events. Waits [`RESYNC_DELAY`] first, and requests that
+/// come in meanwhile share the run.
+fn resync(state: &Arc<AppState>, line: Arc<Line>) {
+    if line.resync_pending.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    let s = state.clone();
+    tokio::spawn(async move {
+        tokio::time::sleep(RESYNC_DELAY).await;
+        line.resync_pending.store(false, Ordering::SeqCst);
+        if !s.line().await.is_some_and(|c| Arc::ptr_eq(&c, &line)) {
+            return;
+        }
+        drop(line);
+        logged("catching up after missed events", refresh_chats(&s, false).await);
+    });
 }
 
 // ---------------------------------------------------------------------------
