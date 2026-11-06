@@ -406,61 +406,6 @@ fn cached_media(dir: &Path, id: &str, preview: bool) -> Option<PathBuf> {
         .or_else(|| full.filter(|p| !is_video(p)))
 }
 
-/// `X-Talk-Meta` for downloading the object of message `id` (line-rs keeps
-/// its copy crate-private).
-fn talk_meta(message_id: &str) -> Result<String> {
-    use base64::Engine;
-    use line_rs::thrift::{Protocol, TType, TValue, write_struct};
-    let b64 = base64::engine::general_purpose::STANDARD;
-    let s = write_struct(
-        &[
-            (4, TValue::Binary(message_id.as_bytes().to_vec())),
-            (27, TValue::List(TType::Struct, Vec::new())),
-        ],
-        Protocol::Binary,
-    )
-    .map_err(|e| anyhow!("{e}"))?;
-    let json = serde_json::json!({ "message": b64.encode(s) }).to_string();
-    Ok(b64.encode(json))
-}
-
-/// The thumbnail of an E2EE photo or video. LINE stores it beside the media
-/// as `<oid>__ud-preview`, encrypted with the same key; line-rs only fetches
-/// the full object, which for a video is the whole file. `None` when the
-/// message is not E2EE.
-async fn e2ee_preview(
-    line: &crate::line::Line,
-    raw: &line_rs::thrift::Value,
-) -> Result<Option<Vec<u8>>> {
-    if raw["chunks"].as_list().is_none_or(|c| c.is_empty()) {
-        return Ok(None);
-    }
-    let base = &line.client.base;
-    let payload = base
-        .decrypt_e2ee_data_message(raw)
-        .await
-        .map_err(|e| anyhow!("{e}"))?;
-    let key = payload["keyMaterial"]
-        .as_str()
-        .ok_or_else(|| anyhow!("no keyMaterial"))?;
-    let meta = &raw["contentMetadata"];
-    let oid = meta["OID"].as_str().unwrap_or_default();
-    let sid = meta["SID"].as_str().unwrap_or_default();
-    let id = raw["id"].as_str().unwrap_or_default();
-    let data = base
-        .obs()
-        .download_object_for_service(
-            &format!("talk/{sid}"),
-            &format!("{oid}__ud-preview"),
-            vec![("X-Talk-Meta".into(), talk_meta(id)?)],
-        )
-        .await
-        .map_err(|e| anyhow!("{e}"))?;
-    let plain = line_rs::e2ee::crypto::decrypt_by_key_material_b64(&data, key)
-        .map_err(|e| anyhow!("{e}"))?;
-    Ok(Some(plain))
-}
-
 async fn message_media(
     state: &Arc<AppState>,
     chat: &str,
@@ -473,19 +418,13 @@ async fn message_media(
     }
     let line = state.line().await.ok_or_else(|| anyhow!("not_logged_in"))?;
     crate::line::ensure_media_message(state, &line, chat, id).await?;
-    let message = line.talk_message(id);
-    let e2ee = if preview {
-        e2ee_preview(&line, &message.raw).await.unwrap_or_else(|e| {
-            tracing::warn!("e2ee preview {id}: {e}");
-            None
-        })
-    } else {
-        None
-    };
-    let data = match e2ee {
-        Some(d) => d,
-        None => message.data(preview).await.map_err(|e| anyhow!("{e}"))?,
-    };
+    // An E2EE thumbnail is the `ud-preview` the sender uploaded; line-rs
+    // never downloads a whole video for it.
+    let data = line
+        .talk_message(id)
+        .data(preview)
+        .await
+        .map_err(crate::line::media_error)?;
     // A "preview" that is the whole video is kept as the full file instead.
     let full = !preview || sniff_mime(&data, Path::new("")) == "video/mp4";
     let name = if full {
