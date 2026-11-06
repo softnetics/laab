@@ -24,6 +24,7 @@ mod probe;
 mod reads;
 mod report;
 mod richmenu;
+mod scan;
 mod session;
 mod state;
 mod stickers;
@@ -267,6 +268,9 @@ pub fn run() {
             commands::set_draft,
             commands::raw_message,
             commands::send_postback,
+            commands::send_message_button,
+            commands::datetime_picker,
+            commands::send_datetime_postback,
             commands::friends,
             commands::accept_invitation,
             commands::accept_message_request,

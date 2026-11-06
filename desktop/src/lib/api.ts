@@ -23,6 +23,8 @@ import type {
   MentionSpan,
   Message,
   NoteDetail,
+  PickerAction,
+  PickerStart,
   NotePost,
   Person,
   LiffDevSession,
@@ -96,6 +98,14 @@ export const api = {
   /** A bot's postback button. `messageId` is null for rich-menu areas, whose `data` is the whole linepostback URL. */
   sendPostback: (chatId: string, messageId: string | null, data: string, displayText: string | null, text: string | null = null) =>
     invoke<void>("send_postback", { chatId, messageId, data, displayText, text }),
+  /** A flex or template "message" button: LINE posts `text` for the user through the bot. */
+  sendMessageButton: (chatId: string, messageId: string, text: string) =>
+    sent(invoke<void>("send_message_button", { chatId, messageId, text })),
+  /** Whether LINE shows a picker for a datetime picker button, and where it starts. `now` is in the mode's format. */
+  datetimePicker: (action: PickerAction, now: string) => invoke<PickerStart>("datetime_picker", { action, now }),
+  /** The value picked, or null to send the button's own postback. */
+  sendDatetimePostback: (chatId: string, messageId: string, action: PickerAction, value: string | null) =>
+    invoke<void>("send_datetime_postback", { chatId, messageId, action, value }),
   openLiff: (req: { url: string; chatId?: string | null; consent?: boolean; web?: boolean }) => invoke<void>("open_liff", { req }),
   liffDevSessions: () => invoke<LiffDevSession[]>("liff_dev_sessions"),
   liffDevAction: (label: string, action: "reload" | "inspect" | "close" | "reopen" | "web") =>

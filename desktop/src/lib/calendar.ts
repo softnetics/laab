@@ -3,7 +3,7 @@
 // day for someone in Tokyo. On the wire an all-day event ends at midnight
 // after its last day.
 
-import type { CalendarEvent, CalendarEventInput, CalendarRecurrence } from "./types";
+import type { CalendarEvent, CalendarEventInput, CalendarRecurrence, RepeatInput } from "./types";
 
 export const thaiMonths = [
   "มกราคม",
@@ -406,7 +406,8 @@ export function occurrenceAt(e: CalendarEvent, recurId?: number): CalendarEvent 
   if (recurId == null || !e.recurrence) return e;
   const o = e.overrides?.find((x) => x.recurId === recurId && !x.deleted);
   if (o) {
-    return { ...e, ...o, timezone: o.timezone || e.timezone, recurId };
+    // An occurrence changed on its own has its own answers, when LINE lists any.
+    return { ...e, ...o, timezone: o.timezone || e.timezone, invitees: o.invitees?.length ? o.invitees : e.invitees, recurId };
   }
   return { ...e, start: recurId, end: recurId + (e.end - e.start), recurId };
 }
@@ -469,6 +470,80 @@ export function recurrenceLabel(e: CalendarEvent, thisYear = new Date().getFullY
   }
   if (r.until != null) text += ` จนถึง ${dayLabel(keyOf(partsIn(r.until, e.timezone || undefined)), thisYear)}`;
   return text;
+}
+
+/** What the form's repeat rows edit. `monthly` picks the date ("date"),
+ *  the start's nth weekday ("nth") or the month's last such weekday ("last"). */
+export interface RepeatForm {
+  frequency: RepeatInput["frequency"];
+  interval: number;
+  /** Weekdays ("MO"…) of a weekly rule. */
+  weekdays: string[];
+  monthly: "date" | "nth" | "last";
+  /** The last day it repeats on (a day key), or null for no end. */
+  until: string | null;
+}
+
+/** The weekday ("MO"…) and week of the month (1…5) of a day key, and
+ *  whether it is that weekday's last in the month. */
+export function weekdayOf(key: string): { dow: string; nth: number; last: boolean } {
+  const [y, m, d] = key.split("-").map(Number);
+  const wd = new Date(Date.UTC(y, m - 1, d)).getUTCDay();
+  return { dow: DOW[wd], nth: Math.ceil(d / 7), last: d + 7 > daysInMonth(y, m - 1) };
+}
+
+/** The form's repeat rows for `e` (or a new event starting on `startDate`).
+ *  Null for a rule LAAB can't edit, which an edit then leaves alone. */
+export function repeatFormOf(e: CalendarEvent | null, startDate: string): RepeatForm | null {
+  const none: RepeatForm = { frequency: "none", interval: 1, weekdays: [weekdayOf(startDate).dow], monthly: "date", until: null };
+  const r = e?.recurrence;
+  if (!r) return none;
+  if (!(r.frequency in PERIOD_DAYS)) return null;
+  const days = r.byDay.map(parseByDay);
+  if (days.some((d) => !d)) return null;
+  let monthly: RepeatForm["monthly"] = "date";
+  if (r.frequency === "monthly" && days.length) {
+    if (days.length > 1) return null;
+    monthly = days[0]!.nth === -1 ? "last" : "nth";
+  }
+  return {
+    frequency: r.frequency as RepeatForm["frequency"],
+    interval: Math.max(1, r.interval || 1),
+    weekdays: r.frequency === "weekly" && days.length ? days.map((d) => DOW[d!.dow]) : none.weekdays,
+    monthly,
+    until: r.until != null ? keyOf(partsIn(r.until)) : null,
+  };
+}
+
+/** The monthly choices for a series starting on `startDate`: "วันที่ 6",
+ *  "วันศุกร์แรก", and "วันศุกร์สุดท้าย" when it is the month's last. */
+export function monthlyChoices(startDate: string): { value: RepeatForm["monthly"]; label: string }[] {
+  const w = weekdayOf(startDate);
+  const day = `วัน${thaiDow[DOW.indexOf(w.dow)]}`;
+  const out: { value: RepeatForm["monthly"]; label: string }[] = [
+    { value: "date", label: `วันที่ ${Number(startDate.slice(8))}` },
+    { value: "nth", label: `${day}${ordinal[w.nth]}` },
+  ];
+  if (w.last) out.push({ value: "last", label: `${day}${ordinal[-1]}` });
+  return out;
+}
+
+/** The rule to send. As LINE for Android's editor, the last day ends at
+ *  23:59:59 there in the Mac's zone (`CreateEventViewModel`). */
+export function repeatOf(f: RepeatForm, startDate: string): RepeatInput {
+  const w = weekdayOf(startDate);
+  const byDay =
+    f.frequency === "weekly"
+      ? DOW.filter((d) => f.weekdays.includes(d))
+      : f.frequency === "monthly" && f.monthly !== "date"
+        ? [`${f.monthly === "last" ? -1 : w.nth}${w.dow}`]
+        : [];
+  return {
+    frequency: f.frequency,
+    interval: Math.max(1, Math.floor(f.interval) || 1),
+    until: f.frequency !== "none" && f.until ? local(f.until, "23:59") + 59_000 : null,
+    byDay,
+  };
 }
 
 /** LINE Calendar's reminder choices (`Reminder`), in the app's order. */

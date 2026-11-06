@@ -5,7 +5,7 @@
 use std::sync::Arc;
 
 use anyhow::{Result, anyhow};
-use line_rs::client::liff::{self as lliff, ConsentPage, LiffViewOptions, PickerResult};
+use line_rs::client::liff::{self as lliff, ConsentPage, LiffDeviceSetting, LiffViewOptions, PickerResult};
 use serde::{Deserialize, Serialize};
 use serde_json::Value as Json;
 use tauri::{Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
@@ -198,7 +198,7 @@ pub async fn consent_info(state: &Arc<AppState>, url: &str, chat: Option<String>
     let link = parse_link(url).ok_or_else(|| anyhow!("invalid_liff_id"))?;
     let line = state.line().await.ok_or_else(|| anyhow!("not_logged_in"))?;
     let liff = line.client.liff();
-    let opts = view_options(&link, chat);
+    let opts = view_options(url, &link, chat);
     let consent = match liff.issue_view(&opts).await {
         Ok(_) => return Ok(ConsentInfo { permissions: vec![], consent_url: String::new() }),
         Err(e) => lliff::consent_required(&e).ok_or_else(|| anyhow!("{e}"))?,
@@ -214,13 +214,25 @@ pub async fn consent_info(state: &Arc<AppState>, url: &str, chat: Option<String>
     Ok(info)
 }
 
-fn view_options(link: &LiffLink, chat: Option<String>) -> LiffViewOptions {
+/// The view request for opening `url`, as LINE for Android fills it:
+/// with the device's settings, and the URL's domain and the URL itself.
+fn view_options(url: &str, link: &LiffLink, chat: Option<String>) -> LiffViewOptions {
     LiffViewOptions {
         chat_mid: chat,
         liff_id: Some(link.id.clone()),
         lang: Some(lang()),
+        device_setting: Some(DEVICE),
+        ..Default::default()
     }
+    .for_url(url)
 }
+
+/// A Mac plays videos on its own and has no in-app purchases (LAAB can't
+/// buy through Google Play or the App Store), nor an advertising id.
+const DEVICE: LiffDeviceSetting = LiffDeviceSetting {
+    video_auto_play_allowed: true,
+    in_app_purchase_available: false,
+};
 
 /// Issue a LIFF view for `url`. Errors with `liff_consent_required` until the
 /// user agrees on LINE's consent page; it never consents silently.
@@ -242,7 +254,7 @@ pub async fn issue(
     let Some(line) = state.line().await else {
         return Ok(web("ยังไม่ได้เข้าสู่ระบบ"));
     };
-    let opts = view_options(&link, chat);
+    let opts = view_options(url, &link, chat);
     let liff = line.client.liff();
     let view = match liff.issue_view(&opts).await {
         Ok(v) => v,
@@ -311,7 +323,7 @@ pub async fn issue(
 
 /// Bridge commands LAAB answers; `liff.isApiAvailable` and `liff.init`
 /// read this list (`features`, as LINE for Android builds it in `rd0/e`).
-const FEATURES: &[&str] = &["closeWindow", "openWindow", "getAdvertisingId"];
+const FEATURES: &[&str] = &["closeWindow", "openWindow", "getAdvertisingId", "scanCode"];
 
 /// The `window._liff` bridge, with the app's granted `scopes`. A command
 /// LAAB can't do answers `CLIENT_UNSUPPORTED_OPERATION`, the code LINE for
@@ -330,6 +342,8 @@ const BRIDGE: &str = r#"(function(){
     window.dispatchEvent(new CustomEvent('liffEvent', {detail: detail}));
   }
   var features = __FEATURES__;
+  // For answers that come back from LAAB later (scanCode).
+  window.__laabLiffReply = reply;
   window._liff = {
     // LIFF SDK 2.x in a LINE app 9.5.0 or newer waits for this list, or for
     // a "ready" event, before liff.init() goes on.
@@ -349,6 +363,11 @@ const BRIDGE: &str = r#"(function(){
         location.href = 'laab-open://open?url=' + encodeURIComponent(params.url || '');
         return;
       }
+      // An image or a part of the screen instead of the camera.
+      if (type === 'scanCode') {
+        location.href = 'laab-scan://scan?cb=' + encodeURIComponent(callbackId || '');
+        return;
+      }
       // A Mac has no advertising id.
       if (type === 'getAdvertisingId') { reply(type, callbackId, {success: true, advertisingId: null, tracking: false}); return; }
       reply(type, callbackId, null, {code: 'CLIENT_UNSUPPORTED_OPERATION', description: 'Unsupported Operation: "' + type + '"', message: 'LAAB ยังไม่รองรับ ' + type});
@@ -356,6 +375,16 @@ const BRIDGE: &str = r#"(function(){
   };
   reply('ready');
 })();"#;
+
+/// The bridge's answer to `scanCode`: `{value}`, null when nothing was read,
+/// as LINE for Android answers (`sd0/t.java`).
+fn scan_reply(callback_id: &str, value: Option<&str>) -> String {
+    format!(
+        "window.__laabLiffReply && window.__laabLiffReply('scanCode', {}, {})",
+        Json::from(callback_id),
+        serde_json::json!({ "value": value })
+    )
+}
 
 pub fn user_agent(client: bool) -> String {
     if client {
@@ -399,6 +428,23 @@ pub fn open_window(state: &Arc<AppState>, view: &LiffView, chat: Option<String>)
             match u.scheme() {
                 "laab-devtools" => {
                     let _ = crate::liff_devtools::open(&nav_app2, Some(&nav_label2));
+                    false
+                }
+                "laab-scan" => {
+                    let cb = u
+                        .query_pairs()
+                        .find(|(k, _)| k == "cb")
+                        .map(|(_, v)| v.to_string())
+                        .unwrap_or_default();
+                    log("info", "liff.scanCode()".into());
+                    let (app, label) = (nav_app2.clone(), nav_label2.clone());
+                    tauri::async_runtime::spawn(async move {
+                        let window = app.get_webview_window(&label);
+                        let value = crate::scan::scan(&app, window.as_ref()).await;
+                        if let Some(w) = window {
+                            let _ = w.eval(scan_reply(&cb, value.as_deref()));
+                        }
+                    });
                     false
                 }
                 "liff" if u.host_str() == Some("close") => {
@@ -569,6 +615,7 @@ pub async fn share(
             chat_mid: Some(chat.clone()),
             liff_id: Some(liff_id.into()),
             lang: Some(lang()),
+            ..Default::default()
         };
         let ok = async {
             let v = line
@@ -663,11 +710,31 @@ mod tests {
     #[test]
     fn the_bridge_lists_what_laab_answers() {
         let js = bridge(&serde_json::json!(["profile", "chat_message.write"]));
-        assert!(js.contains(r#"var features = ["closeWindow","openWindow","getAdvertisingId"];"#));
+        assert!(js.contains(r#"var features = ["closeWindow","openWindow","getAdvertisingId","scanCode"];"#));
         assert!(js.contains(r#"scopes: ["profile","chat_message.write"],"#));
         assert!(js.contains("CLIENT_UNSUPPORTED_OPERATION"));
         assert!(!js.contains("__FEATURES__") && !js.contains("__SCOPES__"));
         assert!(bridge(&Json::Null).contains("scopes: [],"));
+    }
+
+    #[test]
+    fn scan_answers_with_the_value_or_null() {
+        assert_eq!(
+            scan_reply("cb'1", Some("https://example.com")),
+            r#"window.__laabLiffReply && window.__laabLiffReply('scanCode', "cb'1", {"value":"https://example.com"})"#
+        );
+        assert!(scan_reply("2", None).ends_with(r#"{"value":null})"#));
+    }
+
+    #[test]
+    fn views_carry_the_device_and_the_url() {
+        let url = "https://liff.line.me/1234567890-AbCdEfGh/menu?x=1";
+        let link = parse_link(url).unwrap();
+        let o = view_options(url, &link, Some("c1".into()));
+        assert_eq!(o.device_setting, Some(DEVICE));
+        assert_eq!(o.domain.as_deref(), Some("liff.line.me"));
+        assert_eq!(o.requested_url.as_deref(), Some(url));
+        assert!(!o.subsequent_liff);
     }
 
     #[test]

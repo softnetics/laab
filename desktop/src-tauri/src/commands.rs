@@ -841,12 +841,96 @@ pub async fn send_postback(
     display_text: Option<String>,
     text: Option<String>,
 ) -> R<()> {
+    let url = postback_url(&data, display_text.as_deref(), text.as_deref());
+    post_back(&state, &chat_id, message_id, &url).await
+}
+
+/// A flex or template "message" button. LINE for Android doesn't send the
+/// text itself: it sends `linepostback://postback?_text=…` to
+/// `sendPostback` (`md2/b.f`, through `tr1/d` and `ot1/n`), in any chat,
+/// and LINE's server posts the text as the user's message.
+#[tauri::command]
+pub async fn send_message_button(state: S<'_>, chat_id: String, message_id: Option<String>, text: String) -> R<()> {
+    let url = line_rs::client::postback::message_url(&text);
+    post_back(&state, &chat_id, message_id, &url).await
+}
+
+/// A flex or template datetime picker action, as the message has it.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PickerAction {
+    #[serde(default)]
+    data: String,
+    #[serde(default)]
+    mode: String,
+    initial: Option<String>,
+    max: Option<String>,
+    min: Option<String>,
+}
+
+impl PickerAction {
+    fn picker(&self) -> Option<line_rs::client::postback::DateTimePicker> {
+        use line_rs::client::postback::{DateTimeMode, DateTimePicker};
+        Some(DateTimePicker {
+            data: self.data.clone(),
+            mode: DateTimeMode::parse(&self.mode)?,
+            initial: self.initial.clone(),
+            max: self.max.clone(),
+            min: self.min.clone(),
+        })
+    }
+}
+
+/// How to show a datetime picker: whether LINE would (`show`), the value
+/// it starts on, and its bounds, all in the mode's format.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct PickerStart {
+    show: bool,
+    start: String,
+    min: Option<String>,
+    max: Option<String>,
+}
+
+/// `now` is the current local time in the action's mode's format.
+#[tauri::command]
+pub fn datetime_picker(action: PickerAction, now: String) -> R<PickerStart> {
+    let p = action.picker().ok_or("ปุ่มเลือกวันเวลานี้ใช้ไม่ได้")?;
+    let read = |v: &Option<String>| v.as_deref().and_then(|v| p.mode.read(v));
+    Ok(PickerStart {
+        show: p.shows_picker(),
+        start: p.starting_value(&now),
+        min: read(&p.min),
+        max: read(&p.max),
+    })
+}
+
+/// Send what was picked (`value`), or, for an action LINE shows no picker
+/// for, the action itself, as LINE for Android does (`ot1/n.a`).
+#[tauri::command]
+pub async fn send_datetime_postback(
+    state: S<'_>,
+    chat_id: String,
+    message_id: Option<String>,
+    action: PickerAction,
+    value: Option<String>,
+) -> R<()> {
+    let p = action.picker().ok_or("ปุ่มเลือกวันเวลานี้ใช้ไม่ได้")?;
+    let url = match value {
+        Some(v) => p.result_url(&p.mode.read(&v).ok_or("วันเวลาที่เลือกไม่ถูกต้อง")?),
+        None => p.action_url(),
+    };
+    post_back(&state, &chat_id, message_id, &url).await
+}
+
+/// `sendPostback` with `url`, from the bot that sent message `message_id`
+/// (none for a rich-menu area).
+async fn post_back(state: &S<'_>, chat_id: &str, message_id: Option<String>, url: &str) -> R<()> {
     let s = state.inner().clone();
     if s.demo {
         return Err("ต้องเข้าสู่ระบบ LINE ก่อน".into());
     }
     let l = s.line().await.ok_or("not_logged_in")?;
-    let url = postback_url(&data, display_text.as_deref(), text.as_deref());
     let message_id = message_id.filter(|m| !m.is_empty());
     // The flex message's sender is the bot the postback goes to.
     let from = message_id.as_deref().map(|id| {
@@ -854,13 +938,13 @@ pub async fn send_postback(
         msg.raw["from"]
             .as_str()
             .or(msg.raw["_from"].as_str())
-            .unwrap_or(&chat_id)
+            .unwrap_or(chat_id)
             .to_string()
     });
     l.client
         .base
         .talk()
-        .send_postback_url(&url, &chat_id, message_id.as_deref(), from.as_deref())
+        .send_postback_url(url, chat_id, message_id.as_deref(), from.as_deref())
         .await
         .map_err(|e| format!("ส่งคำตอบให้บอทไม่สำเร็จ: {e}"))?;
     Ok(())
@@ -1881,6 +1965,26 @@ mod tests {
             aux_route("media", "c1", None, Some(String::new()), 6),
             "/media/c1?at=6"
         );
+    }
+
+    #[test]
+    fn datetime_pickers_start_inside_their_bounds() {
+        let action = |initial: Option<&str>, min: Option<&str>| PickerAction {
+            data: "d".into(),
+            mode: "time".into(),
+            initial: initial.map(str::to_string),
+            max: Some("18:00".into()),
+            min: min.map(str::to_string),
+        };
+        let start = datetime_picker(action(None, Some("10:00")), "08:15".into()).unwrap();
+        assert_eq!(
+            start,
+            PickerStart { show: true, start: "10:00".into(), min: Some("10:00".into()), max: Some("18:00".into()) }
+        );
+        assert!(!datetime_picker(action(Some("19:00"), None), "08:15".into()).unwrap().show);
+        let mut odd = action(None, None);
+        odd.mode = "week".into();
+        assert!(datetime_picker(odd, "08:15".into()).is_err());
     }
 
     #[test]

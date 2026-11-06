@@ -243,6 +243,8 @@ export interface CalendarOverride {
   location: string;
   url: string;
   description: string;
+  /** This occurrence's invitees and their answers to it. */
+  invitees?: CalendarInvitee[];
 }
 
 export interface CalendarInvitee {
@@ -261,7 +263,18 @@ export interface AllCalendars {
 export type CalendarEventInput = Pick<
   CalendarEvent,
   "title" | "start" | "end" | "allDay" | "timezone" | "location" | "url" | "description" | "reminders"
->;
+> & {
+  /** Left out, an edit keeps the event's rule as it is. */
+  repeat?: RepeatInput;
+};
+
+/** A repeat rule from the event form. `until` is epoch ms. */
+export interface RepeatInput {
+  frequency: "none" | "daily" | "weekly" | "monthly" | "yearly";
+  interval: number;
+  until: number | null;
+  byDay: string[];
+}
 
 export interface Album {
   id: string;
@@ -363,4 +376,21 @@ export interface LiffDevSession {
   openedAt: number;
   closed: boolean;
   events: LiffDevEvent[];
+}
+
+/** A flex or template datetime picker button, as the message has it. */
+export interface PickerAction {
+  data: string;
+  mode: "date" | "time" | "datetime";
+  initial: string | null;
+  max: string | null;
+  min: string | null;
+}
+
+/** How LINE would show a picker for a button: `start` and the bounds are in the mode's format. */
+export interface PickerStart {
+  show: boolean;
+  start: string;
+  min: string | null;
+  max: string | null;
 }

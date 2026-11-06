@@ -1,5 +1,5 @@
 import { createStore, useStore } from "@tanstack/react-store";
-import type { Message, Workspace } from "./types";
+import type { Message, PickerAction, PickerStart, Workspace } from "./types";
 
 export type ChatFilter = "all" | "friends" | "groups" | "official" | `folder:${string}`;
 export type ChatSort = "recent" | "unread";
@@ -63,6 +63,7 @@ export interface UiState {
     | { kind: "mcp" }
     | { kind: "create-group" }
     | { kind: "group-members"; chatId: string }
+    | { kind: "datetime-picker"; chatId: string; messageId: string; label: string | null; action: PickerAction; start: PickerStart }
     | null;
   /** Someone's profile card; name and picture show while it loads. */
   profile: { mid: string; name?: string; picture?: string | null } | null;
