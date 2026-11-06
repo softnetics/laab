@@ -455,7 +455,8 @@ struct Prepared {
 }
 
 /// Read `path` and work out what LINE's app sends with it: a photo's size,
-/// a video's length and thumbnail, an audio clip's length.
+/// a photo's size and thumbnail, a video's length and thumbnail, an audio
+/// clip's length.
 async fn prepare_file(s: &AppState, path: &str) -> Result<Prepared, String> {
     let p = std::path::Path::new(path);
     let name = file_name(path).to_string();
@@ -475,8 +476,13 @@ async fn prepare_file(s: &AppState, path: &str) -> Result<Prepared, String> {
     match kind {
         ObjType::Gif => opts = opts.animated(true),
         ObjType::Image => {
-            if let crate::probe::Probe { width: Some(w), height: Some(h), .. } = crate::probe::image(p).await {
+            let probe = crate::probe::image(p).await;
+            if let (Some(w), Some(h)) = (probe.width, probe.height) {
                 opts = opts.size(w, h);
+            }
+            // Uploaded as the photo's `ud-preview` instead of the photo itself.
+            if let Some(jpeg) = probe.preview {
+                opts = opts.preview(jpeg);
             }
         }
         ObjType::Video => {

@@ -1,5 +1,6 @@
 //! What LINE's own app works out about a photo or video before sending it:
-//! the picture's size, and a video's length and first-frame thumbnail.
+//! the picture's size and thumbnail, and a video's length and first-frame
+//! thumbnail.
 //! Read on macOS with ImageIO and AVFoundation, without ffmpeg. Anything
 //! that can't be read is left out and the file is sent without it.
 
@@ -7,6 +8,15 @@ use std::path::Path;
 
 /// Longest side of a video thumbnail, in pixels.
 pub const PREVIEW_MAX: u32 = 640;
+
+/// Most pixels in a photo's thumbnail. LINE for Android scales the
+/// thumbnail it uploads beside a photo to 250,000 pixels (`l31/i.o`,
+/// THUMBNAIL_IMAGE) and saves it as a JPEG at quality 80 on white
+/// (`l31/i.c`).
+pub const THUMB_PIXELS: u64 = 250_000;
+
+/// JPEG quality of a photo's or video's thumbnail (`l31/i.c`: 80).
+const THUMB_QUALITY: f64 = 0.8;
 
 #[derive(Debug, Default, Clone, PartialEq)]
 pub struct Probe {
@@ -27,12 +37,26 @@ fn oriented(width: u32, height: u32, orientation: i64) -> (u32, u32) {
     }
 }
 
+/// Longer side of the thumbnail of a `width`×`height` photo: the photo's
+/// own when it has no more than [`THUMB_PIXELS`], else scaled down to that
+/// many pixels, keeping its shape (`l31/i.q`).
+fn thumb_side(width: u32, height: u32) -> u32 {
+    let longer = width.max(height);
+    let area = u64::from(width) * u64::from(height);
+    if area <= THUMB_PIXELS {
+        return longer;
+    }
+    let scale = (THUMB_PIXELS as f64 / area as f64).sqrt();
+    ((f64::from(longer) * scale) as u32).max(1)
+}
+
 /// A clip's length in whole milliseconds, if it has one.
 fn millis(seconds: f64) -> Option<u64> {
     (seconds.is_finite() && seconds > 0.0).then(|| (seconds * 1000.0).round() as u64)
 }
 
-/// A photo's size, from its header.
+/// A photo's size, and a JPEG thumbnail of it as LINE's app uploads (see
+/// [`THUMB_PIXELS`]).
 pub async fn image(path: &Path) -> Probe {
     let path = path.to_path_buf();
     tokio::task::spawn_blocking(move || mac::image(&path))
@@ -68,15 +92,22 @@ mod mac {
     use std::path::Path;
 
     use objc2_av_foundation::{AVAssetImageGenerator, AVURLAsset};
+    use super::{THUMB_QUALITY, thumb_side};
     use objc2_core_foundation::{
-        CFDictionary, CFMutableData, CFNumber, CFString, CFType, CFURL, CGSize,
+        CFBoolean, CFDictionary, CFMutableData, CFNumber, CFString, CFType, CFURL, CGPoint,
+        CGRect, CGSize,
     };
-    use objc2_core_graphics::CGImage;
+    use objc2_core_graphics::{
+        CGBitmapContextCreate, CGBitmapContextCreateImage, CGColorSpace, CGContext, CGImage,
+        CGImageAlphaInfo,
+    };
     use objc2_core_media::CMTime;
     use objc2_foundation::{NSString, NSURL};
     use objc2_image_io::{
         CGImageDestination, CGImageSource, kCGImageDestinationLossyCompressionQuality,
         kCGImagePropertyOrientation, kCGImagePropertyPixelHeight, kCGImagePropertyPixelWidth,
+        kCGImageSourceCreateThumbnailFromImageAlways, kCGImageSourceCreateThumbnailWithTransform,
+        kCGImageSourceThumbnailMaxPixelSize,
     };
 
     fn number(props: &CFDictionary<CFString, CFType>, key: &CFString) -> Option<i64> {
@@ -89,10 +120,10 @@ mod mac {
         };
         // SAFETY: a file URL and no options; the properties are a
         // CFString-keyed dictionary.
-        let props = unsafe {
-            CGImageSource::with_url(&url, None).and_then(|src| src.properties_at_index(0, None))
+        let Some(src) = (unsafe { CGImageSource::with_url(&url, None) }) else {
+            return Probe::default();
         };
-        let Some(props) = props else {
+        let Some(props) = (unsafe { src.properties_at_index(0, None) }) else {
             return Probe::default();
         };
         let props: &CFDictionary<CFString, CFType> = unsafe { props.cast_unchecked() };
@@ -114,8 +145,54 @@ mod mac {
         Probe {
             width: Some(width),
             height: Some(height),
+            preview: thumbnail(&src, thumb_side(width, height)),
             ..Probe::default()
         }
+    }
+
+    /// The first picture of `src` turned upright, at most `side` pixels on
+    /// its longer side, on white, as a JPEG.
+    fn thumbnail(src: &CGImageSource, side: u32) -> Option<Vec<u8>> {
+        let side = CFNumber::new_i64(i64::from(side));
+        let yes: &CFType = CFBoolean::new(true);
+        // SAFETY: reading ImageIO's key constants; the options map
+        // CFString keys to the CFBoolean and CFNumber values ImageIO reads.
+        let image = unsafe {
+            let options = CFDictionary::<CFString, CFType>::from_slices(
+                &[
+                    kCGImageSourceCreateThumbnailFromImageAlways,
+                    kCGImageSourceCreateThumbnailWithTransform,
+                    kCGImageSourceThumbnailMaxPixelSize,
+                ],
+                &[yes, yes, &side],
+            );
+            src.thumbnail_at_index(0, Some(options.as_opaque()))?
+        };
+        jpeg(&*on_white(&image)?, THUMB_QUALITY)
+    }
+
+    /// `image` drawn on white, so a transparent PNG's thumbnail isn't black.
+    fn on_white(image: &CGImage) -> Option<objc2_core_foundation::CFRetained<CGImage>> {
+        let (w, h) = (CGImage::width(Some(image)), CGImage::height(Some(image)));
+        let space = CGColorSpace::new_device_rgb()?;
+        // SAFETY: a null buffer lets Core Graphics allocate one; 8-bit RGB
+        // with the alpha byte skipped is a supported bitmap format.
+        let ctx = unsafe {
+            CGBitmapContextCreate(
+                std::ptr::null_mut(),
+                w,
+                h,
+                8,
+                0,
+                Some(&space),
+                CGImageAlphaInfo::NoneSkipLast.0,
+            )?
+        };
+        let rect = CGRect::new(CGPoint::new(0.0, 0.0), CGSize::new(w as f64, h as f64));
+        CGContext::set_rgb_fill_color(Some(&ctx), 1.0, 1.0, 1.0, 1.0);
+        CGContext::fill_rect(Some(&ctx), rect);
+        CGContext::draw_image(Some(&ctx), rect, Some(image));
+        CGBitmapContextCreateImage(Some(&ctx))
     }
 
     /// `image` as a JPEG at `quality`.
@@ -163,7 +240,7 @@ mod mac {
                 .ok();
             Probe {
                 duration_ms,
-                preview: frame.and_then(|f| jpeg(&f, 0.8)),
+                preview: frame.and_then(|f| jpeg(&f, THUMB_QUALITY)),
                 ..Probe::default()
             }
         }
@@ -206,7 +283,26 @@ mod tests {
         std::fs::write(&path, png).unwrap();
         let p = image(&path).await;
         assert_eq!((p.width, p.height), (Some(3), Some(2)));
-        assert_eq!(p.preview, None);
+        // A small photo's thumbnail keeps its size.
+        let jpeg = p.preview.unwrap();
+        assert_eq!(&jpeg[..2], &[0xff, 0xd8]);
+        let thumb = dir.path().join("t.jpg");
+        std::fs::write(&thumb, &jpeg).unwrap();
+        let t = image(&thumb).await;
+        assert_eq!((t.width, t.height), (Some(3), Some(2)));
+    }
+
+    #[test]
+    fn photo_thumbnails_have_at_most_250000_pixels() {
+        assert_eq!(thumb_side(400, 300), 400);
+        assert_eq!(thumb_side(500, 500), 500);
+        // 4032x3024 scales to about 577x433.
+        let side = thumb_side(4032, 3024);
+        assert_eq!(side, 577);
+        let short = u64::from(side) * 3024 / 4032;
+        assert!(u64::from(side) * short <= THUMB_PIXELS);
+        assert_eq!(thumb_side(3024, 4032), 577);
+        assert_eq!(thumb_side(2000, 1000), 707);
     }
 
     #[tokio::test]
