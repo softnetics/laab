@@ -253,6 +253,13 @@ impl Store {
         self.chats_where("WHERE hidden_at IS NULL OR activity > hidden_at", [])
     }
 
+    /// Every chat's id, hidden or not.
+    pub fn all_chat_ids(&self) -> Result<Vec<String>> {
+        let mut stmt = self.db.prepare("SELECT id FROM chats")?;
+        let rows = stmt.query_map([], |r| r.get(0))?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
     /// One chat, hidden or not.
     pub fn chat(&self, id: &str) -> Result<Option<Chat>> {
         Ok(self.chats_where("WHERE id=?", [id])?.pop())

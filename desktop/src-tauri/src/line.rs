@@ -793,11 +793,17 @@ async fn handle_event(state: &Arc<AppState>, line: &Arc<Line>, ev: LineEvent) {
                 drop(store);
                 state.chats_changed();
             }
-            // The chat's history was deleted (`sendChatRemoved`, what
-            // "ลบประวัติแชท" sends), here or on another device.
-            TalkEvent::ChatRemoved { chat_mid, .. } => clear_history(state, &chat_mid),
+            // The chat was deleted from the list (`sendChatRemoved`), here or
+            // on another device.
+            TalkEvent::ChatRemoved { chat_mid, last_message_id } => {
+                apply_chat_removed(state, &chat_mid, &last_message_id)
+            }
+            // Every chat's messages were deleted on another device.
             TalkEvent::AllMessagesRemoved => {
-                tracing::info!("REMOVE_ALL_MESSAGES, ignored");
+                let ids = state.store().all_chat_ids().unwrap_or_default();
+                for id in ids {
+                    clear_history(state, &id);
+                }
             }
             // Keys changed: messages that could not be decrypted may open now.
             TalkEvent::E2eeKeysChanged { .. } => {
@@ -996,6 +1002,28 @@ async fn new_chat_row(state: &Arc<AppState>, line: &Arc<Line>, chat_id: &str) ->
 }
 
 /// Delete a chat's history on this Mac, after it was deleted on LINE.
+/// `SEND_CHAT_REMOVED` as LINE for Android applies it
+/// (`SEND_CHAT_REMOVED.kt`): a room keeps its row and loses its messages;
+/// a 1:1 chat or group also leaves the list until a new message arrives.
+/// Messages after `last_message_id` (newer than the removal) stay.
+pub fn apply_chat_removed(state: &AppState, chat_id: &str, last_message_id: &str) {
+    match last_message_id.parse::<i64>() {
+        Ok(id) if id > 0 => {
+            logged(
+                "clearing a chat's history",
+                state.store().remove_history_through(chat_id, id).map(|_| ()),
+            );
+            refresh_preview(state, chat_id);
+            state.messages_changed(chat_id);
+        }
+        _ => clear_history(state, chat_id),
+    }
+    if !chat_id.starts_with('r') {
+        logged("hiding a removed chat", state.store().hide_chat(chat_id));
+    }
+    state.chats_changed();
+}
+
 fn clear_history(state: &AppState, chat_id: &str) {
     logged("clearing a chat's history", state.store().delete_history(chat_id));
     state.messages_changed(chat_id);
