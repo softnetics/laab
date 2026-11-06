@@ -875,7 +875,10 @@ pub async fn liff_share(
             .await
             .map_err(err)?
     };
-    let _ = crate::liff::picker_result(&liff_id, &ott, result.sent > 0).await;
+    let outcome = crate::liff::picker_outcome(chat_ids.len(), &result);
+    if let Err(e) = crate::liff::picker_result(&s, &liff_id, &ott, outcome).await {
+        tracing::warn!("share picker result: {e}");
+    }
     if let Some(w) = s.app.get_webview_window(&window) {
         let _ = w.set_focus();
     }

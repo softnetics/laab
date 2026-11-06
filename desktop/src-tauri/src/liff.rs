@@ -5,7 +5,7 @@
 use std::sync::Arc;
 
 use anyhow::{Result, anyhow};
-use line_rs::client::liff::{self as lliff, ConsentPage, LiffViewOptions};
+use line_rs::client::liff::{self as lliff, ConsentPage, LiffViewOptions, PickerResult};
 use serde::{Deserialize, Serialize};
 use serde_json::Value as Json;
 use tauri::{Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
@@ -603,20 +603,26 @@ pub async fn share(
     Ok(result)
 }
 
-/// Tell the LIFF SDK how the picker ended. Inferred from the SDK source; not
-/// checked against a real account.
-pub async fn picker_result(liff_id: &str, ott: &str, success: bool) -> Result<()> {
-    let url = format!(
-        "https://access.line.me/oauth2/v2.1/liff/shareTargetPicker/result?liffId={}&ott={}",
-        encode(liff_id),
-        encode(ott)
-    );
-    reqwest::Client::new()
-        .post(url)
-        .form(&[("result", if success { "SUCCESS" } else { "CANCEL" })])
-        .send()
-        .await?;
-    Ok(())
+/// How a share-target picker ended: nothing picked is a cancel.
+pub fn picker_outcome(picked: usize, result: &ShareResult) -> PickerResult {
+    if picked == 0 {
+        PickerResult::Cancel
+    } else if result.sent > 0 {
+        PickerResult::Success
+    } else {
+        PickerResult::Failure
+    }
+}
+
+/// Tell LINE how the picker ended, which the LIFF SDK waits for:
+/// `storeShareTargetPickerResult`, as LINE for Android reports it.
+pub async fn picker_result(state: &Arc<AppState>, liff_id: &str, ott: &str, result: PickerResult) -> Result<()> {
+    let line = state.line().await.ok_or_else(|| anyhow!("not_logged_in"))?;
+    line.client
+        .liff()
+        .store_share_target_picker_result(liff_id, ott, result, None)
+        .await
+        .map_err(|e| anyhow!("{e}"))
 }
 
 #[cfg(test)]
@@ -665,9 +671,12 @@ mod tests {
     }
 
     #[test]
-    fn tells_line_app_links_apart() {
-        assert!(is_line_app_link("https://line.me/R/ti/p/@abc"));
-        assert!(!is_line_app_link("https://line.me/en/"));
+    fn picker_outcomes() {
+        let none = ShareResult { sent: 0, failed: vec![] };
+        let one = ShareResult { sent: 1, failed: vec![] };
+        assert_eq!(picker_outcome(0, &none), PickerResult::Cancel);
+        assert_eq!(picker_outcome(2, &one), PickerResult::Success);
+        assert_eq!(picker_outcome(1, &none), PickerResult::Failure);
     }
 
     #[test]
