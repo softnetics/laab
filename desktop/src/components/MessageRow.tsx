@@ -7,6 +7,7 @@ import { api, errorText, mediaUrl, q, queryClient } from "../lib/api";
 import { performFlexAction } from "../lib/flexActions";
 import { callBubbleLabel, isBlank, noticeFor, readCall } from "../lib/notices";
 import { nextReaction } from "../lib/reactions";
+import { isAnimated } from "../lib/media";
 import { clock } from "../lib/time";
 import type { MentionSpan, Message, ReactionName } from "../lib/types";
 import { notice, setUi, ui, useUi } from "../lib/ui";
@@ -126,9 +127,16 @@ function PhotoGrid({ photos, ctx }: { photos: Message[]; ctx: RowContext }) {
   );
 }
 
+/** What a photo shows in the chat: the downloaded file, else the thumbnail;
+ *  an animated GIF plays, so it loads the file itself. */
+function photoSrc(m: Message, chatId: string) {
+  if (m.imagePath) return mediaUrl.local(m.imagePath);
+  return mediaUrl.message(chatId, m.id, !isAnimated(m));
+}
+
 function GridPhoto({ m, ctx, className }: { m: Message; ctx: RowContext; className: string }) {
   const [failed, setFailed] = useState(false);
-  const src = m.imagePath ? mediaUrl.local(m.imagePath) : mediaUrl.message(ctx.chatId, m.id, true);
+  const src = photoSrc(m, ctx.chatId);
   return (
     <div className={`relative cursor-pointer bg-incoming ${className}`} aria-label="เปิดรูป" {...pressable(() => viewMessage(ctx.chatId, m))}>
       {failed ? (
@@ -174,7 +182,7 @@ function MediaBubble({ m, ctx }: { m: Message; ctx: RowContext }) {
   const [failed, setFailed] = useState(false);
   const video = m.contentType === "VIDEO";
   // A downloaded video's imagePath is the video itself, not a picture.
-  const src = m.imagePath && !video ? mediaUrl.local(m.imagePath) : mediaUrl.message(ctx.chatId, m.id, true);
+  const src = video ? mediaUrl.message(ctx.chatId, m.id, true) : photoSrc(m, ctx.chatId);
   return (
     <div className={`flex flex-col ${m.mine ? "items-end" : "items-start"}`}>
       {/* LINE for Mac: square corners, and links under every photo/video. */}
@@ -210,7 +218,8 @@ function MediaBubble({ m, ctx }: { m: Message; ctx: RowContext }) {
   );
 }
 
-const fileNameOf = (m: Message) => m.fileName ?? (m.contentType === "VIDEO" ? `LINE_${m.id}.mp4` : `LINE_${m.id}.jpg`);
+const fileNameOf = (m: Message) =>
+  m.fileName ?? `LINE_${m.id}.${m.contentType === "VIDEO" ? "mp4" : isAnimated(m) ? "gif" : "jpg"}`;
 
 /** LINE for Mac's links under a photo, a video or photos sent together.
  *  Under a grid they act on every photo in it. */
