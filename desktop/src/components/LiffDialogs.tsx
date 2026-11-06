@@ -3,6 +3,7 @@ import { listen } from "@tauri-apps/api/event";
 import { openUrl as openExternal } from "@tauri-apps/plugin-opener";
 import { useEffect, useMemo, useState } from "react";
 import { api, errorText, useChatList } from "../lib/api";
+import { openUrl } from "../lib/open";
 import { notice, setUi, useUi } from "../lib/ui";
 import { Avatar } from "./Avatar";
 import { pressable } from "./kit";
@@ -17,8 +18,13 @@ export function LiffConsent() {
       if (e.payload.error.includes("liff_consent_required")) setUi({ liffConsent: { url: e.payload.url, chatId: e.payload.chatId } });
       else notice(`เปิด LIFF ไม่สำเร็จ: ${e.payload.error}`);
     });
+    // A LINE link from inside a LIFF app (line://…, line.me/R/…).
+    const offLink = listen<{ url: string; chatId: string | null }>("liff-open-url", (e) => {
+      openUrl(e.payload.url, e.payload.chatId);
+    });
     return () => {
       off.then((f) => f());
+      offLink.then((f) => f());
     };
   }, []);
   const { data: asked, isLoading } = useQuery({

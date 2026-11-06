@@ -448,6 +448,8 @@ pub fn open_window(state: &Arc<AppState>, view: &LiffView, chat: Option<String>)
                     log("info", format!("เปิด {bare}"));
                     if parse_link(s).is_some() {
                         open_external_or_liff(&nav_state, s, chat.clone());
+                    } else {
+                        open_line_link(&nav_state, s, chat.clone());
                     }
                     false
                 }
@@ -457,6 +459,12 @@ pub fn open_window(state: &Arc<AppState>, view: &LiffView, chat: Option<String>)
                         Some(link) if link.id != current && client => {
                             log("info", format!("LIFF อื่น เปิดหน้าต่างใหม่ {bare}"));
                             open_external_or_liff(&nav_state, s, chat.clone());
+                            false
+                        }
+                        // LINE opens its own https://line.me/R/… links itself.
+                        None if is_line_app_link(s) => {
+                            log("info", format!("เปิด {bare}"));
+                            open_line_link(&nav_state, s, chat.clone());
                             false
                         }
                         _ => {
@@ -486,6 +494,24 @@ fn close(app: &tauri::AppHandle, label: &str) {
     if let Some(w) = app.get_webview_window(label) {
         let _ = w.close();
     }
+}
+
+/// `https://line.me/R/…`, a link LINE's app opens rather than its browser.
+fn is_line_app_link(url: &str) -> bool {
+    let lower = url.to_ascii_lowercase();
+    lower.starts_with("https://line.me/r/") || lower.starts_with("http://line.me/r/")
+}
+
+/// A LINE deep link from a LIFF app that isn't another LIFF app: a chat
+/// message opens in the main window; anything else goes to the main
+/// window's link handler, which opens what LAAB can (calendar links, …)
+/// and says so when it can't.
+fn open_line_link(state: &Arc<AppState>, url: &str, chat: Option<String>) {
+    if let Some(line_rs::link::LineLink::ChatMessage { chat_id, message_id }) = line_rs::link::LineLink::parse(url) {
+        crate::show_in_main(&state.app, &chat_id, message_id.as_deref());
+        return;
+    }
+    let _ = state.app.emit_to("main", "liff-open-url", serde_json::json!({ "url": url, "chatId": chat }));
 }
 
 /// LIFF links open as LIFF windows; anything else goes to the browser.
@@ -636,6 +662,12 @@ mod tests {
         assert!(js.contains("CLIENT_UNSUPPORTED_OPERATION"));
         assert!(!js.contains("__FEATURES__") && !js.contains("__SCOPES__"));
         assert!(bridge(&Json::Null).contains("scopes: [],"));
+    }
+
+    #[test]
+    fn tells_line_app_links_apart() {
+        assert!(is_line_app_link("https://line.me/R/ti/p/@abc"));
+        assert!(!is_line_app_link("https://line.me/en/"));
     }
 
     #[test]
