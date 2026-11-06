@@ -98,6 +98,9 @@ export const api = {
     invoke<void>("liff_dev_action", { label, action }),
   liffDevEval: (label: string, code: string) => invoke<void>("liff_dev_eval", { label, code }),
   openLiffDevtools: (focus: string | null = null) => invoke<void>("open_liff_devtools", { focus }),
+  /** What LINE's consent page for a LIFF link asks for; grants nothing. */
+  liffConsentInfo: (url: string, chatId: string | null) =>
+    invoke<{ permissions: { code: string; label: string }[]; consentUrl: string }>("liff_consent_info", { url, chatId }),
   liffShare: (window: string, liffId: string, ott: string, chatIds: string[], messages: unknown) =>
     invoke<{ sent: number; failed: string[] }>("liff_share", { window, liffId, ott, chatIds, messages }),
   openChatWindow: (chatId: string, title: string) => invoke<void>("open_chat_window", { chatId, title }),

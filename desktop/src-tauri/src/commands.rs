@@ -777,6 +777,18 @@ pub async fn open_liff(state: S<'_>, req: LiffOpen) -> R<()> {
     crate::liff::open_window(&s, &view, req.chat_id).map_err(err)
 }
 
+/// What LINE's consent page for a LIFF link asks for, to show before the
+/// user agrees.
+#[tauri::command]
+pub async fn liff_consent_info(
+    state: S<'_>,
+    url: String,
+    chat_id: Option<String>,
+) -> R<crate::liff::ConsentInfo> {
+    let s = state.inner().clone();
+    crate::liff::consent_info(&s, &url, chat_id).await.map_err(err)
+}
+
 /// Every LIFF window opened this run, with its log.
 #[tauri::command]
 pub fn liff_dev_sessions() -> Vec<crate::liff_devtools::Session> {

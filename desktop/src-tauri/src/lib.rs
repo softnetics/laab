@@ -267,6 +267,7 @@ pub fn run() {
             commands::raw_message,
             commands::send_postback,
             commands::open_liff,
+            commands::liff_consent_info,
             commands::liff_dev_sessions,
             commands::liff_dev_action,
             commands::liff_dev_eval,

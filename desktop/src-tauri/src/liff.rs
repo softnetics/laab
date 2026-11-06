@@ -5,7 +5,7 @@
 use std::sync::Arc;
 
 use anyhow::{Result, anyhow};
-use line_rs::client::liff::LiffViewOptions;
+use line_rs::client::liff::{self as lliff, ConsentPage, LiffViewOptions};
 use serde::{Deserialize, Serialize};
 use serde_json::Value as Json;
 use tauri::{Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
@@ -132,21 +132,51 @@ pub fn client_url(endpoint: &str, link: &LiffLink, tokens: &[(&str, String)]) ->
     Ok(format!("{url}#{}", fragment.join("&")))
 }
 
-fn consent_required(e: &line_rs::Error) -> bool {
-    if let line_rs::Error::Request { data, .. } = e {
-        let json = data.to_json();
-        let exc = if json.get("liffException").is_some() {
-            &json["liffException"]
-        } else {
-            &json
-        };
-        return exc["code"].as_str() == Some("CONSENT_REQUIRED") || exc["code"].as_i64() == Some(3);
+/// LINE's consent pages fetched for the user to agree to, by LIFF id, so
+/// "Allow" posts the very page they saw.
+static CONSENTS: std::sync::Mutex<Vec<(String, ConsentPage)>> = std::sync::Mutex::new(Vec::new());
+
+/// What a LIFF app asks the user to agree to, from LINE's consent page.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConsentInfo {
+    pub permissions: Vec<lliff::ConsentPermission>,
+    /// LINE's consent page, to open in the browser.
+    pub consent_url: String,
+}
+
+/// Fetch LINE's consent page for `url` (as LINE for Android opens it) and
+/// say what it asks for. Nothing is granted here.
+pub async fn consent_info(state: &Arc<AppState>, url: &str, chat: Option<String>) -> Result<ConsentInfo> {
+    let link = parse_link(url).ok_or_else(|| anyhow!("invalid_liff_id"))?;
+    let line = state.line().await.ok_or_else(|| anyhow!("not_logged_in"))?;
+    let liff = line.client.liff();
+    let opts = view_options(&link, chat);
+    let consent = match liff.issue_view(&opts).await {
+        Ok(_) => return Ok(ConsentInfo { permissions: vec![], consent_url: String::new() }),
+        Err(e) => lliff::consent_required(&e).ok_or_else(|| anyhow!("{e}"))?,
+    };
+    let page = liff.consent_page(&consent).await.map_err(|e| anyhow!("{e}"))?;
+    let info = ConsentInfo {
+        permissions: page.permissions.clone(),
+        consent_url: consent.consent_url.clone(),
+    };
+    let mut pages = CONSENTS.lock().unwrap();
+    pages.retain(|(id, _)| id != &link.id);
+    pages.push((link.id, page));
+    Ok(info)
+}
+
+fn view_options(link: &LiffLink, chat: Option<String>) -> LiffViewOptions {
+    LiffViewOptions {
+        chat_mid: chat,
+        liff_id: Some(link.id.clone()),
+        lang: Some("th_TH".into()),
     }
-    format!("{e:?}").contains("CONSENT_REQUIRED")
 }
 
 /// Issue a LIFF view for `url`. Errors with `liff_consent_required` until the
-/// user agrees; it never consents silently.
+/// user agrees on LINE's consent page; it never consents silently.
 pub async fn issue(
     state: &Arc<AppState>,
     url: &str,
@@ -165,22 +195,30 @@ pub async fn issue(
     let Some(line) = state.line().await else {
         return Ok(web("ยังไม่ได้เข้าสู่ระบบ"));
     };
-    let opts = LiffViewOptions {
-        chat_mid: chat,
-        liff_id: Some(link.id.clone()),
-        lang: Some("th_TH".into()),
-    };
+    let opts = view_options(&link, chat);
     let liff = line.client.liff();
     let view = match liff.issue_view(&opts).await {
         Ok(v) => v,
-        Err(e) if consent_required(&e) => {
+        Err(e) => {
+            let Some(asked) = lliff::consent_required(&e) else {
+                return Err(anyhow!("{e}"));
+            };
             if !consent {
                 return Err(anyhow!("liff_consent_required"));
             }
-            liff.get_token(&opts).await.map_err(|e| anyhow!("{e}"))?;
+            // "Allow" on the page the user was shown, or a fresh copy of it.
+            let shown = {
+                let mut pages = CONSENTS.lock().unwrap();
+                let i = pages.iter().position(|(id, _)| id == &link.id);
+                i.map(|i| pages.remove(i).1)
+            };
+            let page = match shown {
+                Some(p) if p.consent == asked => p,
+                _ => liff.consent_page(&asked).await.map_err(|e| anyhow!("{e}"))?,
+            };
+            liff.approve(&page).await.map_err(|e| anyhow!("{e}"))?;
             liff.issue_view(&opts).await.map_err(|e| anyhow!("{e}"))?
         }
-        Err(e) => return Err(anyhow!("{e}")),
     };
     let v = view.to_json();
     let endpoint = v["view"]["url"].as_str().unwrap_or("");

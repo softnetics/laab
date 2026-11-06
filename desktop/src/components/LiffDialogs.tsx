@@ -1,4 +1,6 @@
+import { useQuery } from "@tanstack/react-query";
 import { listen } from "@tauri-apps/api/event";
+import { openUrl as openExternal } from "@tauri-apps/plugin-opener";
 import { useEffect, useMemo, useState } from "react";
 import { api, errorText, useChatList } from "../lib/api";
 import { notice, setUi, useUi } from "../lib/ui";
@@ -6,8 +8,8 @@ import { Avatar } from "./Avatar";
 import { pressable } from "./kit";
 import { buttonClass, Sheet } from "./Sheet";
 
-/** Ask before a LIFF app may see the profile and post to the chat. It never
- *  consents silently. */
+/** Ask before a LIFF app may use the account, showing what LINE's own
+ *  consent page asks for, as LINE does. It never consents silently. */
 export function LiffConsent() {
   const req = useUi((s) => s.liffConsent);
   useEffect(() => {
@@ -19,6 +21,12 @@ export function LiffConsent() {
       off.then((f) => f());
     };
   }, []);
+  const { data: asked, isLoading } = useQuery({
+    queryKey: ["liff-consent", req?.url, req?.chatId],
+    queryFn: () => api.liffConsentInfo(req!.url, req!.chatId),
+    enabled: !!req,
+    staleTime: 0,
+  });
   const close = () => setUi({ liffConsent: null });
   const go = (consent: boolean) => {
     if (!req) return;
@@ -29,7 +37,25 @@ export function LiffConsent() {
   return (
     <Sheet open={!!req} onClose={close} className="w-[380px]" title="อนุญาตให้แอป LIFF นี้เข้าถึงบัญชี LINE ไหม">
       <div className="flex flex-col gap-4 p-5 pt-2">
-        <p className="text-[13px] leading-relaxed text-secondary">แอปจะเห็นโปรไฟล์ของคุณ และส่งข้อความลงในแชทนี้ได้ ({id})</p>
+        <div className="text-[13px] leading-relaxed text-secondary">
+          <p>LINE ขอความยินยอมให้แอปนี้ ({id})</p>
+          {isLoading ? (
+            <p className="mt-1">กำลังโหลดสิ่งที่แอปขอ…</p>
+          ) : asked?.permissions.length ? (
+            <ul className="mt-1.5 list-disc space-y-0.5 pl-5 text-primary">
+              {asked.permissions.map((p) => (
+                <li key={p.code}>{p.label || p.code}</li>
+              ))}
+            </ul>
+          ) : (
+            <p className="mt-1">เห็นโปรไฟล์ของคุณ และส่งข้อความลงในแชทนี้ได้</p>
+          )}
+          {asked?.consentUrl && (
+            <button className="mt-2 text-[12px] text-mention hover:underline" onClick={() => openExternal(asked.consentUrl).catch(() => {})}>
+              ดูหน้ายินยอมของ LINE
+            </button>
+          )}
+        </div>
         <div className="flex justify-end gap-2">
           <button className={buttonClass()} onClick={() => go(false)}>
             เปิดเป็นหน้าเว็บแทน
