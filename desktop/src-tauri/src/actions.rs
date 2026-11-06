@@ -1000,22 +1000,17 @@ pub struct AlbumPhoto {
     pub video: bool,
 }
 
-/// Albums of one chat. LINE lists every album, so filter by chat.
+/// Albums of one chat. LINE lists every album, page by page, so read
+/// every page and filter by chat.
 pub async fn list_albums(state: &Arc<AppState>, chat_id: &str) -> Result<Vec<Album>> {
     let l = line(state).await?;
-    let reply = l
+    let albums = l
         .client
         .base
         .moa()
-        .get_albums(GetAlbumsOptions::default())
+        .get_all_albums(GetAlbumsOptions::default())
         .await?;
-    if let Some(code) = reply.code.filter(|c| *c != 0) {
-        bail!("album {code}: {}", reply.message.unwrap_or_default());
-    }
-    Ok(reply
-        .result
-        .map(|r| r.albums)
-        .unwrap_or_default()
+    Ok(albums
         .into_iter()
         .filter(|a| a.chat_id == chat_id)
         .filter_map(|a| {
@@ -1070,7 +1065,9 @@ pub async fn album_photos(
                 .resource_type
                 .as_deref()
                 .is_some_and(|t| t.eq_ignore_ascii_case("VIDEO"));
-            let path = album_photo_path(state, &oid).to_string_lossy().into_owned();
+            let path = album_photo_path(state, &oid, video)
+                .to_string_lossy()
+                .into_owned();
             out.push(AlbumPhoto {
                 id,
                 oid,
@@ -1087,39 +1084,47 @@ pub async fn album_photos(
     Ok(out)
 }
 
-fn album_photo_path(state: &AppState, oid: &str) -> std::path::PathBuf {
+/// Where an album photo, or the video itself, is cached.
+fn album_photo_path(state: &AppState, oid: &str, video: bool) -> std::path::PathBuf {
+    let ext = if video { "mp4" } else { "jpg" };
     state
         .paths
         .media()
-        .join(format!("album-{}.jpg", crate::media::safe_name(oid)))
+        .join(format!("album-{}.{ext}", crate::media::safe_name(oid)))
 }
 
-/// One album photo, downloaded into the media cache on first use.
+/// One album photo, or with `video` the video itself (`album/v`; a
+/// video's photo is its still), streamed into the media cache on first
+/// use.
 pub async fn album_photo_file(
     state: &Arc<AppState>,
     chat_id: &str,
     album_id: &str,
     oid: &str,
+    video: bool,
 ) -> Result<std::path::PathBuf> {
-    let dest = album_photo_path(state, oid);
+    let dest = album_photo_path(state, oid, video);
     if dest.exists() {
         return Ok(dest);
     }
     let l = line(state).await?;
-    let bytes = l
-        .client
+    let mut file = crate::vault::Writer::create(&dest)?;
+    l.client
         .base
         .moa()
-        .download_photo(DownloadPhotoOptions {
-            chat_id: chat_id.into(),
-            album_id: album_id.into(),
-            oid: oid.into(),
-            prefix: None,
-        })
+        .download_photo_to(
+            DownloadPhotoOptions {
+                chat_id: chat_id.into(),
+                album_id: album_id.into(),
+                oid: oid.into(),
+                prefix: Some(if video { "album/v" } else { "album/a" }.into()),
+            },
+            &mut file,
+        )
         .await?;
-    crate::vault::write(&dest, &bytes)?;
+    let saved = file.finish()?;
     crate::cache::schedule_trim(state);
-    Ok(dest)
+    Ok(saved)
 }
 
 pub async fn create_album(state: &Arc<AppState>, chat_id: &str, title: &str) -> Result<()> {

@@ -476,7 +476,13 @@ function Albums({ chatId }: { chatId: string }) {
                 className="relative aspect-square overflow-hidden bg-field"
                 onClick={() =>
                   openViewer(
-                    photos.data!.map((x) => ({ src: mediaUrl.album(chatId, open.id, x.oid), path: x.path, chatId })),
+                    photos.data!.map((x) => ({
+                      src: mediaUrl.album(chatId, open.id, x.oid, x.video),
+                      thumb: x.video ? mediaUrl.album(chatId, open.id, x.oid) : undefined,
+                      video: x.video,
+                      path: x.path,
+                      chatId,
+                    })),
                     i,
                   )
                 }

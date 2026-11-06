@@ -978,7 +978,7 @@ async fn run(ctx: &Ctx, name: &str, args: &Value, trace: &mut Trace) -> R<Vec<Va
             if state.demo {
                 return Err("ไม่มีรูปในโหมด demo".into());
             }
-            let path = crate::actions::album_photo_file(state, &chat, &album, &oid).await.map_err(err)?;
+            let path = crate::actions::album_photo_file(state, &chat, &album, &oid, false).await.map_err(err)?;
             let data = crate::vault::read(&path).map_err(err)?;
             image(&data, &path, format!("Album photo {oid} from {}", dir.name(&chat)))
         }

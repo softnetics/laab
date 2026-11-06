@@ -8,7 +8,7 @@
 //!   /message/<chatId>/<messageId>?preview=1
 //!   /sticker/<stickerId>?anim=1
 //!   /pack/<packageId>
-//!   /album/<chatId>/<albumId>/<oid>
+//!   /album/<chatId>/<albumId>/<oid>?video=1
 //!   /cover/<oid>
 //!   /local?path=<absolute path inside the data folder>
 
@@ -185,7 +185,10 @@ pub async fn handle(state: Arc<AppState>, req: Request<Vec<u8>>) -> Response<Vec
         }
         ["sticker", id] => sticker(&state, id, query(&req, "anim").is_some()).await,
         ["pack", id] => pack_icon(&state, id).await,
-        ["album", chat, album, oid] => crate::actions::album_photo_file(&state, chat, album, oid).await,
+        ["album", chat, album, oid] => {
+            let video = query(&req, "video").is_some();
+            crate::actions::album_photo_file(&state, chat, album, oid, video).await
+        }
         ["cover", oid] => crate::actions::cover_file(&state, oid).await,
         ["note", svc, id] => note_media(&state, svc, id).await,
         ["local"] => {
