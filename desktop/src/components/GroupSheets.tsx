@@ -299,6 +299,22 @@ export function MessageRequestBar({ chat }: { chat: Chat }) {
           บล็อก
         </button>
       )}
+      <button
+        className={buttonClass()}
+        disabled={busy}
+        onClick={() =>
+          setUi({
+            confirm: {
+              title: "ต้องการลบคำขอข้อความนี้หรือไม่",
+              body: "ประวัติแชทนี้จะถูกลบ",
+              action: "ลบ",
+              run: () => api.deleteMessageRequest(chat.id),
+            },
+          })
+        }
+      >
+        ลบ
+      </button>
       <button className={buttonClass(true)} disabled={busy} onClick={accept}>
         ยอมรับ
       </button>

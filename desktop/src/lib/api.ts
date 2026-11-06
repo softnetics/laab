@@ -182,6 +182,7 @@ export const api = {
   leaveGroup: (chatId: string) => invoke<void>("leave_group", { chatId }),
   acceptInvitation: (chatId: string) => invoke<void>("accept_invitation", { chatId }),
   acceptMessageRequest: (chatId: string) => invoke<void>("accept_message_request", { chatId }),
+  deleteMessageRequest: (chatId: string) => invoke<void>("delete_message_request", { chatId }),
   rejectInvitation: (chatId: string) => invoke<void>("reject_invitation", { chatId }),
   createGroup: (name: string, mids: string[]) => invoke<string>("create_group", { name, mids }),
   inviteMembers: (chatId: string, mids: string[]) => invoke<void>("invite_members", { chatId, mids }),

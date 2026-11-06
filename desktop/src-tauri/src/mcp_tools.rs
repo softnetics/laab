@@ -184,6 +184,8 @@ fn defs() -> Vec<Def> {
         }), &["chat_id"], false, false),
         d("rename_folder", Manage, "Rename a folder", "Rename a LAAB folder.", json!({ "folder_id": s("Folder id."), "name": s("New name.") }), &["folder_id", "name"], false, false),
         d("delete_folder", Manage, "Delete a folder", "Delete a LAAB folder; its chats go back to the list.", json!({ "folder_id": s("Folder id.") }), &["folder_id"], false, true),
+        d("list_message_requests", Manage, "List message requests", "Chats in LINE's message request box: from people who are not friends, kept out of the chat list until the user accepts them. Each has its id, name, kind, unread count and last activity.", json!({}), &[], true, false),
+        d("accept_message_request", Manage, "Accept a message request", "Move a chat out of the message request box into the chat list, as accepting it in LINE does.", json!({ "chat_id": s("Chat id from list_message_requests.") }), &["chat_id"], false, false),
         d("hide_chat", Manage, "Hide a chat", "Hide a chat from the list until a new message arrives.", json!({ "chat_id": s(CHAT) }), &["chat_id"], false, false),
         d("announce", Manage, "Announce a message", "Pin a message as an announcement in a group.", json!({
             "chat_id": s(CHAT), "message_id": s(MSG), "text": s("Announcement text (default: the message's text)."),
@@ -1309,6 +1311,38 @@ async fn run(ctx: &Ctx, name: &str, args: &Value, trace: &mut Trace) -> R<Vec<Va
             gate(ctx, trace, Manage, &[Scope::Folder(id.clone())], format!("ลบโฟลเดอร์ “{old}” (แชทในนั้นกลับไปที่รายการ)")).await?;
             commands::delete_folder(st(), id)?;
             done("folder deleted")
+        }
+        "list_message_requests" => {
+            let mut waiting: Vec<&Chat> = dir.chats.values().filter(|c| c.request).collect();
+            waiting.sort_by(|a, b| b.last_activity.total_cmp(&a.last_activity));
+            // One answer for the box; chats the user keeps from MCP stay out.
+            gate(ctx, trace, Manage, &[], "ดูคำขอข้อความ".into()).await?;
+            let out: Vec<Value> = waiting
+                .iter()
+                .filter(|c| {
+                    let scope = dir.scope(&c.id);
+                    readable(&settings, &scope) != Access::Off && settings.access(Manage, &scope) != Access::Off
+                })
+                .map(|c| {
+                    json!({
+                        "id": c.id,
+                        "name": c.name,
+                        "kind": c.kind,
+                        "unread": c.unread,
+                        "lastActivity": time(c.last_activity),
+                    })
+                })
+                .collect();
+            Ok(text(json!({ "requests": out })))
+        }
+        "accept_message_request" => {
+            let chat = arg_str(args, "chat_id")?;
+            if !dir.chats.get(&chat).is_some_and(|c| c.request) {
+                return Err("not a message request (see list_message_requests)".into());
+            }
+            gate(ctx, trace, Manage, &[dir.scope(&chat)], format!("ยอมรับคำขอข้อความจาก {}", dir.quoted(&chat))).await?;
+            commands::accept_message_request(st(), chat).await?;
+            done("accepted")
         }
         "hide_chat" => {
             let chat = arg_str(args, "chat_id")?;

@@ -103,6 +103,8 @@ impl Store {
             ("chats", "invited", "INTEGER NOT NULL DEFAULT 0"),
             // 1 for a chat in LINE's message request box.
             ("chats", "request", "INTEGER NOT NULL DEFAULT 0"),
+            // 1 for an E2EE message not decrypted yet (its raw is kept).
+            ("messages", "undecrypted", "INTEGER NOT NULL DEFAULT 0"),
         ] {
             self.add_column_if_missing(table, column, definition)?;
         }
@@ -249,6 +251,13 @@ impl Store {
     /// The chat list, without hidden chats.
     pub fn chats(&self) -> Result<Vec<Chat>> {
         self.chats_where("WHERE hidden_at IS NULL OR activity > hidden_at", [])
+    }
+
+    /// Every chat's id, hidden or not.
+    pub fn all_chat_ids(&self) -> Result<Vec<String>> {
+        let mut stmt = self.db.prepare("SELECT id FROM chats")?;
+        let rows = stmt.query_map([], |r| r.get(0))?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
 
     /// One chat, hidden or not.
@@ -598,9 +607,12 @@ impl Store {
             };
             tx.execute(
                 "INSERT INTO messages(id,chat_id,body,file_name,file_path,image_path,content_type,created,mine,sender_id,sticker_id,mentions,
-                    sticker_package,sticker_version,metadata,raw,reply_to,unsent,edited,file_size,duration_ms)
-                 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-                 ON CONFLICT(id) DO UPDATE SET chat_id=excluded.chat_id, body=excluded.body,
+                    sticker_package,sticker_version,metadata,raw,reply_to,unsent,edited,file_size,duration_ms,undecrypted)
+                 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                 ON CONFLICT(id) DO UPDATE SET chat_id=excluded.chat_id,
+                    -- A copy that failed to decrypt never blanks text decrypted before.
+                    body=CASE WHEN excluded.undecrypted=1 AND messages.undecrypted=0 THEN messages.body ELSE excluded.body END,
+                    undecrypted=CASE WHEN excluded.undecrypted=1 AND messages.undecrypted=0 THEN 0 ELSE excluded.undecrypted END,
                     file_name=COALESCE(excluded.file_name,messages.file_name), file_path=COALESCE(excluded.file_path,messages.file_path),
                     image_path=COALESCE(excluded.image_path,messages.image_path), content_type=excluded.content_type, created=excluded.created,
                     mine=excluded.mine, sender_id=COALESCE(excluded.sender_id,messages.sender_id), sticker_id=COALESCE(excluded.sticker_id,messages.sticker_id),
@@ -612,7 +624,7 @@ impl Store {
                 params![
                     m.id, m.chat_id, m.text, file_name, m.file_path, m.image_path, m.content_type, m.created_time, m.mine as i64,
                     m.sender_id, m.sticker_id, mentions, m.sticker_package, m.sticker_version, metadata, m.raw, m.reply_to,
-                    m.unsent, m.edited as i64, m.file_size, m.duration_ms
+                    m.unsent, m.edited as i64, m.file_size, m.duration_ms, m.undecrypted as i64
                 ],
             )?;
             // Once unsent, a stale history copy must never bring the text back.
@@ -622,9 +634,10 @@ impl Store {
             )?;
             tx.execute("DELETE FROM message_search WHERE id=?", [&m.id])?;
             if m.unsent == 0 {
+                // The stored body: an undecrypted copy keeps the text read before.
                 tx.execute(
-                    "INSERT INTO message_search(id, body, file_name) VALUES (?,?,?)",
-                    params![m.id, m.text, file_name.clone().unwrap_or_default()],
+                    "INSERT INTO message_search(id, body, file_name) SELECT id, body, ? FROM messages WHERE id=?",
+                    params![file_name.clone().unwrap_or_default(), m.id],
                 )?;
             }
         }
@@ -748,6 +761,24 @@ impl Store {
             .collect::<rusqlite::Result<_>>()?;
         self.attach_reactions(&mut list)?;
         Ok(list.pop())
+    }
+
+    /// `(id, chat_id, raw)` of messages that could not be decrypted, newest
+    /// first: in `chat_id`, or in every chat.
+    pub fn undecrypted_messages(
+        &self,
+        chat_id: Option<&str>,
+        limit: usize,
+    ) -> Result<Vec<(String, String, String)>> {
+        let mut stmt = self.db.prepare(
+            "SELECT id, chat_id, raw FROM messages
+             WHERE undecrypted=1 AND raw IS NOT NULL AND unsent=0 AND (?1 IS NULL OR chat_id=?1)
+             ORDER BY created DESC LIMIT ?2",
+        )?;
+        let rows = stmt.query_map(params![chat_id, limit as i64], |r| {
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+        })?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
 
     pub fn raw_message(&self, id: &str) -> Result<Option<String>> {
@@ -1394,6 +1425,33 @@ mod tests {
             s.search("report", &[SearchKind::File]).unwrap()[0].title,
             "report.pdf"
         );
+    }
+
+    #[test]
+    fn undecrypted_copies_are_kept_apart_and_never_blank_read_text() {
+        let mut s = Store::memory().unwrap();
+        let sealed = |id: &str| Message {
+            undecrypted: true,
+            raw: Some(r#"{"chunks":[]}"#.into()),
+            ..msg(id, "u1", "", 1.0)
+        };
+        s.upsert_messages(&[sealed("1"), msg("2", "u1", "read before", 2.0)])
+            .unwrap();
+        let pending = s.undecrypted_messages(None, 10).unwrap();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].0, "1");
+        assert!(s.undecrypted_messages(Some("u2"), 10).unwrap().is_empty());
+
+        // A later copy that failed to decrypt keeps the text read before.
+        s.upsert_messages(&[sealed("2")]).unwrap();
+        assert_eq!(s.message("2").unwrap().unwrap().text, "read before");
+        assert_eq!(s.undecrypted_messages(None, 10).unwrap().len(), 1);
+        assert_eq!(s.search("read before", &[SearchKind::Message]).unwrap().len(), 1);
+
+        // Decrypted at last: the text replaces the blank and it leaves the queue.
+        s.upsert_messages(&[msg("1", "u1", "opened", 1.0)]).unwrap();
+        assert_eq!(s.message("1").unwrap().unwrap().text, "opened");
+        assert!(s.undecrypted_messages(None, 10).unwrap().is_empty());
     }
 
     #[test]

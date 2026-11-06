@@ -71,10 +71,14 @@ export function MainLayout({ chatId }: { chatId: string | null }) {
   }, [session?.state]);
   useEffect(foldIfNarrow, []);
 
-  // Banners and Raycast deep links open a chat.
+  // Banners and Raycast deep links open a chat. A message request opens
+  // with the request box listed, as LINE's banner opens its box.
+  const chatListRef = useRef(list);
+  chatListRef.current = list;
   useEffect(() => {
     const off = listen<{ chatId: string; messageId?: string | null }>("open-chat", (e) => {
       if (ui.state.searchOpen) setUi({ searchOpen: false });
+      if (chatListRef.current?.chats.some((c) => c.id === e.payload.chatId && c.request)) setUi({ filter: "requests", listQuery: "" });
       openChat(e.payload.chatId, { messageId: e.payload.messageId ?? null });
     });
     return () => {

@@ -106,6 +106,10 @@ pub struct Message {
     /// with message lists.
     #[serde(skip)]
     pub raw: Option<String>,
+    /// A Letter Sealing (E2EE) text or location LAAB could not decrypt yet;
+    /// its raw message is kept to try again when keys change.
+    #[serde(skip)]
+    pub undecrypted: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

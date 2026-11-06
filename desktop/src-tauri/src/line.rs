@@ -42,6 +42,8 @@ pub struct Line {
     syncing: AtomicBool,
     /// A catch-up after missed events is waiting to run (see [`resync`]).
     resync_pending: AtomicBool,
+    /// A pass over undecrypted messages is running (see [`retry_undecrypted`]).
+    retrying: AtomicBool,
 }
 
 impl Drop for Line {
@@ -377,6 +379,7 @@ async fn connected(state: Arc<AppState>, client: Client, device: Device) {
         media: Mutex::new(HashMap::new()),
         syncing: AtomicBool::new(false),
         resync_pending: AtomicBool::new(false),
+        retrying: AtomicBool::new(false),
     });
     if let Some(old) = state.line.write().await.replace(line.clone()) {
         old.stop();
@@ -434,6 +437,10 @@ async fn connected(state: Arc<AppState>, client: Client, device: Device) {
             s.status(format!("โหลดรายชื่อแชทไม่สำเร็จ: {e}"));
         }
         name_stored_files(&s).await;
+        // The login's key chain may open messages that failed before.
+        if let Some(line) = s.line().await {
+            retry_undecrypted(&s, &line, None).await;
+        }
         crate::actions::prefetch_calendars(&s, None).await;
     });
 }
@@ -451,6 +458,51 @@ async fn load_notification_settings(client: Client) {
         }
         Err(e) => tracing::warn!("account settings: {}", e.full_message()),
     }
+}
+
+/// How many undecrypted messages one pass tries, newest first.
+const RETRY_LIMIT: usize = 300;
+
+/// Try again to decrypt stored E2EE messages that failed (in `chat_id`, or
+/// everywhere), after keys may have changed: at login, when LINE says
+/// keys changed, and when the chat is opened. A message that opens gets
+/// its text and leaves the queue; one that still fails stays as it is.
+/// line-rs remembers keys LINE could not resolve, so a pass costs no
+/// requests for those. The Android app keeps such messages as
+/// E2EE_UNDECRYPTED; whether it re-tries them is unverified.
+pub async fn retry_undecrypted(state: &Arc<AppState>, line: &Arc<Line>, chat_id: Option<&str>) {
+    if line.retrying.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    let pending = state
+        .store()
+        .undecrypted_messages(chat_id, RETRY_LIMIT)
+        .unwrap_or_default();
+    let mut opened: Vec<Message> = Vec::new();
+    for (_, _, raw) in pending {
+        let Some(raw) = raw_from_store(&raw) else { continue };
+        let (raw, ok) = decrypt(line, raw).await;
+        if !ok || line_rs::e2ee::is_undecrypted(&raw) {
+            continue;
+        }
+        let ct = TalkMessage::new(line.client.clone(), raw.clone()).content_type();
+        if let Some(mut m) = convert::message_from_json(&message_json(&raw), &line.me, true) {
+            m.content_type = ct;
+            opened.push(m);
+        }
+    }
+    line.retrying.store(false, Ordering::SeqCst);
+    if opened.is_empty() {
+        return;
+    }
+    tracing::info!("decrypted {} messages on a second try", opened.len());
+    logged("saving decrypted messages", state.store().upsert_messages(&opened));
+    let chats: HashSet<&str> = opened.iter().map(|m| m.chat_id.as_str()).collect();
+    for chat in chats {
+        refresh_preview(state, chat);
+        state.messages_changed(chat);
+    }
+    state.chats_changed();
 }
 
 /// Give names to E2EE files synced before LAAB read them from the payload,
@@ -484,25 +536,44 @@ pub fn stored_raw(state: &AppState, message_id: &str) -> Option<Value> {
     raw_from_store(&state.store().raw_message(message_id).ok()??)
 }
 
-/// A raw message as stored (JSON, binary chunks in base64) back as the
-/// thrift value line-rs decrypts.
+/// A raw message as stored back as the thrift value line-rs decrypts.
+/// Chunks are stored in base64 ([`message_json`]); rows stored before that
+/// hold a chunk that was valid UTF-8 (a key id like `00 00 00 05`) as the
+/// text itself, so a chunk that is not valid base64 is taken as its bytes.
 fn raw_from_store(json: &str) -> Option<Value> {
     use base64::Engine;
-    let mut v: serde_json::Value = serde_json::from_str(json).ok()?;
-    if let Some(chunks) = v.get_mut("chunks").and_then(|c| c.as_array_mut()) {
+    let v: serde_json::Value = serde_json::from_str(json).ok()?;
+    let mut raw = Value::from(v.clone());
+    if let Some(chunks) = v.get("chunks").and_then(|c| c.as_array()) {
         let b64 = base64::engine::general_purpose::STANDARD;
-        let bytes: Option<Vec<Vec<u8>>> = chunks
+        let bytes: Vec<Value> = chunks
             .iter()
-            .map(|c| b64.decode(c.as_str()?).ok())
+            .map(|c| {
+                let text = c.as_str().unwrap_or_default();
+                Value::Binary(b64.decode(text).unwrap_or_else(|_| text.as_bytes().to_vec()))
+            })
             .collect();
-        let mut raw = Value::from(v.clone());
-        raw.insert(
-            "chunks",
-            Value::List(bytes?.into_iter().map(Value::Binary).collect()),
-        );
-        return Some(raw);
+        raw.insert("chunks", Value::List(bytes));
     }
-    Some(Value::from(v))
+    Some(raw)
+}
+
+/// A LINE message as JSON for storing, with every E2EE chunk in base64.
+/// `Value::to_json` writes binary as base64 but a chunk that decoded as
+/// UTF-8 text as the text, so the stored kinds could not be told apart: a
+/// nonce read back as its base64 text is 16 bytes, not 12, which line-rs
+/// refused as "malformed nonce or ciphertext".
+pub fn message_json(raw: &Value) -> Json {
+    use base64::Engine;
+    let mut json = raw.to_json();
+    if let Some(chunks) = raw["chunks"].as_list() {
+        let b64 = base64::engine::general_purpose::STANDARD;
+        json["chunks"] = chunks
+            .iter()
+            .map(|c| Json::String(b64.encode(c.as_bytes().unwrap_or_default())))
+            .collect();
+    }
+    json
 }
 
 fn spawn_forwarders(state: &Arc<AppState>, line: &Arc<Line>) {
@@ -632,8 +703,10 @@ async fn handle_event(state: &Arc<AppState>, line: &Arc<Line>, ev: LineEvent) {
             // holds its name; without this a file that arrives live, or that
             // we just sent, has no name until LAAB restarts.
             let raw = with_e2ee_file_name(line, m.raw.clone()).await;
-            let json = raw.to_json();
-            let Some(mut msg) = convert::message_from_json(&json, &line.me, true) else {
+            // line-rs hands over a message it could not decrypt as it came.
+            let decrypted = !line_rs::e2ee::is_undecrypted(&raw);
+            let json = message_json(&raw);
+            let Some(mut msg) = convert::message_from_json(&json, &line.me, decrypted) else {
                 return;
             };
             msg.content_type = ct;
@@ -720,18 +793,28 @@ async fn handle_event(state: &Arc<AppState>, line: &Arc<Line>, ev: LineEvent) {
                 drop(store);
                 state.chats_changed();
             }
-            // The chat's history was deleted (`sendChatRemoved`, what
-            // "ลบประวัติแชท" sends), here or on another device.
-            TalkEvent::ChatRemoved { chat_mid, .. } => clear_history(state, &chat_mid),
-            // line-rs passes the params through without naming them. Only
-            // act when param1 names a chat we have, so an op we read wrong
-            // can't wipe every chat.
-            TalkEvent::AllMessagesRemoved { param1, .. } => {
-                if state.store().chat(&param1).ok().flatten().is_some() {
-                    clear_history(state, &param1);
-                } else {
-                    tracing::info!("REMOVE_ALL_MESSAGES without a known chat, ignored");
+            // The chat was deleted from the list (`sendChatRemoved`), here or
+            // on another device.
+            TalkEvent::ChatRemoved { chat_mid, last_message_id } => {
+                apply_chat_removed(state, &chat_mid, &last_message_id)
+            }
+            // Every chat's messages were deleted on another device.
+            TalkEvent::AllMessagesRemoved => {
+                let ids = state.store().all_chat_ids().unwrap_or_default();
+                for id in ids {
+                    clear_history(state, &id);
                 }
+            }
+            // A chat moved into or out of the message request box (accepted
+            // or deleted on another device, or a new request).
+            TalkEvent::MessageRequestBox { chat_mid, in_box, .. } => {
+                logged("marking a message request", state.store().set_request(&chat_mid, in_box));
+                state.chats_changed();
+            }
+            // Keys changed: messages that could not be decrypted may open now.
+            TalkEvent::E2eeKeysChanged { .. } => {
+                let (s, l) = (state.clone(), line.clone());
+                tokio::spawn(async move { retry_undecrypted(&s, &l, None).await });
             }
             TalkEvent::ChatUpdated { chat_mid, .. } => refresh_chat_row(state, line, &chat_mid).await,
             _ => {}
@@ -922,6 +1005,28 @@ async fn new_chat_row(state: &Arc<AppState>, line: &Arc<Line>, chat_id: &str) ->
 }
 
 /// Delete a chat's history on this Mac, after it was deleted on LINE.
+/// `SEND_CHAT_REMOVED` as LINE for Android applies it
+/// (`SEND_CHAT_REMOVED.kt`): a room keeps its row and loses its messages;
+/// a 1:1 chat or group also leaves the list until a new message arrives.
+/// Messages after `last_message_id` (newer than the removal) stay.
+pub fn apply_chat_removed(state: &AppState, chat_id: &str, last_message_id: &str) {
+    match last_message_id.parse::<i64>() {
+        Ok(id) if id > 0 => {
+            logged(
+                "clearing a chat's history",
+                state.store().remove_history_through(chat_id, id).map(|_| ()),
+            );
+            refresh_preview(state, chat_id);
+            state.messages_changed(chat_id);
+        }
+        _ => clear_history(state, chat_id),
+    }
+    if !chat_id.starts_with('r') {
+        logged("hiding a removed chat", state.store().hide_chat(chat_id));
+    }
+    state.chats_changed();
+}
+
 fn clear_history(state: &AppState, chat_id: &str) {
     logged("clearing a chat's history", state.store().delete_history(chat_id));
     state.messages_changed(chat_id);
@@ -1254,7 +1359,11 @@ async fn decrypt(line: &Line, raw: Value) -> (Value, bool) {
     match line.client.base.decrypt_e2ee_message(raw.clone()).await {
         Ok(v) => (with_e2ee_file_name(line, v).await, true),
         Err(e) => {
-            tracing::warn!("decrypt failed: {e}");
+            // Local log only: ids and lengths, never content.
+            tracing::warn!(
+                "decrypt failed: {e}; {}",
+                line_rs::e2ee::describe_e2ee_message(&raw)
+            );
             (raw, false)
         }
     }
@@ -1294,7 +1403,7 @@ async fn to_message(line: &Line, raw: Value) -> Option<Message> {
     let (raw, ok) = decrypt(line, raw).await;
     let ct = TalkMessage::new(line.client.clone(), raw.clone()).content_type();
     line.remember_media(&raw, &ct);
-    let mut m = convert::message_from_json(&raw.to_json(), &line.me, ok)?;
+    let mut m = convert::message_from_json(&message_json(&raw), &line.me, ok)?;
     m.content_type = ct;
     Some(m)
 }
@@ -2001,6 +2110,51 @@ mod tests {
         assert_eq!((c[0].friend, c[0].blocked, c[0].muted, c[0].bot), (Some(true), Some(false), Some(true), false));
         assert_eq!((c[1].name.as_str(), c[1].bot), ("Shop", true));
         assert_eq!((c[1].friend, c[1].blocked), (Some(false), Some(true)));
+    }
+
+    /// A sealed message as thrift decodes it: a chunk that is valid UTF-8
+    /// (the key ids here) arrives as a string, the others as binary.
+    fn sealed_message() -> Value {
+        let mut m = tv!({"id": "1", "to": "u-me", "contentType": "NONE"});
+        m.insert(
+            "chunks",
+            Value::List(vec![
+                Value::Binary(vec![0x80; 16]),
+                Value::Binary(vec![0x81; 40]),
+                Value::Binary(vec![0xff, 0xfe, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10]),
+                Value::String("\0\0\0\x05".into()),
+                Value::String("\0\0\0\x07".into()),
+            ]),
+        );
+        m
+    }
+
+    fn chunk_bytes(v: &Value) -> Vec<Vec<u8>> {
+        v["chunks"]
+            .as_list()
+            .unwrap()
+            .iter()
+            .map(|c| c.as_bytes().unwrap().to_vec())
+            .collect()
+    }
+
+    #[test]
+    fn stored_chunks_keep_their_bytes() {
+        let m = sealed_message();
+        // What was stored before: binary as base64, UTF-8 chunks as text.
+        // Read back as plain values, the 12-byte nonce became its 16-byte
+        // base64 text, the "malformed nonce or ciphertext" line-rs refused.
+        let naive = Value::from(m.to_json());
+        assert_eq!(chunk_bytes(&naive)[2].len(), 16);
+        // Such rows (key ids as text) now read back byte for byte.
+        let legacy = raw_from_store(&m.to_json().to_string()).unwrap();
+        assert_eq!(chunk_bytes(&legacy), chunk_bytes(&m));
+        // New rows store every chunk as base64.
+        let stored = message_json(&m);
+        assert!(stored["chunks"].as_array().unwrap().iter().all(|c| c.is_string()));
+        let back = raw_from_store(&stored.to_string()).unwrap();
+        assert_eq!(chunk_bytes(&back), chunk_bytes(&m));
+        assert_eq!(chunk_bytes(&back)[2].len(), 12);
     }
 
     #[test]

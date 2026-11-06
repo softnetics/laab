@@ -263,6 +263,7 @@ pub fn message_from_json(raw: &Json, me: &str, decrypted: bool) -> Option<Messag
         reactions: parse_reactions(raw).unwrap_or_default(),
         raw: Some(serde_json::to_string_pretty(raw).unwrap_or_default()),
         metadata: meta,
+        undecrypted: !decrypted,
         ..Default::default()
     })
 }

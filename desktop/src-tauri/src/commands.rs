@@ -164,6 +164,10 @@ pub async fn open_chat(state: S<'_>, chat_id: String) -> R<()> {
     }
     tokio::spawn(async move {
         let _ = line::fetch_history(&s, &chat_id).await;
+        // Messages that could not be decrypted get another try.
+        if let Some(l) = s.line().await {
+            line::retry_undecrypted(&s, &l, Some(&chat_id)).await;
+        }
         acknowledge(&s, &chat_id).await;
         let _ = line::read_status(&s, &chat_id).await;
         crate::actions::prefetch_calendars(&s, Some(&chat_id)).await;
@@ -299,7 +303,7 @@ pub async fn send_text(
         .await
         .map_err(|e| send_failed(&s, crate::usage::Action::SentText, e))?;
     crate::usage::hit(crate::usage::Action::SentText);
-    let mut m = convert::message_from_json(&sent.raw.to_json(), &l.me, true)
+    let mut m = convert::message_from_json(&line::message_json(&sent.raw), &l.me, true)
         .unwrap_or_else(|| local_message(&s, &chat_id, &text, mentions.clone()));
     // The send response may omit what we sent.
     m.chat_id = chat_id.clone();
@@ -337,7 +341,7 @@ pub async fn send_sticker(state: S<'_>, chat_id: String, sticker: Sticker, silen
     })?;
     crate::usage::hit(crate::usage::Action::SentSticker);
     crate::stickers::remember(&s, &sticker);
-    if let Some(mut m) = convert::message_from_json(&sent.raw.to_json(), &l.me, true) {
+    if let Some(mut m) = convert::message_from_json(&line::message_json(&sent.raw), &l.me, true) {
         m.chat_id = chat_id;
         m.mine = true;
         m.content_type = "STICKER".into();
@@ -1720,6 +1724,14 @@ pub async fn accept_message_request(state: S<'_>, chat_id: String) -> R<()> {
     crate::actions::accept_message_request(&s, &chat_id)
         .await
         .map_err(|e| format!("ยอมรับข้อความไม่สำเร็จ: {e}"))
+}
+
+#[tauri::command]
+pub async fn delete_message_request(state: S<'_>, chat_id: String) -> R<()> {
+    let s = live!(state);
+    crate::actions::delete_message_request(&s, &chat_id)
+        .await
+        .map_err(|e| format!("ลบคำขอข้อความไม่สำเร็จ: {e}"))
 }
 
 #[tauri::command]

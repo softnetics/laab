@@ -2,7 +2,8 @@ import { createStore, useStore } from "@tanstack/react-store";
 import type { Forwarding } from "../components/ForwardSheet";
 import type { Message, PickerAction, PickerStart, Workspace } from "./types";
 
-export type ChatFilter = "all" | "friends" | "groups" | "official" | `folder:${string}`;
+/** `requests`: LINE's message request box, which the other lists leave out. */
+export type ChatFilter = "all" | "friends" | "groups" | "official" | "requests" | `folder:${string}`;
 export type ChatSort = "recent" | "unread";
 
 const saved = <T>(key: string, fallback: T): T => {
