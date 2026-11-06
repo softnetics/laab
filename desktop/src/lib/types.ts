@@ -202,6 +202,48 @@ export interface CalendarEvent {
   /** Whose calendar: a chat mid, or `cal:` and an id for the user's own
    *  calendar. Edits and deletes go here. */
   chatId: string;
+  /** How it repeats; `start`/`end` are then the first occurrence. */
+  recurrence?: CalendarRecurrence | null;
+  /** Occurrences changed or deleted on their own. */
+  overrides?: CalendarOverride[];
+  /** LINE `Reminder` values, see `reminderLabels`. */
+  reminders?: number[];
+  invitees?: CalendarInvitee[];
+  colorId?: number;
+  /** Set on one occurrence of a recurring event: its original start (ms),
+   *  LINE's recur_id. `id` stays the series'. */
+  recurId?: number;
+}
+
+export interface CalendarRecurrence {
+  frequency: "daily" | "weekly" | "monthly" | "yearly" | "other";
+  interval: number;
+  /** Last moment an occurrence may start, epoch ms. */
+  until: number | null;
+  /** iCalendar days: "MO"… for weekly, "2TU" / "-1FR" for monthly. */
+  byDay: string[];
+  /** Original starts (ms) of occurrences left out. */
+  exceptIds: number[];
+}
+
+export interface CalendarOverride {
+  recurId: number;
+  deleted: boolean;
+  title: string;
+  start: number;
+  end: number;
+  allDay: boolean;
+  timezone: string;
+  location: string;
+  url: string;
+  description: string;
+}
+
+export interface CalendarInvitee {
+  mid: string;
+  status: "needsAction" | "accepted" | "declined" | "";
+  me: boolean;
+  updatedAt: number;
 }
 
 /** Every calendar the user can see, for the rail's ปฏิทิน window. */
@@ -212,7 +254,7 @@ export interface AllCalendars {
 
 export type CalendarEventInput = Pick<
   CalendarEvent,
-  "title" | "start" | "end" | "allDay" | "timezone" | "location" | "url" | "description"
+  "title" | "start" | "end" | "allDay" | "timezone" | "location" | "url" | "description" | "reminders"
 >;
 
 export interface Album {

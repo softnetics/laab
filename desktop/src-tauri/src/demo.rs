@@ -492,11 +492,17 @@ pub fn save_calendar_event(
             updated_at: now,
             editable: true,
             chat_id: chat_id.to_string(),
+            reminders: input.reminders.clone().unwrap_or_default(),
+            ..Default::default()
         };
         match events.iter_mut().find(|e| Some(e.id.as_str()) == id) {
             Some(old) => {
                 *old = crate::actions::CalendarEvent {
                     creator: old.creator.clone(),
+                    recurrence: old.recurrence.clone(),
+                    overrides: old.overrides.clone(),
+                    invitees: old.invitees.clone(),
+                    reminders: input.reminders.clone().unwrap_or_else(|| old.reminders.clone()),
                     ..event
                 }
             }
@@ -507,6 +513,16 @@ pub fn save_calendar_event(
 
 pub fn delete_calendar_event(chat_id: &str, id: &str) {
     with_calendar(chat_id, |events| events.retain(|e| e.id != id));
+}
+
+pub fn respond_calendar_invitation(chat_id: &str, id: &str, accept: bool) {
+    with_calendar(chat_id, |events| {
+        for e in events.iter_mut().filter(|e| e.id == id) {
+            for i in e.invitees.iter_mut().filter(|i| i.me) {
+                i.status = if accept { "accepted" } else { "declined" };
+            }
+        }
+    });
 }
 
 /// LINE Calendar events for two of the demo's groups, around today.
@@ -534,6 +550,7 @@ fn seed_calendar(chat_id: &str) -> Vec<crate::actions::CalendarEvent> {
             updated_at: today,
             editable: true,
             chat_id: chat_id.to_string(),
+            ..Default::default()
         }
     };
     let at = |d: i64, h: i64, m: i64, mins: i64| {
@@ -562,6 +579,45 @@ fn seed_calendar(chat_id: &str) -> Vec<crate::actions::CalendarEvent> {
                 "me",
             ),
             event("ev3", "Release 2.4", whole(3, 1), true, "", "", "u_arm"),
+            {
+                // A repeating stand-up with one moved and one skipped day,
+                // and an invitation the demo user hasn't answered.
+                let (start, end) = at(-14, 10, 0, 15);
+                let week = 7 * day;
+                crate::actions::CalendarEvent {
+                    recurrence: Some(crate::actions::CalendarRecurrence {
+                        frequency: "weekly",
+                        interval: 1,
+                        until: None,
+                        by_day: vec!["MO".into(), "WE".into(), "FR".into()],
+                        except_ids: vec![start + 2 * week],
+                    }),
+                    overrides: vec![crate::actions::CalendarOverride {
+                        recur_id: start + week,
+                        title: "Stand-up (ย้ายเป็นบ่าย)".into(),
+                        start: start + week + 4 * hour,
+                        end: end + week + 4 * hour,
+                        timezone: "Asia/Bangkok".into(),
+                        ..Default::default()
+                    }],
+                    reminders: vec![1],
+                    invitees: vec![
+                        crate::actions::CalendarInvitee {
+                            mid: "me".into(),
+                            status: "needsAction",
+                            me: true,
+                            updated_at: 0,
+                        },
+                        crate::actions::CalendarInvitee {
+                            mid: "u_arm".into(),
+                            status: "accepted",
+                            me: false,
+                            updated_at: 0,
+                        },
+                    ],
+                    ..event("ev7", "Stand-up", (start, end), false, "Google Meet", "", "u_toey")
+                }
+            },
             event(
                 "ev4",
                 "Retro + ข้าวเย็น",

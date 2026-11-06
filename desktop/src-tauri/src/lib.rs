@@ -311,6 +311,7 @@ pub fn run() {
             commands::create_calendar_event,
             commands::update_calendar_event,
             commands::delete_calendar_event,
+            commands::respond_calendar_invitation,
             commands::album_photos,
             commands::create_album,
             commands::rename_album,

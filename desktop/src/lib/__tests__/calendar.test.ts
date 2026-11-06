@@ -2,6 +2,12 @@ import { describe, expect, it } from "vitest";
 import {
   agendaTimes,
   durationLabel,
+  expand,
+  occurrenceAt,
+  occurrenceKey,
+  occurrenceStarts,
+  recurrenceLabel,
+  reminderLabel,
   zonedMs,
   parseTime,
   eventDays,
@@ -78,10 +84,12 @@ describe("calendar", () => {
     expect(input.timezone).toBe("Asia/Bangkok");
     const back = formOf(ev({ ...input }));
     expect([back.startDate, back.endDate]).toEqual(["2026-11-04", "2026-11-05"]);
-    // An edit keeps the event's zone.
-    const tokyo = inputOf({ ...f, allDay: false }, "Asia/Tokyo");
+    // An edit keeps the event's zone and sends the chosen reminders.
+    const tokyo = inputOf({ ...f, allDay: false }, "Asia/Tokyo", [1, 4]);
     if ("error" in tokyo) throw new Error(tokyo.error);
     expect(tokyo.timezone).toBe("Asia/Tokyo");
+    expect(tokyo.reminders).toEqual([1, 4]);
+    expect("reminders" in (inputOf(f) as object)).toBe(false);
   });
 
   it("turns a wall time in a zone into an instant", () => {
@@ -144,5 +152,96 @@ describe("linkDay", () => {
     expect(linkDay("https://line.me/R/calendar/list?startTime=1793638800&timeZone=Asia%2FBangkok&allDay=true")).toBe("2026-11-03");
     expect(linkDay("https://line.me/R/calendar")).toBeNull();
     expect(linkDay("https://line.me/R/calendar/list?startTime=x")).toBeNull();
+  });
+
+  describe("repeats", () => {
+    const bkk = (d: number, h = 10, m = 0, month = 10) => Date.UTC(2026, month, d, h - 7, m);
+    const weekly = ev({
+      id: "s",
+      start: bkk(2, 10),
+      end: bkk(2, 10, 30),
+      recurrence: { frequency: "weekly", interval: 1, until: null, byDay: ["MO", "WE", "FR"], exceptIds: [] },
+    });
+
+    it("expands a weekly event on its days", () => {
+      // Mon 2 Nov 2026 onward: Mon, Wed, Fri.
+      const starts = occurrenceStarts(weekly, bkk(1, 0), bkk(10, 0));
+      expect(starts).toEqual([bkk(2), bkk(4), bkk(6), bkk(9)]);
+    });
+
+    it("leaves out deleted occurrences and shows changed ones as changed", () => {
+      const e = {
+        ...weekly,
+        recurrence: { ...weekly.recurrence!, exceptIds: [bkk(4), bkk(6)] },
+        overrides: [
+          { recurId: bkk(6), deleted: false, title: "Moved", start: bkk(7, 14), end: bkk(7, 15), allDay: false, timezone: "", location: "", url: "", description: "" },
+          { recurId: bkk(9), deleted: true, title: "", start: 0, end: 0, allDay: false, timezone: "", location: "", url: "", description: "" },
+        ],
+      };
+      const list = expand([e], bkk(1, 0), bkk(10, 0));
+      expect(list.map((x) => [x.title, x.start, x.recurId])).toEqual([
+        ["t", bkk(2), bkk(2)],
+        ["Moved", bkk(7, 14), bkk(6)],
+      ]);
+      expect(new Set(list.map(occurrenceKey)).size).toBe(2);
+      expect(occurrenceAt(e, bkk(6)).title).toBe("Moved");
+      expect(occurrenceAt(e, bkk(2)).end - bkk(2)).toBe(30 * 60_000);
+    });
+
+    it("steps by the interval and stops at until", () => {
+      const daily = ev({
+        start: bkk(1),
+        end: bkk(1, 11),
+        recurrence: { frequency: "daily", interval: 3, until: bkk(10), byDay: [], exceptIds: [] },
+      });
+      expect(occurrenceStarts(daily, 0, bkk(30))).toEqual([bkk(1), bkk(4), bkk(7), bkk(10)]);
+    });
+
+    it("finds the nth and last weekday of a month, and skips short months", () => {
+      const lastFriday = ev({
+        start: Date.UTC(2026, 0, 30, 3),
+        end: Date.UTC(2026, 0, 30, 4),
+        recurrence: { frequency: "monthly", interval: 1, until: null, byDay: ["-1FR"], exceptIds: [] },
+      });
+      const days = occurrenceStarts(lastFriday, 0, Date.UTC(2026, 4, 1)).map((t) => new Date(t).getUTCDate());
+      expect(days).toEqual([30, 27, 27, 24]);
+      const second = { ...lastFriday, recurrence: { ...lastFriday.recurrence!, byDay: ["2TU"] } };
+      expect(occurrenceStarts(second, 0, Date.UTC(2026, 2, 1)).map((t) => new Date(t).getUTCDate())).toEqual([10]);
+      const the31st = ev({
+        start: Date.UTC(2026, 0, 31, 3),
+        end: Date.UTC(2026, 0, 31, 4),
+        recurrence: { frequency: "monthly", interval: 1, until: null, byDay: [], exceptIds: [] },
+      });
+      expect(occurrenceStarts(the31st, 0, Date.UTC(2026, 5, 1)).map((t) => new Date(t).getUTCMonth())).toEqual([0, 2, 4]);
+    });
+
+    it("keeps all-day repeats on their day in the event's zone", () => {
+      const birthday = ev({
+        allDay: true,
+        start: Date.UTC(2025, 1, 28, 17),
+        end: Date.UTC(2025, 2, 1, 17),
+        recurrence: { frequency: "yearly", interval: 1, until: null, byDay: [], exceptIds: [] },
+      });
+      const list = expand([birthday], Date.UTC(2027, 0, 1), Date.UTC(2027, 11, 31));
+      expect(list).toHaveLength(1);
+      expect(eventDays(list[0])).toEqual(["2027-03-01"]);
+    });
+
+    it("jumps ahead to a window far from the first occurrence", () => {
+      const starts = occurrenceStarts(weekly, bkk(1, 0, 0, 10) + 3 * 365 * 86_400_000, bkk(1, 0, 0, 10) + (3 * 365 + 7) * 86_400_000);
+      expect(starts.length).toBe(3);
+    });
+
+    it("describes the rule and the reminders in Thai", () => {
+      expect(recurrenceLabel(weekly)).toBe("ทุกสัปดาห์ วันจันทร์ พุธ ศุกร์");
+      expect(recurrenceLabel(ev({ start: bkk(15), recurrence: { frequency: "monthly", interval: 2, until: bkk(1, 0, 0, 11), byDay: [], exceptIds: [] } }), 2026)).toBe(
+        "ทุก 2 เดือน วันที่ 15 จนถึง อ. 1 ธ.ค.",
+      );
+      expect(recurrenceLabel(ev({ recurrence: { frequency: "monthly", interval: 1, until: null, byDay: ["-1FR"], exceptIds: [] } }))).toBe(
+        "ทุกเดือน วันศุกร์สุดท้าย",
+      );
+      expect(recurrenceLabel(ev({}))).toBe("");
+      expect(reminderLabel(2)).toBe("12.00 น. วันก่อนหน้า");
+    });
   });
 });

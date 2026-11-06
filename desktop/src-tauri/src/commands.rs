@@ -1321,6 +1321,26 @@ pub async fn update_calendar_event(
         .map_err(err)
 }
 
+/// Accept or decline an invitation to a calendar event.
+#[tauri::command]
+pub async fn respond_calendar_invitation(
+    state: S<'_>,
+    chat_id: String,
+    event_id: String,
+    recur_id: Option<i64>,
+    accept: bool,
+    updated_at: i64,
+) -> R<()> {
+    if state.demo {
+        crate::demo::respond_calendar_invitation(&chat_id, &event_id, accept);
+        return Ok(());
+    }
+    let s = state.inner().clone();
+    crate::actions::respond_calendar_invitation(&s, &chat_id, &event_id, recur_id, accept, updated_at)
+        .await
+        .map_err(err)
+}
+
 #[tauri::command]
 pub async fn delete_calendar_event(
     state: S<'_>,

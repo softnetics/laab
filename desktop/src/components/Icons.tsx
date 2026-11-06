@@ -322,3 +322,15 @@ export const CalendarIcon = (p: P) => (
     <path d="M8 3.5v4M16 3.5v4M4 10.5h16" />
   </svg>
 );
+export const BellIcon = (p: P) => (
+  <svg {...outline(p)}>
+    <path d="M6 16.5V10.5a6 6 0 0 1 12 0v6l1.5 2h-15L6 16.5Z" />
+    <path d="M10 21h4" />
+  </svg>
+);
+export const RepeatIcon = (p: P) => (
+  <svg {...outline(p)}>
+    <path d="M4 11V9.5A3.5 3.5 0 0 1 7.5 6H19m0 0-3-3m3 3-3 3" />
+    <path d="M20 13v1.5a3.5 3.5 0 0 1-3.5 3.5H5m0 0 3 3m-3-3 3-3" />
+  </svg>
+);

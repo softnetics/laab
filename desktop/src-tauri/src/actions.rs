@@ -12,7 +12,9 @@ use std::sync::Arc;
 
 use anyhow::{Result, anyhow, bail};
 use line_rs::client::TalkMessage;
-use line_rs::client::calendar::{self as cal, EventInput, EventTarget, new_event_id};
+use line_rs::client::calendar::{
+    self as cal, EventInput, EventTarget, Frequency, InvitationStatus, Reminder, new_event_id,
+};
 use line_rs::link::LineLink;
 use line_rs::rest::translate::TranslateText;
 use line_rs::service::moa::{DownloadPhotoOptions, GetAlbumsOptions, GetPhotosOptions};
@@ -698,15 +700,16 @@ pub async fn delete_note(state: &Arc<AppState>, chat_id: &str, post_id: &str) ->
 // -- calendar ---------------------------------------------------------------
 
 /// An event on a chat's LINE Calendar. Times are epoch milliseconds.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Default, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CalendarEvent {
     pub id: String,
     pub title: String,
+    /// For a recurring event, its first occurrence.
     pub start: i64,
     pub end: i64,
     pub all_day: bool,
-    /// IANA zone the event was made in; all-day dates read in it.
+    /// IANA zone the event was made in; all-day dates and repeats read in it.
     pub timezone: String,
     pub location: String,
     pub url: String,
@@ -719,6 +722,54 @@ pub struct CalendarEvent {
     /// Whose calendar it is: a chat mid, or `cal:` and a calendar id for a
     /// calendar that isn't a chat's (the user's own). Edits go back there.
     pub chat_id: String,
+    /// How it repeats; None for a one-off.
+    pub recurrence: Option<CalendarRecurrence>,
+    /// Occurrences changed or deleted on their own.
+    pub overrides: Vec<CalendarOverride>,
+    /// LINE's `Reminder` values (1 one hour before … 6 noon two days before).
+    pub reminders: Vec<i32>,
+    pub invitees: Vec<CalendarInvitee>,
+    pub color_id: i32,
+}
+
+/// A recurrence rule. `until` and `except_ids` are epoch milliseconds.
+#[derive(Debug, Clone, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CalendarRecurrence {
+    /// `daily`, `weekly`, `monthly`, `yearly`, or `other` (not shown as repeating).
+    pub frequency: &'static str,
+    pub interval: u32,
+    pub until: Option<i64>,
+    pub by_day: Vec<String>,
+    pub except_ids: Vec<i64>,
+}
+
+/// One occurrence of a recurring event that was changed on its own.
+#[derive(Debug, Clone, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CalendarOverride {
+    /// The original start of the occurrence it replaces, epoch ms.
+    pub recur_id: i64,
+    pub deleted: bool,
+    pub title: String,
+    pub start: i64,
+    pub end: i64,
+    pub all_day: bool,
+    pub timezone: String,
+    pub location: String,
+    pub url: String,
+    pub description: String,
+}
+
+#[derive(Debug, Clone, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CalendarInvitee {
+    pub mid: String,
+    /// `needsAction`, `accepted`, `declined` or empty.
+    pub status: &'static str,
+    /// The invitee is the logged-in user.
+    pub me: bool,
+    pub updated_at: i64,
 }
 
 /// One of the calendars in the all-calendars view.
@@ -749,7 +800,45 @@ fn calendar_target(chat_id: &str) -> EventTarget<'_> {
     }
 }
 
-fn calendar_event(e: line_rs::client::calendar::Event, chat_id: &str) -> CalendarEvent {
+fn status_name(s: InvitationStatus) -> &'static str {
+    match s {
+        InvitationStatus::NeedsAction => "needsAction",
+        InvitationStatus::Accepted => "accepted",
+        InvitationStatus::Declined => "declined",
+        _ => "",
+    }
+}
+
+fn calendar_event(e: cal::Event, chat_id: &str, me: &str) -> CalendarEvent {
+    let recurrence = e.recurrence.map(|r| CalendarRecurrence {
+        frequency: match r.frequency {
+            Frequency::Daily => "daily",
+            Frequency::Weekly => "weekly",
+            Frequency::Monthly => "monthly",
+            Frequency::Yearly => "yearly",
+            _ => "other",
+        },
+        interval: r.interval,
+        until: r.until.map(|u| u * MS_PER_S),
+        by_day: r.by_day,
+        except_ids: r.except_ids.iter().map(|x| x * MS_PER_S).collect(),
+    });
+    let overrides = e
+        .recurrence_child_events
+        .into_iter()
+        .map(|c| CalendarOverride {
+            recur_id: c.recur_id * MS_PER_S,
+            deleted: c.is_deleted,
+            title: c.title,
+            start: c.start_time * MS_PER_S,
+            end: c.end_time * MS_PER_S,
+            all_day: c.is_all_day,
+            timezone: c.timezone,
+            location: c.location,
+            url: c.url,
+            description: c.description,
+        })
+        .collect();
     CalendarEvent {
         id: e.id,
         title: e.title,
@@ -764,6 +853,20 @@ fn calendar_event(e: line_rs::client::calendar::Event, chat_id: &str) -> Calenda
         updated_at: e.client_updated_at,
         editable: e.is_editable_in_line_calendar,
         chat_id: chat_id.to_string(),
+        recurrence,
+        overrides,
+        reminders: e.reminders.iter().map(|r| r.raw()).collect(),
+        invitees: e
+            .invitees
+            .into_iter()
+            .map(|i| CalendarInvitee {
+                me: !me.is_empty() && i.invitee_id == me,
+                mid: i.invitee_id,
+                status: status_name(i.status),
+                updated_at: i.client_updated_at,
+            })
+            .collect(),
+        color_id: e.color_id,
     }
 }
 
@@ -779,13 +882,16 @@ pub struct CalendarEventInput {
     pub location: String,
     pub url: String,
     pub description: String,
+    /// LINE `Reminder` values; None leaves an edited event's as they were.
+    #[serde(default)]
+    pub reminders: Option<Vec<i32>>,
 }
 
 impl CalendarEventInput {
     /// The event to send: the form's fields over `base`, the event as LINE
     /// last sent it (for an edit), so what the form doesn't show (repeats,
-    /// reminders, invitees, colour, stamp, the message it came from) goes
-    /// back as it was.
+    /// invitees, colour, stamp, the message it came from) goes back as it
+    /// was.
     fn to_line(&self, base: Option<&cal::Event>) -> EventInput {
         let mut out = base.map(EventInput::from_event).unwrap_or_default();
         out.title = self.title.trim().to_string();
@@ -796,6 +902,9 @@ impl CalendarEventInput {
         out.location = self.location.trim().to_string();
         out.url = self.url.trim().to_string();
         out.description = self.description.trim_end().to_string();
+        if let Some(r) = &self.reminders {
+            out.reminders = r.iter().map(|v| Reminder::from_raw(*v)).collect();
+        }
         out
     }
 }
@@ -811,7 +920,7 @@ pub async fn calendar_events(state: &Arc<AppState>, chat_id: &str) -> Result<Vec
     let mut out: Vec<CalendarEvent> = events
         .into_iter()
         .filter(|e| !e.is_deleted)
-        .map(|e| calendar_event(e, chat_id))
+        .map(|e| calendar_event(e, chat_id, &l.me))
         .collect();
     out.sort_by_key(|e| (e.start, e.end));
     remember_calendar(
@@ -1003,6 +1112,33 @@ pub async fn update_calendar_event(
             previous,
             Some(notify),
         )
+        .await?;
+    Ok(())
+}
+
+/// Accept or decline an invitation to an event (or to one occurrence of a
+/// recurring one, `recur_id` in epoch ms). Only chat calendars have
+/// invitations.
+pub async fn respond_calendar_invitation(
+    state: &Arc<AppState>,
+    chat_id: &str,
+    event_id: &str,
+    recur_id: Option<i64>,
+    accept: bool,
+    updated_at: i64,
+) -> Result<()> {
+    if chat_id.starts_with("cal:") {
+        bail!("ปฏิทินนี้ไม่มีการเชิญ");
+    }
+    let l = line(state).await?;
+    let status = if accept {
+        InvitationStatus::Accepted
+    } else {
+        InvitationStatus::Declined
+    };
+    l.client
+        .base
+        .respond_to_invitation(chat_id, event_id, recur_id.map(|r| r / MS_PER_S), status, updated_at)
         .await?;
     Ok(())
 }
@@ -1256,7 +1392,7 @@ mod tests {
             end_time: 1_793_707_200,
             ..Default::default()
         };
-        let e = calendar_event(wire, "c1");
+        let e = calendar_event(wire, "c1", "u-me");
         assert_eq!((e.start, e.end), (1_793_703_600_000, 1_793_707_200_000));
 
         let input = CalendarEventInput {
@@ -1268,6 +1404,7 @@ mod tests {
             location: String::new(),
             url: String::new(),
             description: String::new(),
+            reminders: None,
         };
         let out = input.to_line(None);
         assert_eq!((out.start_time, out.end_time), (1_793_703_600, 1_793_707_200));
@@ -1283,12 +1420,12 @@ mod tests {
             stamp_id: "s".into(),
             message_id: Some("m".into()),
             recurrence: Some(cal::Recurrence {
-                frequency: cal::Frequency::Weekly,
+                frequency: Frequency::Weekly,
                 interval: 1,
                 by_day: vec!["MO".into()],
                 ..Default::default()
             }),
-            reminders: vec![cal::Reminder::OneDayBefore],
+            reminders: vec![Reminder::OneDayBefore],
             invitees: vec![cal::Invitee {
                 invitee_id: "u2".into(),
                 ..Default::default()
@@ -1304,6 +1441,7 @@ mod tests {
             location: String::new(),
             url: String::new(),
             description: String::new(),
+            reminders: None,
         };
         let out = input.to_line(Some(&fetched));
         assert_eq!(out.title, "new");
@@ -1311,9 +1449,16 @@ mod tests {
         assert_eq!(out.stamp_id, "s");
         assert_eq!(out.message_id.as_deref(), Some("m"));
         assert_eq!(out.recurrence, fetched.recurrence);
-        assert_eq!(out.reminders, [cal::Reminder::OneDayBefore]);
+        assert_eq!(out.reminders, [Reminder::OneDayBefore]);
         assert_eq!(out.invitees, ["u2"]);
         assert_eq!(out.original_invitees, ["u2"]);
+
+        let out = CalendarEventInput {
+            reminders: Some(vec![1, 3]),
+            ..input
+        }
+        .to_line(Some(&fetched));
+        assert_eq!(out.reminders, [Reminder::OneHourBefore, Reminder::TwoHoursBefore]);
     }
 
     #[test]
@@ -1330,6 +1475,49 @@ mod tests {
             ["a"]
         );
         assert_eq!(ids(shown_calendars(vec![c("a", false, false), c("b", false, false)])), ["a", "b"]);
+    }
+
+    #[test]
+    fn calendar_events_carry_repeats_overrides_and_invitees_in_ms() {
+        let wire = cal::Event {
+            recurrence: Some(cal::Recurrence {
+                frequency: Frequency::Monthly,
+                interval: 2,
+                until: Some(1_800_000_000),
+                by_day: vec!["-1FR".into()],
+                except_ids: vec![1_700_000_000],
+            }),
+            recurrence_child_events: vec![cal::ChildEvent {
+                recur_id: 1_700_100_000,
+                start_time: 1_700_200_000,
+                is_deleted: true,
+                ..Default::default()
+            }],
+            invitees: vec![
+                cal::Invitee {
+                    invitee_id: "u-me".into(),
+                    status: InvitationStatus::NeedsAction,
+                    client_updated_at: 7,
+                },
+                cal::Invitee {
+                    invitee_id: "u2".into(),
+                    status: InvitationStatus::Declined,
+                    ..Default::default()
+                },
+            ],
+            reminders: vec![Reminder::NoonTheDayBefore],
+            ..Default::default()
+        };
+        let e = calendar_event(wire, "c1", "u-me");
+        let r = e.recurrence.unwrap();
+        assert_eq!((r.frequency, r.interval), ("monthly", 2));
+        assert_eq!(r.until, Some(1_800_000_000_000));
+        assert_eq!(r.except_ids, [1_700_000_000_000]);
+        assert_eq!(e.overrides[0].recur_id, 1_700_100_000_000);
+        assert!(e.overrides[0].deleted);
+        assert_eq!((e.invitees[0].status, e.invitees[0].me), ("needsAction", true));
+        assert_eq!((e.invitees[1].status, e.invitees[1].me), ("declined", false));
+        assert_eq!(e.reminders, [2]);
     }
 
     #[test]

@@ -138,6 +138,8 @@ export const api = {
     invoke<void>("create_calendar_event", { chatId, event, notify }),
   updateCalendarEvent: (chatId: string, eventId: string, updatedAt: number, event: CalendarEventInput, notify: boolean) =>
     invoke<void>("update_calendar_event", { chatId, eventId, updatedAt, event, notify }),
+  respondCalendarInvitation: (chatId: string, eventId: string, recurId: number | null, accept: boolean, updatedAt: number) =>
+    invoke<void>("respond_calendar_invitation", { chatId, eventId, recurId, accept, updatedAt }),
   deleteCalendarEvent: (chatId: string, eventId: string, updatedAt: number, notify: boolean) =>
     invoke<void>("delete_calendar_event", { chatId, eventId, updatedAt, notify }),
   listAlbums: (chatId: string) => invoke<Album[]>("list_albums", { chatId }),
