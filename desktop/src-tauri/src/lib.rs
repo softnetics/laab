@@ -279,6 +279,7 @@ pub fn run() {
             commands::report_preview,
             commands::send_report,
             commands::report_js_error,
+            commands::log_error,
             commands::open_path,
             commands::reveal_path,
             commands::cache_size,

@@ -62,7 +62,7 @@ impl Login {
 pub enum Failure {
     Login(Login),
     /// LINE ended the session: the token expired or another device took over.
-    SessionEnded { kicked: bool },
+    SessionEnded { kicked: Option<Kick> },
     Sync,
     Send(Action),
     /// The keychain key didn't open the database, so it was set aside.
@@ -83,9 +83,58 @@ impl Failure {
     fn detail(self) -> Option<&'static str> {
         match self {
             Failure::Login(l) => Some(l.name()),
-            Failure::SessionEnded { kicked } => Some(if kicked { "kicked_out" } else { "expired" }),
+            Failure::SessionEnded { kicked } => Some(if kicked.is_some() { "kicked_out" } else { "expired" }),
             Failure::Send(a) => Some(a.name()),
             Failure::Sync | Failure::DatabaseUnreadable => None,
+        }
+    }
+}
+
+/// Why LINE ended the session, as its logout reason says. Our own names, so
+/// nothing LINE sends goes out as is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Kick {
+    NotAuthorized,
+    OtherDevice,
+    Expired,
+    LoggedOut,
+    Revoked,
+    DeviceLost,
+    IdentityChanged,
+    ClientLoggedOut,
+    AccountDeleted,
+    Other,
+}
+
+impl Kick {
+    pub fn of(reason: &line_rs::base::LogoutReason) -> Kick {
+        use line_rs::base::LogoutReason as R;
+        match reason {
+            R::NotAuthorizedDevice => Kick::NotAuthorized,
+            R::AuthenticationDivestedByOtherDevice => Kick::OtherDevice,
+            R::Expired => Kick::Expired,
+            R::LogOut => Kick::LoggedOut,
+            R::Revoke => Kick::Revoked,
+            R::DeviceLose => Kick::DeviceLost,
+            R::IdentifyModified => Kick::IdentityChanged,
+            R::V3TokenClientLoggedOut => Kick::ClientLoggedOut,
+            R::DeletedAccount => Kick::AccountDeleted,
+            R::Other(_) => Kick::Other,
+        }
+    }
+
+    fn name(self) -> &'static str {
+        match self {
+            Kick::NotAuthorized => "not_authorized",
+            Kick::OtherDevice => "other_device",
+            Kick::Expired => "expired",
+            Kick::LoggedOut => "logged_out",
+            Kick::Revoked => "revoked",
+            Kick::DeviceLost => "device_lost",
+            Kick::IdentityChanged => "identity_changed",
+            Kick::ClientLoggedOut => "client_logged_out",
+            Kick::AccountDeleted => "account_deleted",
+            Kick::Other => "other",
         }
     }
 }
@@ -217,11 +266,17 @@ impl Event {
                 }
                 p
             }
-            Event::Failed(f, cause) => json!({
-                "detail": f.detail(),
-                "cause": cause.name(),
-                "breadcrumbs": crate::usage::crumbs(),
-            }),
+            Event::Failed(f, cause) => {
+                let mut p = json!({
+                    "detail": f.detail(),
+                    "cause": cause.name(),
+                    "breadcrumbs": crate::usage::crumbs(),
+                });
+                if let Failure::SessionEnded { kicked: Some(k) } = f {
+                    p["reason"] = json!(k.name());
+                }
+                p
+            }
             Event::FeatureWanted(f) => json!({ "feature": f.name() }),
             Event::Exception(e) => json!({
                 "$exception_list": e.list(),
@@ -471,6 +526,7 @@ mod tests {
             },
             Event::Failed(Failure::Login(Login::Saved), Cause::Network),
             Event::Failed(Failure::Send(Action::SentText), Cause::Other),
+            Event::Failed(Failure::SessionEnded { kicked: Some(Kick::OtherDevice) }, Cause::Other),
             Event::Exception(exception),
             Event::FeatureWanted(Feature::Calendar),
         ];
@@ -495,6 +551,7 @@ mod tests {
                         "chats",
                         "detail",
                         "cause",
+                        "reason",
                         "breadcrumbs",
                         "$exception_list",
                         "crashed_version",
