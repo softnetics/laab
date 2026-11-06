@@ -2,6 +2,7 @@ import { invoke as tauriInvoke, type InvokeArgs } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { QueryClient, queryOptions, useQuery } from "@tanstack/react-query";
 import { useEffect } from "react";
+import { translateTarget } from "./translate";
 import { setUi } from "./ui";
 import type { ViewerPayload } from "./viewer";
 import type {
@@ -117,7 +118,7 @@ export const api = {
   unsend: (messageId: string) => invoke<void>("unsend", { messageId }),
   editMessage: (chatId: string, messageId: string, text: string, mentions: MentionSpan[] = []) =>
     invoke<void>("edit_message", { chatId, messageId, text, mentions }),
-  translate: (text: string, target = "th") => invoke<string>("translate", { text, target }),
+  translate: (text: string, target = translateTarget()) => invoke<string>("translate", { text, target }),
   saveToKeep: (chatId: string, messageId: string) => invoke<void>("save_to_keep", { chatId, messageId }),
   hideChat: (chatId: string) => invoke<void>("hide_chat", { chatId }),
   deleteHistory: (chatId: string) => invoke<void>("delete_history", { chatId }),

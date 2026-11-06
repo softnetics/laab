@@ -8,6 +8,7 @@ import { performFlexAction } from "../lib/flexActions";
 import { callBubbleLabel, isBlank, noticeFor, readCall } from "../lib/notices";
 import { nextReaction } from "../lib/reactions";
 import { clock } from "../lib/time";
+import { setTranslateTarget, translateLanguages, translateTarget } from "../lib/translate";
 import type { MentionSpan, Message, ReactionName } from "../lib/types";
 import { notice, setUi, ui, useUi } from "../lib/ui";
 import { openUrl } from "../lib/open";
@@ -645,7 +646,28 @@ export const MessageRow = memo(function MessageRow({
       </Ctx>
       {translation && (
         <div className={`selectable mt-1 max-w-[420px] rounded-xl bg-field px-3 py-1.5 text-[12.5px] ${m.mine ? "ml-auto" : ""}`}>
-          <div className="mb-0.5 text-[11px] text-secondary">คำแปล</div>
+          <div className="mb-0.5 flex items-center gap-1 text-[11px] text-secondary">
+            <span>คำแปล</span>
+            <select
+              aria-label="แปลเป็นภาษา"
+              defaultValue={translateTarget()}
+              onChange={(e) => {
+                const target = e.target.value;
+                setTranslateTarget(target);
+                api
+                  .translate(m.text, target)
+                  .then((t) => setUi({ translations: { ...ui.state.translations, [m.id]: t } }))
+                  .catch((err) => notice(errorText(err)));
+              }}
+              className="rounded bg-transparent text-[11px] text-secondary outline-none hover:text-primary"
+            >
+              {translateLanguages.map((l) => (
+                <option key={l.code} value={l.code}>
+                  {l.label}
+                </option>
+              ))}
+            </select>
+          </div>
           {translation}
         </div>
       )}
