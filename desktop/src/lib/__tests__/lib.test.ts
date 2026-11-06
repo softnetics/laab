@@ -3,7 +3,7 @@ import { compareIds, later, placement, readersOf } from "../reads";
 import { backspaceMention, composingQuery, fromSpans, insertMention, matching, present, targets, ALL_MEMBER } from "../mentions";
 import { callBubbleLabel, chatEventText, noticeFor, readCall, readChatEvent, isBlank } from "../notices";
 import { buildRows } from "../timeline";
-import { isAnimated } from "../media";
+import { isAnimated, sticons } from "../media";
 import { findHits, ranges } from "../inChatSearch";
 import { linkify, liffId, previewUrl } from "../links";
 import { adjacentChat, filterChats, folderName, groupRows, listPreview } from "../chatList";
@@ -189,6 +189,30 @@ describe("in-chat search", () => {
       [0, 3],
       [8, 11],
     ]);
+  });
+});
+
+describe("sticons", () => {
+  it("reads REPLACE resources in order and drops bad ones", () => {
+    const replace = JSON.stringify({
+      sticon: {
+        resources: [
+          { S: 6, E: 12, productId: "5ac1bfd5040ab15980c9b435", sticonId: "002", version: 3, resourceType: "ANIMATION" },
+          { S: 0, E: 5, productId: "5ac1bfd5040ab15980c9b435", sticonId: "001", version: 1, resourceType: "STATIC" },
+          { S: 4, E: 7, productId: "p", sticonId: "overlaps" },
+          { S: 10, E: 99, productId: "p", sticonId: "past-the-end" },
+          { S: 0, E: 1, productId: "../x", sticonId: "1" },
+        ],
+      },
+    });
+    const got = sticons({ REPLACE: replace }, 12);
+    expect(got.map((s) => [s.start, s.end, s.sticonId, s.animated])).toEqual([
+      [0, 5, "001", false],
+      [6, 12, "002", true],
+    ]);
+    expect(got[1].version).toBe(3);
+    expect(sticons({}, 5)).toEqual([]);
+    expect(sticons({ REPLACE: "not json" }, 5)).toEqual([]);
   });
 });
 

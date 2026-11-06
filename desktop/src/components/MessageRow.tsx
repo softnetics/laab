@@ -7,7 +7,7 @@ import { api, errorText, mediaUrl, q, queryClient } from "../lib/api";
 import { performFlexAction } from "../lib/flexActions";
 import { callBubbleLabel, isBlank, noticeFor, readCall } from "../lib/notices";
 import { nextReaction } from "../lib/reactions";
-import { isAnimated } from "../lib/media";
+import { isAnimated, sticons } from "../lib/media";
 import { clock } from "../lib/time";
 import { setTranslateTarget, translateLanguages, translateTarget } from "../lib/translate";
 import type { MentionSpan, Message, ReactionName } from "../lib/types";
@@ -447,6 +447,7 @@ function Content({
       <RichText
         text={m.text || (m.contentType !== "NONE" ? m.contentType.toLowerCase() : "")}
         mentions={m.mentions}
+        sticons={m.contentType === "NONE" ? sticons(m.metadata, m.text.length) : undefined}
         mine={m.mine}
         highlight={highlight}
         current={current}

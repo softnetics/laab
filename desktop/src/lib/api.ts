@@ -293,6 +293,9 @@ export const mediaUrl = {
   message: (chatId: string, id: string, preview = true) =>
     `${MEDIA}/message/${encodeURIComponent(chatId)}/${encodeURIComponent(id)}${preview ? "?preview=1" : ""}`,
   local: (path: string) => `${MEDIA}/local?path=${encodeURIComponent(path)}`,
+  /** A LINE emoji (sticon), with `anim` its animation. */
+  sticon: (productId: string, sticonId: string, version: number, anim = false) =>
+    `${MEDIA}/sticon/${encodeURIComponent(productId)}/${encodeURIComponent(sticonId)}?v=${version}${anim ? "&anim=1" : ""}`,
   sticker: (id: string, anim = true) => `${MEDIA}/sticker/${encodeURIComponent(id)}${anim ? "?anim=1" : ""}`,
   pack: (id: string) => `${MEDIA}/pack/${encodeURIComponent(id)}`,
   /** A profile cover photo (OBS `myhome/c`). */

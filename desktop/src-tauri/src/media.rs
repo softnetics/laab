@@ -8,6 +8,7 @@
 //!   /message/<chatId>/<messageId>?preview=1
 //!   /sticker/<stickerId>?anim=1
 //!   /pack/<packageId>
+//!   /sticon/<productId>/<sticonId>?v=<version>&anim=1
 //!   /album/<chatId>/<albumId>/<oid>?video=1
 //!   /cover/<service/namespace/oid, as one segment>
 //!   /note/<service>/<namespace>/<oid>
@@ -197,6 +198,10 @@ pub async fn handle(state: Arc<AppState>, req: Request<Vec<u8>>) -> Response<Vec
         }
         ["sticker", id] => sticker(&state, id, query(&req, "anim").is_some()).await,
         ["pack", id] => pack_icon(&state, id).await,
+        ["sticon", product, id] => {
+            let version = query(&req, "v").and_then(|v| v.parse().ok()).unwrap_or(1);
+            sticon(&state, product, id, version, query(&req, "anim").is_some()).await
+        }
         ["album", chat, album, oid] => {
             let video = query(&req, "video").is_some();
             crate::actions::album_photo_file(&state, chat, album, oid, video).await
@@ -541,6 +546,40 @@ async fn sticker(state: &AppState, id: &str, anim: bool) -> Result<PathBuf> {
     Err(anyhow!("sticker unavailable"))
 }
 
+/// Where a LINE emoji's picture is on the sticker CDN: LINE for Android's
+/// `sticonshop/v1/<product>/sticon/android/<id>[_animation].png?v=<version>`
+/// (`ev5/m.java`), then the order line-rs and older clients use (which of
+/// the two the CDN serves is unverified).
+fn sticon_urls(product: &str, id: &str, version: u64, anim: bool) -> [String; 2] {
+    let file = if anim { format!("{id}_animation.png") } else { format!("{id}.png") };
+    [
+        format!("https://stickershop.line-scdn.net/sticonshop/v1/{product}/sticon/android/{file}?v={version}"),
+        format!("https://stickershop.line-scdn.net/sticonshop/v1/sticon/{product}/android/{file}"),
+    ]
+}
+
+/// A LINE emoji's picture; public like stickers, so it stays plain.
+async fn sticon(state: &AppState, product: &str, id: &str, version: u64, anim: bool) -> Result<PathBuf> {
+    let (product, id) = (safe_name(product), safe_name(id));
+    let suffix = if anim { ".anim" } else { "" };
+    let path = state
+        .paths
+        .stickers()
+        .join(format!("sticon-{product}-{id}-{version}{suffix}.png"));
+    if path.exists() {
+        return Ok(path);
+    }
+    if state.demo {
+        return Err(anyhow!("demo"));
+    }
+    for url in sticon_urls(&product, &id, version, anim) {
+        if let Ok(data) = fetch(&url).await {
+            return save_plain(&path, &data);
+        }
+    }
+    Err(anyhow!("sticon unavailable"))
+}
+
 async fn pack_icon(state: &AppState, id: &str) -> Result<PathBuf> {
     let path = state
         .paths
@@ -678,6 +717,17 @@ mod tests {
             url_query("p=%2Fa&x=1"),
             vec![("p".into(), "/a".into()), ("x".into(), "1".into())]
         );
+    }
+
+    #[test]
+    fn sticon_pictures_follow_the_apps_path_first() {
+        let [app, old] = sticon_urls("5ac1", "001", 3, true);
+        assert_eq!(
+            app,
+            "https://stickershop.line-scdn.net/sticonshop/v1/5ac1/sticon/android/001_animation.png?v=3"
+        );
+        assert_eq!(old, "https://stickershop.line-scdn.net/sticonshop/v1/sticon/5ac1/android/001_animation.png");
+        assert!(sticon_urls("5ac1", "001", 1, false)[0].ends_with("/001.png?v=1"));
     }
 
     #[test]
