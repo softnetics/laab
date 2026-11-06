@@ -155,7 +155,7 @@ fn defs() -> Vec<Def> {
         }), &["message_id", "reaction"], false, false),
         d("mark_as_read", Send, "Mark as read", "Mark a chat as read; the others see it as read.", json!({ "chat_id": s(CHAT) }), &["chat_id"], false, false),
         d("tap_postback", Send, "Tap a bot button", "Answer a bot's flex or rich menu postback button.", json!({
-            "chat_id": s(CHAT), "message_id": s("The message holding the button."), "data": s("The button's postback data."), "display_text": s("Text the button posts in the chat, if any."),
+            "chat_id": s(CHAT), "message_id": s("The message holding the button."), "data": s("The button's postback data."), "display_text": s("The button's displayText, if any. LINE posts it in the chat as the user's message."),
         }), &["chat_id", "message_id", "data"], false, false),
         d("create_note", Send, "Post a note", "Post to a group's notes, with photos from this Mac if given.", json!({
             "chat_id": s(CHAT), "text": s("The post."), "photo_paths": strings("Absolute paths of photos."),
@@ -1159,7 +1159,7 @@ async fn run(ctx: &Ctx, name: &str, args: &Value, trace: &mut Trace) -> R<Vec<Va
             let data = arg_str(args, "data")?;
             let display = opt_str(args, "display_text");
             gate(ctx, trace, Send, &[dir.scope(&chat)], format!("กดปุ่มของบอท {}{}", dir.quoted(&chat), display.as_ref().map(|d| format!(": “{d}”")).unwrap_or_default())).await?;
-            commands::send_postback(st(), chat, id, data, display).await?;
+            commands::send_postback(st(), chat, Some(id), data, display, None).await?;
             done("postback sent")
         }
         "create_note" => {

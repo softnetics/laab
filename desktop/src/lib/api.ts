@@ -90,8 +90,9 @@ export const api = {
   draft: (chatId: string) => invoke<Draft | null>("draft", { chatId }),
   setDraft: (chatId: string, draft: Draft) => invoke<void>("set_draft", { chatId, draft }),
   rawMessage: (chatId: string, messageId: string) => invoke<string>("raw_message", { chatId, messageId }),
-  sendPostback: (chatId: string, messageId: string, data: string, displayText: string | null) =>
-    invoke<void>("send_postback", { chatId, messageId, data, displayText }),
+  /** A bot's postback button. `messageId` is null for rich-menu areas, whose `data` is the whole linepostback URL. */
+  sendPostback: (chatId: string, messageId: string | null, data: string, displayText: string | null, text: string | null = null) =>
+    invoke<void>("send_postback", { chatId, messageId, data, displayText, text }),
   openLiff: (req: { url: string; chatId?: string | null; consent?: boolean; web?: boolean }) => invoke<void>("open_liff", { req }),
   liffDevSessions: () => invoke<LiffDevSession[]>("liff_dev_sessions"),
   liffDevAction: (label: string, action: "reload" | "inspect" | "close" | "reopen" | "web") =>

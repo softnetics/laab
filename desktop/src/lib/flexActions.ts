@@ -16,7 +16,7 @@ export async function performFlexAction(a: FlexAction, chatId: string, messageId
         if (a.text) await api.sendText(chatId, a.text, []);
         return;
       case "postback":
-        await api.sendPostback(chatId, messageId, a.data ?? "", a.displayText ?? a.text ?? null);
+        await api.sendPostback(chatId, messageId, a.data ?? "", a.displayText ?? null, a.text ?? null);
         return;
       case "clipboard":
         if (a.clipboardText) await writeText(a.clipboardText);

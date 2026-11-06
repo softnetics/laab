@@ -686,52 +686,55 @@ pub async fn raw_message(state: S<'_>, chat_id: String, message_id: String) -> R
         })
 }
 
-/// Flex postback. `strict` never falls back to posting the data as text.
+/// The URL `sendPostback` carries: `data` as it is when it already is a
+/// `linepostback://` URL (a rich-menu area's), else a postback action's
+/// data with its display text and legacy `text`.
+pub fn postback_url(data: &str, display_text: Option<&str>, text: Option<&str>) -> String {
+    use line_rs::client::postback::{Postback, is_postback_url};
+    if is_postback_url(data) {
+        return data.to_string();
+    }
+    let mut p = Postback::new(data);
+    p.display_text = display_text.map(str::to_string);
+    p.text = text.map(str::to_string);
+    p.url()
+}
+
+/// Answer a bot's postback button: a flex message's (with `message_id`) or
+/// a rich menu's (without). LINE's server, not the app, posts the
+/// button's display text in the chat; it arrives like any other message.
 #[tauri::command]
 pub async fn send_postback(
     state: S<'_>,
     chat_id: String,
-    message_id: String,
+    message_id: Option<String>,
     data: String,
     display_text: Option<String>,
+    text: Option<String>,
 ) -> R<()> {
     let s = state.inner().clone();
     if s.demo {
         return Err("ต้องเข้าสู่ระบบ LINE ก่อน".into());
     }
     let l = s.line().await.ok_or("not_logged_in")?;
-    let url = format!("line://postback?data={}", urlencode(&data));
-    let msg = l.talk_message(&message_id);
-    let from = msg.raw["from"]
-        .as_str()
-        .or(msg.raw["_from"].as_str())
-        .unwrap_or(&chat_id)
-        .to_string();
+    let url = postback_url(&data, display_text.as_deref(), text.as_deref());
+    let message_id = message_id.filter(|m| !m.is_empty());
+    // The flex message's sender is the bot the postback goes to.
+    let from = message_id.as_deref().map(|id| {
+        let msg = l.talk_message(id);
+        msg.raw["from"]
+            .as_str()
+            .or(msg.raw["_from"].as_str())
+            .unwrap_or(&chat_id)
+            .to_string()
+    });
     l.client
         .base
         .talk()
-        .send_flex_postback(&message_id, &url, &chat_id, &from)
+        .send_postback_url(&url, &chat_id, message_id.as_deref(), from.as_deref())
         .await
         .map_err(|e| format!("ส่งคำตอบให้บอทไม่สำเร็จ: {e}"))?;
-    if let Some(text) = display_text.filter(|t| !t.is_empty()) {
-        l.client
-            .send_message(&chat_id, MessageInput::text(text))
-            .await
-            .map_err(err)?;
-        let _ = line::fetch_history(&s, &chat_id).await;
-    }
     Ok(())
-}
-
-fn urlencode(s: &str) -> String {
-    s.bytes()
-        .map(|b| match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-                (b as char).to_string()
-            }
-            _ => format!("%{b:02X}"),
-        })
-        .collect()
 }
 
 #[derive(Deserialize)]
@@ -1640,6 +1643,18 @@ mod tests {
             aux_route("media", "c1", None, Some(String::new()), 6),
             "/media/c1?at=6"
         );
+    }
+
+    #[test]
+    fn postbacks_go_as_linepostback_urls() {
+        assert_eq!(
+            postback_url("a=1", Some("ซื้อ"), None),
+            "linepostback://postback?_data=a%3D1&_displayText=%E0%B8%8B%E0%B8%B7%E0%B9%89%E0%B8%AD"
+        );
+        assert_eq!(postback_url("x", None, Some("")), "linepostback://postback?_data=x");
+        // A rich-menu area's URL goes as it is.
+        let menu = "linepostback://postback?_data=menu%3D1&_displayText=Hi";
+        assert_eq!(postback_url(menu, Some("ignored"), None), menu);
     }
 
     #[test]
