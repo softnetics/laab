@@ -21,6 +21,8 @@ use tauri::http::{Request, Response, StatusCode, header};
 use crate::state::AppState;
 
 const STICKER_CDN: &str = "https://stickershop.line-scdn.net/stickershop/v1";
+/// `CDN_PROFILE` (`ia0/k`): profile and group pictures.
+const PROFILE_CDN: &str = "https://profile.line-scdn.net";
 
 fn query(req: &Request<Vec<u8>>, key: &str) -> Option<String> {
     let q = req.uri().query()?;
@@ -242,39 +244,93 @@ pub fn safe_name(s: &str) -> String {
         .collect()
 }
 
+/// The cache file of `mid`'s picture at `picture` (its `picturePath`).
+/// The name carries a hash of the path, so a new picture gets a new file
+/// and is downloaded, as LINE caches pictures by URL (`mp8/b.k`).
+fn avatar_file(dir: &Path, mid: &str, picture: &str) -> PathBuf {
+    use sha2::{Digest, Sha256};
+    let hash = hex::encode(&Sha256::digest(picture.as_bytes())[..6]);
+    dir.join(format!("{}-{hash}.jpg", safe_name(mid)))
+}
+
+/// `mid`'s other cached pictures: older pictures and the unhashed
+/// `<mid>.jpg` of earlier builds.
+fn stale_avatars(dir: &Path, mid: &str, keep: &Path) -> Vec<PathBuf> {
+    let id = safe_name(mid);
+    let (hashed, legacy) = (format!("{id}-"), format!("{id}.jpg"));
+    std::fs::read_dir(dir)
+        .into_iter()
+        .flatten()
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .filter(|p| p != keep && !crate::vault::is_temp(p))
+        .filter(|p| {
+            let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
+            name == legacy
+                || name
+                    .strip_prefix(&hashed)
+                    .is_some_and(|rest| rest.len() == 16 && rest.ends_with(".jpg"))
+        })
+        .collect()
+}
+
 async fn avatar(state: &AppState, mid: &str, picture: Option<String>) -> Result<PathBuf> {
-    let path = state
-        .paths
-        .avatars()
-        .join(format!("{}.jpg", safe_name(mid)));
-    if path.exists() {
-        return Ok(path);
-    }
+    let dir = state.paths.avatars();
+    // Demo pictures.
     for ext in ["png", "svg"] {
-        let other = path.with_extension(ext);
+        let other = dir.join(format!("{}.{ext}", safe_name(mid)));
         if other.exists() {
             return Ok(other);
         }
     }
+    let picture = picture.unwrap_or_default();
+    let path = avatar_file(&dir, mid, &picture);
+    if path.exists() {
+        return Ok(path);
+    }
     if state.demo {
         return Err(anyhow!("demo"));
     }
-    let picture = picture
-        .filter(|p| !p.is_empty())
-        .ok_or_else(|| anyhow!("no picture"))?;
-    let p = if picture.starts_with('/') {
-        picture
+    let data = if !picture.is_empty() {
+        let p = if picture.starts_with('/') {
+            picture
+        } else {
+            format!("/{picture}")
+        };
+        fetch_preview(&format!("{PROFILE_CDN}{p}")).await?
+    } else if mid.starts_with('c') {
+        // A group without a picture path: OBS `r/talk/g/{gid}` (`mp8/b.o`).
+        let line = state.line().await.ok_or_else(|| anyhow!("not_logged_in"))?;
+        let obs = line.client.base.obs();
+        match obs
+            .download_object_for_service("talk/g", &format!("{mid}/preview"), vec![])
+            .await
+        {
+            Ok(d) if !d.is_empty() => d.to_vec(),
+            _ => obs
+                .download_object_for_service("talk/g", mid, vec![])
+                .await
+                .map_err(|e| anyhow!("{e}"))?
+                .to_vec(),
+        }
     } else {
-        format!("/{picture}")
-    };
-    let base = format!("https://profile.line-scdn.net{p}");
-    let data = match fetch(&format!("{base}/preview")).await {
-        Ok(d) => d,
-        Err(_) => fetch(&base).await?,
+        // A user without a picture path: `r/talk/p/{mid}` on the profile
+        // CDN (`mp8/b.k`).
+        fetch_preview(&format!("{PROFILE_CDN}/r/talk/p/{}", safe_name(mid))).await?
     };
     let saved = save(&path, &data)?;
+    for old in stale_avatars(&dir, mid, &saved) {
+        let _ = std::fs::remove_file(old);
+    }
     let _ = state.store().set_avatar(mid, &saved.to_string_lossy());
     Ok(saved)
+}
+
+/// `{base}/preview`, else `base` itself.
+async fn fetch_preview(base: &str) -> Result<Vec<u8>> {
+    match fetch(&format!("{base}/preview")).await {
+        Ok(d) => Ok(d),
+        Err(_) => fetch(base).await,
+    }
 }
 
 /// Whether a cached file is a video. A preview must be a picture.
@@ -553,6 +609,27 @@ mod tests {
             url_query("p=%2Fa&x=1"),
             vec![("p".into(), "/a".into()), ("x".into(), "1".into())]
         );
+    }
+
+    #[test]
+    fn a_new_picture_gets_a_new_avatar_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = avatar_file(dir.path(), "u1", "/0hAAA");
+        let b = avatar_file(dir.path(), "u1", "/0hBBB");
+        assert_ne!(a, b);
+        assert_eq!(a, avatar_file(dir.path(), "u1", "/0hAAA"));
+        assert_ne!(avatar_file(dir.path(), "u1", ""), a);
+        for p in [&a, &b] {
+            std::fs::write(p, b"x").unwrap();
+        }
+        for name in ["u1.jpg", "u10-0123456789ab.jpg", "u1.png", "cover-u1.jpg"] {
+            std::fs::write(dir.path().join(name), b"x").unwrap();
+        }
+        let mut stale = stale_avatars(dir.path(), "u1", &b);
+        stale.sort();
+        let mut want = vec![a, dir.path().join("u1.jpg")];
+        want.sort();
+        assert_eq!(stale, want);
     }
 
     #[test]
