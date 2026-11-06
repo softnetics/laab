@@ -84,7 +84,10 @@ export const api = {
   ) => sent(invoke<Message>("send_text", { chatId, text, mentions, replyTo, reqSeq, silent })),
   /** `silent`: without a notification on the others' devices. */
   sendSticker: (chatId: string, sticker: Sticker, silent = false) => sent(invoke<void>("send_sticker", { chatId, sticker, silent })),
+  /** The recent stickers and every owned package, without their stickers. */
   stickers: () => invoke<StickerPack[]>("stickers"),
+  /** One package with all its stickers. */
+  stickerPack: (id: string, name: string, version: string | null) => invoke<StickerPack>("sticker_pack", { id, name, version }),
   /** Sends each file, going on past failures; resolves to the ones that failed. */
   sendFiles: (chatId: string, paths: string[], silent = false) =>
     sent(invoke<{ path: string; error: string }[]>("send_files", { chatId, paths, silent })),

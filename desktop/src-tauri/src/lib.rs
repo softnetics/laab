@@ -253,6 +253,7 @@ pub fn run() {
             commands::new_req_seq,
             commands::send_sticker,
             commands::stickers,
+            commands::sticker_pack,
             commands::send_files,
             commands::download,
             commands::react,

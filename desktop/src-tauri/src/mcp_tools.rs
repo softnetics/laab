@@ -1049,14 +1049,17 @@ async fn run(ctx: &Ctx, name: &str, args: &Value, trace: &mut Trace) -> R<Vec<Va
         "list_stickers" => {
             any_read(&settings, trace, "ดูสติกเกอร์")?;
             let packs = commands::stickers(st()).await?;
-            let out: Vec<Value> = packs
-                .into_iter()
-                .take(limit(args, 20, 200))
-                .map(|p| {
-                    let ids: Vec<&String> = p.stickers.iter().map(|s| &s.sticker_id).collect();
-                    json!({ "packageId": p.id, "name": p.name, "version": p.version, "recent": p.recent, "stickerIds": ids })
-                })
-                .collect();
+            let mut out: Vec<Value> = Vec::new();
+            for mut p in packs.into_iter().take(limit(args, 20, 200)) {
+                // Packages come without their stickers; load the ones listed.
+                if p.stickers.is_empty()
+                    && let Ok(full) = commands::sticker_pack(p.id.clone(), p.name.clone(), p.version.clone()).await
+                {
+                    p.stickers = full.stickers;
+                }
+                let ids: Vec<&String> = p.stickers.iter().map(|s| &s.sticker_id).collect();
+                out.push(json!({ "packageId": p.id, "name": p.name, "version": p.version, "recent": p.recent, "stickerIds": ids }));
+            }
             Ok(text(json!({ "packs": out })))
         }
         "translate" => {

@@ -360,6 +360,14 @@ pub async fn stickers(state: S<'_>) -> R<Vec<StickerPack>> {
     crate::stickers::list(&s).await.map_err(err)
 }
 
+/// One owned package with all its stickers, loaded when the picker opens it.
+#[tauri::command]
+pub async fn sticker_pack(id: String, name: String, version: Option<String>) -> R<StickerPack> {
+    crate::stickers::pack(&id, &name, version.as_deref().unwrap_or("1"))
+        .await
+        .map_err(err)
+}
+
 /// A file [`send_files`] couldn't send, and why, in Thai.
 #[derive(Serialize, Debug)]
 #[serde(rename_all = "camelCase")]
