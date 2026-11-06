@@ -11,7 +11,7 @@ use line_rs::client::{
     Chat as LineChat, Client, ClientEvent as LineEvent, InitOptions, ListenHandle, ListenOptions,
     TalkEvent, TalkMessage, login_with_auth_token, login_with_qr,
 };
-use line_rs::service::talk::GetChatsOptions;
+use line_rs::service::talk::{GetChatsOptions, MessageBoxQuery};
 use line_rs::thrift::Value;
 use line_rs::{Device, tv};
 use serde_json::Value as Json;
@@ -860,7 +860,8 @@ async fn new_chat_row(state: &Arc<AppState>, line: &Arc<Line>, chat_id: &str) ->
     };
     if chat_id.starts_with('c') || chat_id.starts_with('r') {
         if let Ok(c) = line.client.get_chat(chat_id).await {
-            apply_group(&mut chat, &c.raw.to_json());
+            let people = state.store().people().unwrap_or_default();
+            apply_group(&mut chat, &c.raw.to_json(), &line.me, &people);
         }
     } else if let Some((name, pic)) = state
         .store()
@@ -898,7 +899,8 @@ async fn refresh_chat_row(state: &Arc<AppState>, line: &Arc<Line>, chat_id: &str
         match line.client.get_chat(chat_id).await {
             Ok(c) => {
                 let json = c.raw.to_json();
-                apply_group(&mut chat, &json);
+                let people = state.store().people().unwrap_or_default();
+                apply_group(&mut chat, &json, &line.me, &people);
                 if let Some(m) = json["notificationDisabled"].as_bool() {
                     chat.muted = m;
                 }
@@ -936,8 +938,13 @@ fn kind_for(mid: &str, bot: bool) -> String {
     }
 }
 
-fn apply_group(chat: &mut Chat, raw: &Json) {
-    if let Some(name) = str_of(&raw["chatName"]) {
+fn apply_group(
+    chat: &mut Chat,
+    raw: &Json,
+    me: &str,
+    people: &HashMap<String, (String, Option<String>)>,
+) {
+    if let Some(name) = group_name(raw, me, people) {
         chat.name = name;
     }
     chat.picture = str_of(&raw["picturePath"]).or(chat.picture.take());
@@ -1104,22 +1111,23 @@ async fn friend_mids(line: &Line) -> Option<Vec<String>> {
 // Chat list
 // ---------------------------------------------------------------------------
 
-async fn message_boxes(line: &Line) -> Result<Vec<Value>> {
+/// Every message box, paged by `minChatId` as LINE for Android pages them
+/// (active boxes only, 100 a page), with unread counts and the last
+/// message for the preview. The flag says whether the list is complete.
+async fn message_boxes(line: &Line) -> Result<(Vec<Value>, bool)> {
     let mut all = Vec::new();
     let mut seen = HashSet::new();
-    let mut min_chat: Option<String> = None;
-    for _ in 0..20 {
-        let mut req = tv!({"withUnreadCount": true, "lastMessagesPerMessageBoxCount": 1, "messageBoxCountLimit": 200});
-        if let Some(m) = &min_chat {
-            req.insert("minChatId", Value::from(m.clone()));
-        }
-        let mut args = Value::object();
-        args.insert("messageBoxListRequest", req);
-        let res = line.client.base.talk().get_message_boxes(args).await?;
+    let mut query = MessageBoxQuery {
+        last_messages: 1,
+        ..Default::default()
+    };
+    for _ in 0..50 {
+        let res = line.client.base.talk().message_box_page(&query).await?;
         let page: Vec<Value> = res["messageBoxes"]
             .as_list()
             .map(|l| l.to_vec())
             .unwrap_or_default();
+        let full_page = page.len() >= query.limit as usize;
         let fresh: Vec<Value> = page
             .into_iter()
             .filter(|b| {
@@ -1129,18 +1137,76 @@ async fn message_boxes(line: &Line) -> Result<Vec<Value>> {
             })
             .collect();
         if fresh.is_empty() {
-            break;
+            return Ok((all, true));
         }
-        min_chat = fresh
+        query.min_chat_id = fresh
             .last()
             .and_then(|b| b["id"].as_str().map(str::to_string));
-        let more = res["hasNext"].as_bool().unwrap_or(fresh.len() >= 200);
+        let more = res["hasNext"].as_bool().unwrap_or(full_page);
         all.extend(fresh);
         if !more {
-            break;
+            return Ok((all, true));
         }
     }
-    Ok(all)
+    Ok((all, false))
+}
+
+/// What a message box says other devices did to its chat.
+#[derive(Debug, Default, PartialEq)]
+pub struct BoxState {
+    /// The newest message, by id.
+    pub last_id: i64,
+    /// Hidden at a message no older than the newest: the chat stays out of
+    /// the list until a new message arrives.
+    pub hidden: bool,
+    /// History deleted up to this message id.
+    pub removed_through: Option<i64>,
+}
+
+pub fn box_state(b: &Value) -> BoxState {
+    let last_id = b["lastDeliveredMessageId"]["messageId"].as_i64().unwrap_or(0);
+    let hidden_at = b["hiddenAtMessageId"].as_i64().unwrap_or(0);
+    let removed = b["lastRemovedMessageId"].as_i64().unwrap_or(0);
+    BoxState {
+        last_id,
+        hidden: hidden_at > 0 && hidden_at >= last_id,
+        removed_through: (removed > 0).then_some(removed),
+    }
+}
+
+/// A group's name: its own, or for a group LINE names itself (`autoName`,
+/// or no name), the names of its members other than us, oldest member
+/// first, as LINE shows such groups. The exact format LINE uses is
+/// unverified. `None` when neither is known.
+pub fn group_name(
+    raw: &Json,
+    me: &str,
+    people: &HashMap<String, (String, Option<String>)>,
+) -> Option<String> {
+    let own = str_of(&raw["chatName"]);
+    let auto = raw["extra"]["groupExtra"]["autoName"].as_bool() == Some(true);
+    if own.is_some() && !auto {
+        return own;
+    }
+    let mut members: Vec<(&String, i64)> = raw["extra"]["groupExtra"]["memberMids"]
+        .as_object()
+        .map(|m| {
+            m.iter()
+                .filter(|(mid, _)| mid.as_str() != me)
+                .map(|(mid, t)| (mid, t.as_i64().unwrap_or(0)))
+                .collect()
+        })
+        .unwrap_or_default();
+    members.sort_by(|a, b| a.1.cmp(&b.1).then(a.0.cmp(b.0)));
+    let names: Vec<&str> = members
+        .iter()
+        .filter_map(|(mid, _)| people.get(*mid).map(|(n, _)| n.as_str()))
+        .filter(|n| !n.is_empty())
+        .collect();
+    if names.is_empty() {
+        return own;
+    }
+    Some(names.join(", "))
 }
 
 async fn decrypt(line: &Line, raw: Value) -> (Value, bool) {
@@ -1200,14 +1266,17 @@ async fn to_message(line: &Line, raw: Value) -> Option<Message> {
 pub async fn refresh_chats(state: &Arc<AppState>, full: bool) -> Result<()> {
     let line = state.line().await.ok_or_else(|| anyhow!("not_logged_in"))?;
     state.status("กำลังโหลดรายชื่อแชท…");
-    let boxes = message_boxes(&line).await?;
+    let (boxes, boxes_complete) = message_boxes(&line).await?;
     let mut rows: HashMap<String, Chat> = HashMap::new();
     let mut server_mute: HashSet<String> = HashSet::new();
+    let mut hidden: Vec<String> = Vec::new();
+    let mut removed: Vec<(String, i64)> = Vec::new();
     for b in &boxes {
         let Some(mid) = b["id"].as_str() else {
             continue;
         };
         let json = b.to_json();
+        let state = box_state(b);
         let mut chat = Chat {
             id: mid.into(),
             name: mid.into(),
@@ -1218,9 +1287,18 @@ pub async fn refresh_chats(state: &Arc<AppState>, full: bool) -> Result<()> {
         };
         if let Some(last) = b["lastMessages"].as_list().and_then(|l| l.first()).cloned()
             && let Some(m) = to_message(&line, last).await
+            && !state
+                .removed_through
+                .is_some_and(|r| m.id.parse::<i64>().is_ok_and(|id| id <= r))
         {
             chat.preview = convert::preview_line(&m);
             chat.last_activity = chat.last_activity.max(m.created_time);
+        }
+        if state.hidden {
+            hidden.push(mid.into());
+        }
+        if let Some(r) = state.removed_through {
+            removed.push((mid.into(), r));
         }
         rows.insert(mid.into(), chat);
     }
@@ -1262,17 +1340,12 @@ pub async fn refresh_chats(state: &Arc<AppState>, full: bool) -> Result<()> {
             logged("saving friends", store.set_friends(&current));
         }
     }
-    let friend_set: HashSet<String> = friends.unwrap_or_default().into_iter().collect();
+    // Friends are listed on the friends page; a 1:1 chat is a row only when
+    // it has a message box, as in LINE.
     for c in contacts {
-        if !friend_set.contains(&c.mid) && !rows.contains_key(&c.mid) {
+        let Some(row) = rows.get_mut(&c.mid) else {
             continue;
-        }
-        let row = rows.entry(c.mid.clone()).or_insert_with(|| Chat {
-            id: c.mid.clone(),
-            name: c.mid.clone(),
-            kind: "dm".into(),
-            ..Default::default()
-        });
+        };
         row.name = c.name;
         row.picture = c.picture;
         row.kind = kind_for(&c.mid, c.bot);
@@ -1282,13 +1355,16 @@ pub async fn refresh_chats(state: &Arc<AppState>, full: bool) -> Result<()> {
         }
     }
 
-    // Groups, in chunks: one big getChats fails with INVALID_LENGTH.
+    // Groups we are in, in chunks: one big getChats fails with
+    // INVALID_LENGTH. An unnamed group is named after its members.
+    let people = state.store().people().unwrap_or_default();
     let joined = line
         .client
         .base
         .talk()
         .get_all_chat_mids(tv!({"request": {"withMemberChats": true}, "syncReason": "INTERNAL"}))
         .await;
+    let groups_ok = joined.is_ok();
     if let Ok(joined) = joined {
         let group_mids: Vec<String> = joined["memberChatMids"]
             .as_list()
@@ -1319,7 +1395,7 @@ pub async fn refresh_chats(state: &Arc<AppState>, full: bool) -> Result<()> {
                     kind: "group".into(),
                     ..Default::default()
                 });
-                apply_group(row, &json);
+                apply_group(row, &json, &line.me, &people);
                 if let Some(m) = json["notificationDisabled"].as_bool() {
                     row.muted = m;
                     server_mute.insert(mid.clone());
@@ -1327,6 +1403,7 @@ pub async fn refresh_chats(state: &Arc<AppState>, full: bool) -> Result<()> {
             }
         }
     }
+    let listed: HashSet<String> = rows.keys().cloned().collect();
 
     // Merge with what we have: a placeholder name never replaces a real one,
     // and mute is only trusted from the server for 1:1 chats.
@@ -1358,12 +1435,58 @@ pub async fn refresh_chats(state: &Arc<AppState>, full: bool) -> Result<()> {
             .collect()
     };
     state.store().upsert_chats(&merged)?;
+    apply_box_states(state, &hidden, &removed);
+    // Only a complete list can say a chat is gone (a group we left, a
+    // deleted chat or friend): leave those out until a new message.
+    if boxes_complete && groups_ok {
+        drop_unlisted(state, &line, &listed);
+    }
     state.chats_changed();
     state.status("เชื่อม LINE แล้ว");
 
     let s = state.clone();
     tokio::spawn(async move { sync_history(&s, full).await });
     Ok(())
+}
+
+/// Hide what other devices hid, and delete history they deleted.
+fn apply_box_states(state: &AppState, hidden: &[String], removed: &[(String, i64)]) {
+    let focused = state.focus.lock().unwrap().chat.clone();
+    let store = state.store();
+    for id in hidden.iter().filter(|id| Some(*id) != focused.as_ref()) {
+        logged("hiding a chat hidden elsewhere", store.hide_chat(id));
+    }
+    let mut changed = Vec::new();
+    for (id, through) in removed {
+        match store.remove_history_through(id, *through) {
+            Ok(true) => changed.push(id.clone()),
+            Ok(false) => {}
+            Err(e) => tracing::warn!("deleting history deleted elsewhere: {e}"),
+        }
+    }
+    drop(store);
+    for id in changed {
+        if state.store().messages(&id, 1).map(|m| m.is_empty()).unwrap_or(false) {
+            logged("clearing a preview", state.store().clear_preview(&id));
+        } else {
+            refresh_preview(state, &id);
+        }
+        state.messages_changed(&id);
+    }
+}
+
+/// Leave out of the list every chat LINE no longer lists, except Keep Memo
+/// and the chat on screen. A new message brings one back.
+fn drop_unlisted(state: &AppState, line: &Line, listed: &HashSet<String>) {
+    let focused = state.focus.lock().unwrap().chat.clone();
+    let store = state.store();
+    let Ok(visible) = store.chats() else { return };
+    for c in visible {
+        if listed.contains(&c.id) || c.id == line.me || Some(&c.id) == focused.as_ref() {
+            continue;
+        }
+        logged("leaving out a chat LINE no longer lists", store.hide_chat(&c.id));
+    }
 }
 
 /// Whether a chat's history changed since its last successful sync.
@@ -1621,7 +1744,7 @@ pub async fn load_members(
         // Keep the group's name and picture fresh too.
         let mut store = state.store();
         if let Ok(Some(mut c)) = store.chat(chat_id) {
-            apply_group(&mut c, &raw);
+            apply_group(&mut c, &raw, &line.me, &people);
             logged("saving chat", store.upsert_chats(&[c]));
         }
     }
@@ -1707,6 +1830,35 @@ pub async fn ensure_media_message(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn message_boxes_say_what_other_devices_did() {
+        let b = tv!({"id": "u1", "lastDeliveredMessageId": {"messageId": 9007199254740993_i64}, "hiddenAtMessageId": 9007199254740993_i64, "lastRemovedMessageId": 50});
+        assert_eq!(
+            box_state(&b),
+            BoxState { last_id: 9007199254740993, hidden: true, removed_through: Some(50) }
+        );
+        // A message after the hide brings the chat back.
+        let b = tv!({"id": "u1", "lastDeliveredMessageId": {"messageId": 60}, "hiddenAtMessageId": 59});
+        assert_eq!(box_state(&b), BoxState { last_id: 60, hidden: false, removed_through: None });
+    }
+
+    #[test]
+    fn unnamed_groups_take_their_members_names() {
+        let people: HashMap<String, (String, Option<String>)> = [
+            ("u1".to_string(), ("Ann".to_string(), None)),
+            ("u2".to_string(), ("Bo".to_string(), None)),
+            ("me".to_string(), ("Me".to_string(), None)),
+        ]
+        .into();
+        let auto = serde_json::json!({"chatName": "", "extra": {"groupExtra": {"autoName": true,
+            "memberMids": {"u2": 5, "me": 1, "u1": 3, "u9": 4}}}});
+        assert_eq!(group_name(&auto, "me", &people).as_deref(), Some("Ann, Bo"));
+        let named = serde_json::json!({"chatName": "Team", "extra": {"groupExtra": {"memberMids": {"u1": 1}}}});
+        assert_eq!(group_name(&named, "me", &people).as_deref(), Some("Team"));
+        let unknown = serde_json::json!({"extra": {"groupExtra": {"memberMids": {"u9": 1}}}});
+        assert_eq!(group_name(&unknown, "me", &people), None);
+    }
 
     #[test]
     fn reads_get_contacts_v3_like_the_app() {

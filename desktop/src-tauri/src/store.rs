@@ -96,6 +96,9 @@ impl Store {
             ("chats", "synced", "REAL"),
             // A hidden chat stays out of the list until it gets a newer message.
             ("chats", "hidden_at", "REAL"),
+            // The newest message id deleted from the chat's history (here or
+            // on another device); older messages never come back.
+            ("chats", "removed_through", "INTEGER"),
         ] {
             self.add_column_if_missing(table, column, definition)?;
         }
@@ -316,6 +319,13 @@ impl Store {
     }
 
     pub fn delete_history(&self, chat_id: &str) -> Result<()> {
+        // Remember how far it went, so a history sync can't bring it back.
+        self.db.execute(
+            "UPDATE chats SET removed_through=MAX(COALESCE(removed_through,0),
+                COALESCE((SELECT MAX(CAST(id AS INTEGER)) FROM messages WHERE chat_id=?1 AND id GLOB '[0-9]*'),0))
+             WHERE id=?1",
+            [chat_id],
+        )?;
         self.db.execute(
             "DELETE FROM message_search WHERE id IN (SELECT id FROM messages WHERE chat_id=?)",
             [chat_id],
@@ -326,6 +336,41 @@ impl Store {
         )?;
         self.db
             .execute("DELETE FROM messages WHERE chat_id=?", [chat_id])?;
+        self.db
+            .execute("UPDATE chats SET preview='' WHERE id=?", [chat_id])?;
+        Ok(())
+    }
+
+    /// Delete a chat's messages up to and including `message_id`, as LINE's
+    /// `lastRemovedMessageId` says another device did, and keep them out of
+    /// later syncs. Returns whether anything was deleted.
+    pub fn remove_history_through(&self, chat_id: &str, message_id: i64) -> Result<bool> {
+        let current: Option<i64> = self
+            .db
+            .query_row("SELECT removed_through FROM chats WHERE id=?", [chat_id], |r| r.get(0))
+            .optional()?
+            .flatten();
+        if current.is_some_and(|c| c >= message_id) {
+            return Ok(false);
+        }
+        let older = "SELECT id FROM messages WHERE chat_id=?1 AND id GLOB '[0-9]*' AND CAST(id AS INTEGER)<=?2";
+        let p = params![chat_id, message_id];
+        self.db
+            .execute(&format!("DELETE FROM message_search WHERE id IN ({older})"), p)?;
+        self.db
+            .execute(&format!("DELETE FROM reactions WHERE message_id IN ({older})"), p)?;
+        let gone = self.db.execute(
+            "DELETE FROM messages WHERE chat_id=?1 AND id GLOB '[0-9]*' AND CAST(id AS INTEGER)<=?2",
+            p,
+        )?;
+        self.db.execute(
+            "UPDATE chats SET removed_through=?2 WHERE id=?1",
+            p,
+        )?;
+        Ok(gone > 0)
+    }
+
+    pub fn clear_preview(&self, chat_id: &str) -> Result<()> {
         self.db
             .execute("UPDATE chats SET preview='' WHERE id=?", [chat_id])?;
         Ok(())
@@ -480,6 +525,31 @@ impl Store {
     }
 
     pub fn upsert_messages(&mut self, messages: &[Message]) -> Result<()> {
+        // Messages deleted from the chat's history stay deleted.
+        let mut removed: HashMap<&str, Option<i64>> = HashMap::new();
+        for m in messages {
+            if !removed.contains_key(m.chat_id.as_str()) {
+                let through: Option<i64> = self
+                    .db
+                    .query_row(
+                        "SELECT removed_through FROM chats WHERE id=?",
+                        [&m.chat_id],
+                        |r| r.get(0),
+                    )
+                    .optional()?
+                    .flatten();
+                removed.insert(&m.chat_id, through);
+            }
+        }
+        let kept: Vec<Message> = messages
+            .iter()
+            .filter(|m| {
+                let through = removed.get(m.chat_id.as_str()).copied().flatten();
+                !matches!((through, m.id.parse::<i64>()), (Some(t), Ok(id)) if id <= t)
+            })
+            .cloned()
+            .collect();
+        let messages = kept.as_slice();
         let names: Vec<Option<String>> = messages
             .iter()
             .map(|m| self.preferred_file_name(m.file_name.as_deref(), &m.id))
@@ -1207,6 +1277,32 @@ mod tests {
         // Unfriended (or blocked) people drop out.
         s.set_friends(&["u3".into()]).unwrap();
         assert_eq!(s.friends().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn history_deleted_elsewhere_stays_deleted() {
+        let mut s = Store::memory().unwrap();
+        s.upsert_chats(&[chat("u1", "A")]).unwrap();
+        s.upsert_messages(&[
+            msg("100", "u1", "old", 1.0),
+            msg("9007199254740993", "u1", "big", 2.0),
+            msg("local-1", "u1", "pending", 3.0),
+        ])
+        .unwrap();
+        assert!(s.remove_history_through("u1", 9007199254740993).unwrap());
+        let left: Vec<String> = s.messages("u1", 10).unwrap().into_iter().map(|m| m.id).collect();
+        assert_eq!(left, ["local-1"]);
+        assert!(!s.remove_history_through("u1", 50).unwrap());
+        // A history sync can't bring them back; newer ones still arrive.
+        s.upsert_messages(&[msg("100", "u1", "old", 1.0), msg("9007199254740994", "u1", "new", 4.0)])
+            .unwrap();
+        assert_eq!(s.messages("u1", 10).unwrap().len(), 2);
+        // Deleting the whole history here remembers how far it went.
+        s.upsert_chats(&[chat("u2", "B")]).unwrap();
+        s.upsert_messages(&[msg("7", "u2", "x", 1.0)]).unwrap();
+        s.delete_history("u2").unwrap();
+        s.upsert_messages(&[msg("7", "u2", "x", 1.0)]).unwrap();
+        assert!(s.messages("u2", 10).unwrap().is_empty());
     }
 
     #[test]
