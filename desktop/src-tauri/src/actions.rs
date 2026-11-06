@@ -883,11 +883,7 @@ pub async fn prefetch_calendars(state: &Arc<AppState>, chat_id: Option<&str>) {
 /// calendar that fails to load is left out rather than failing the rest.
 pub async fn all_calendar_events(state: &Arc<AppState>) -> Result<AllCalendars> {
     let l = line(state).await?;
-    let calendars: Vec<CalendarInfo> = l
-        .client
-        .base
-        .list_all_calendars()
-        .await?
+    let calendars: Vec<CalendarInfo> = shown_calendars(l.client.base.list_all_calendars().await?)
         .into_iter()
         .map(|c| CalendarInfo {
             chat_id: if c.chatroom_id.is_empty() {
@@ -922,6 +918,19 @@ pub async fn all_calendar_events(state: &Arc<AppState>) -> Result<AllCalendars> 
     let all = AllCalendars { calendars, events };
     remember_calendar(state, ALL_CALENDARS, all.clone());
     Ok(all)
+}
+
+/// The calendars LINE's Calendar tab shows: not hidden from the list
+/// (`is_shown_in_calendar_list`) and with their events turned on
+/// (`is_visible`). Should LINE leave both flags out of every calendar (an
+/// account that never touched them), all are shown rather than none.
+fn shown_calendars(all: Vec<cal::Calendar>) -> Vec<cal::Calendar> {
+    if all.iter().all(|c| !c.is_visible && !c.is_shown_in_calendar_list) {
+        return all;
+    }
+    all.into_iter()
+        .filter(|c| c.is_visible && c.is_shown_in_calendar_list)
+        .collect()
 }
 
 /// The event as LINE has it now, for an edit to start from.
@@ -1289,6 +1298,22 @@ mod tests {
         assert_eq!(out.reminders, [cal::Reminder::OneDayBefore]);
         assert_eq!(out.invitees, ["u2"]);
         assert_eq!(out.original_invitees, ["u2"]);
+    }
+
+    #[test]
+    fn hidden_calendars_are_left_out_unless_every_one_looks_hidden() {
+        let c = |id: &str, visible: bool, listed: bool| cal::Calendar {
+            id: id.into(),
+            is_visible: visible,
+            is_shown_in_calendar_list: listed,
+            ..Default::default()
+        };
+        let ids = |v: Vec<cal::Calendar>| v.into_iter().map(|c| c.id).collect::<Vec<_>>();
+        assert_eq!(
+            ids(shown_calendars(vec![c("a", true, true), c("b", false, true), c("c", true, false)])),
+            ["a"]
+        );
+        assert_eq!(ids(shown_calendars(vec![c("a", false, false), c("b", false, false)])), ["a", "b"]);
     }
 
     #[test]
