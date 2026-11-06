@@ -13,6 +13,10 @@ export interface Chat {
   muted: boolean;
   picture: string | null;
   memberCount: number | null;
+  /** A group we are invited to and have not joined. */
+  invited?: boolean;
+  /** In LINE's message request box: from someone who is not a friend, not accepted yet. */
+  request?: boolean;
 }
 
 export interface ChatMember {
@@ -20,6 +24,7 @@ export interface ChatMember {
   name: string;
   all?: boolean;
   picture?: string | null;
+  invited?: boolean;
 }
 
 export interface MentionSpan {
@@ -259,12 +264,35 @@ export interface ContactProfile {
 }
 
 /** An official account's rich menu, in canvas pixels. */
+/** What a rich-menu area does: `web` opens `uri`, `postback` sends `data`, `sendMessage` sends `text`,
+ *  `transition` shows `scene`, `clipboard` copies `clipboardText`. */
+/** A friend or an official account the user added. */
+export interface Friend {
+  mid: string;
+  name: string;
+  picture: string | null;
+  kind: "dm" | "bot";
+}
+
+export interface RichMenuAction {
+  type: string;
+  label: string | null;
+  uri: string | null;
+  data: string | null;
+  text: string | null;
+  scene: string | null;
+  clipboardText: string | null;
+}
+export interface RichMenuScene {
+  images: { url: string; x: number; y: number; w: number; h: number }[];
+  areas: { x: number; y: number; w: number; h: number; action: RichMenuAction }[];
+}
 export interface RichMenu {
   label: string;
   width: number;
   height: number;
-  images: { url: string; x: number; y: number; w: number; h: number }[];
-  areas: { x: number; y: number; w: number; h: number; action: { type: string; label: string | null; uri: string | null } }[];
+  initialScene: string;
+  scenes: Record<string, RichMenuScene>;
 }
 
 /** A LIFF window as LIFF DevTools sees it. */

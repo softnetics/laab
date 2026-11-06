@@ -4,6 +4,7 @@
 calendar=Calendar
 chat=Chats
 group=Groups
+friends=Friends
 keep=Keep Memo
 album=Albums
 note=Notes

@@ -18,6 +18,7 @@ import type {
   ChatMember,
   ContactProfile,
   Draft,
+  Friend,
   MentionSpan,
   Message,
   NoteDetail,
@@ -59,6 +60,7 @@ export const api = {
   logout: () => invoke<void>("logout"),
   chats: () => invoke<ChatList>("chats"),
   people: () => invoke<Record<string, Person>>("people"),
+  friends: () => invoke<Friend[]>("friends"),
   messages: (chatId: string, limit: number) => invoke<Message[]>("messages", { chatId, limit }),
   /** Fetch the page of history before the oldest stored message; 0 at its start. */
   olderMessages: (chatId: string) => invoke<number>("older_messages", { chatId }),
@@ -90,8 +92,9 @@ export const api = {
   draft: (chatId: string) => invoke<Draft | null>("draft", { chatId }),
   setDraft: (chatId: string, draft: Draft) => invoke<void>("set_draft", { chatId, draft }),
   rawMessage: (chatId: string, messageId: string) => invoke<string>("raw_message", { chatId, messageId }),
-  sendPostback: (chatId: string, messageId: string, data: string, displayText: string | null) =>
-    invoke<void>("send_postback", { chatId, messageId, data, displayText }),
+  /** A bot's postback button. `messageId` is null for rich-menu areas, whose `data` is the whole linepostback URL. */
+  sendPostback: (chatId: string, messageId: string | null, data: string, displayText: string | null, text: string | null = null) =>
+    invoke<void>("send_postback", { chatId, messageId, data, displayText, text }),
   openLiff: (req: { url: string; chatId?: string | null; consent?: boolean; web?: boolean }) => invoke<void>("open_liff", { req }),
   liffDevSessions: () => invoke<LiffDevSession[]>("liff_dev_sessions"),
   liffDevAction: (label: string, action: "reload" | "inspect" | "close" | "reopen" | "web") =>
@@ -128,7 +131,8 @@ export const api = {
   listNotes: (chatId: string) => invoke<NotePost[]>("list_notes", { chatId }),
   createNote: (chatId: string, text: string, photos: string[] = []) => invoke<void>("create_note", { chatId, text, photos }),
   noteDetail: (chatId: string, postId: string) => invoke<NoteDetail>("note_detail", { chatId, postId }),
-  addComment: (chatId: string, postId: string, text: string) => invoke<void>("add_comment", { chatId, postId, text }),
+  addComment: (chatId: string, postId: string, text: string, authorMid: string | null = null) =>
+    invoke<void>("add_comment", { chatId, postId, text, authorMid }),
   deleteNote: (chatId: string, postId: string) => invoke<void>("delete_note", { chatId, postId }),
   calendarEvents: (chatId: string) => invoke<CalendarEvent[]>("calendar_events", { chatId }),
   allCalendarEvents: () => invoke<AllCalendars>("all_calendar_events"),
@@ -148,6 +152,15 @@ export const api = {
   deleteAlbum: (chatId: string, albumId: string) => invoke<void>("delete_album", { chatId, albumId }),
   deleteMessage: (messageId: string) => invoke<void>("delete_message", { messageId }),
   leaveGroup: (chatId: string) => invoke<void>("leave_group", { chatId }),
+  acceptInvitation: (chatId: string) => invoke<void>("accept_invitation", { chatId }),
+  acceptMessageRequest: (chatId: string) => invoke<void>("accept_message_request", { chatId }),
+  rejectInvitation: (chatId: string) => invoke<void>("reject_invitation", { chatId }),
+  createGroup: (name: string, mids: string[]) => invoke<string>("create_group", { name, mids }),
+  inviteMembers: (chatId: string, mids: string[]) => invoke<void>("invite_members", { chatId, mids }),
+  removeMember: (chatId: string, mid: string) => invoke<void>("remove_member", { chatId, mid }),
+  cancelInvitation: (chatId: string, mids: string[]) => invoke<void>("cancel_invitation", { chatId, mids }),
+  renameGroup: (chatId: string, name: string) => invoke<void>("rename_group", { chatId, name }),
+  invitees: (chatId: string) => invoke<ChatMember[]>("invitees", { chatId }),
   chatMedia: (chatId: string, kind: "media" | "files" | "links") => invoke<Message[]>("chat_media", { chatId, kind }),
   saveText: (path: string, text: string) => invoke<void>("save_text", { path, text }),
   saveAttachment: (chatId: string, messageId: string, dest: string | null = null) =>
@@ -182,6 +195,7 @@ export const q = {
   session: queryOptions({ queryKey: ["session"], queryFn: () => api.session().then(track) }),
   chats: queryOptions({ queryKey: ["chats"], queryFn: api.chats }),
   people: queryOptions({ queryKey: ["people"], queryFn: api.people }),
+  friends: queryOptions({ queryKey: ["friends"], queryFn: api.friends }),
   messages: (chatId: string) =>
     queryOptions({ queryKey: ["messages", chatId], queryFn: () => api.messages(chatId, messageLimit(chatId)) }),
   reads: (chatId: string) => queryOptions({ queryKey: ["reads", chatId], queryFn: () => api.reads(chatId) }),
@@ -219,6 +233,7 @@ export function useBackendEvents() {
       listen("chats-changed", () => {
         queryClient.invalidateQueries({ queryKey: ["chats"] });
         queryClient.invalidateQueries({ queryKey: ["people"] });
+        queryClient.invalidateQueries({ queryKey: ["friends"] });
       }),
       listen<{ chatId: string }>("messages-changed", (e) => queryClient.invalidateQueries({ queryKey: ["messages", e.payload.chatId] })),
       listen("mcp-changed", () => {
@@ -232,6 +247,7 @@ export function useBackendEvents() {
       listen<{ chatId: string }>("reads-changed", (e) => queryClient.invalidateQueries({ queryKey: ["reads", e.payload.chatId] })),
       listen<{ chatId: string }>("members-changed", (e) => {
         queryClient.invalidateQueries({ queryKey: ["members", e.payload.chatId] });
+        queryClient.invalidateQueries({ queryKey: ["invitees", e.payload.chatId] });
         queryClient.invalidateQueries({ queryKey: ["people"] });
       }),
     ];

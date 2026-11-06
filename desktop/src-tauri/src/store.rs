@@ -9,7 +9,7 @@ use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 
 use crate::model::{
-    Chat, ChatMember, MentionSpan, Message, Reaction, SearchHit, SearchKind, Workspace,
+    Chat, ChatMember, Friend, MentionSpan, Message, Reaction, SearchHit, SearchKind, Workspace,
 };
 
 pub struct Store {
@@ -96,6 +96,13 @@ impl Store {
             ("chats", "synced", "REAL"),
             // A hidden chat stays out of the list until it gets a newer message.
             ("chats", "hidden_at", "REAL"),
+            // The newest message id deleted from the chat's history (here or
+            // on another device); older messages never come back.
+            ("chats", "removed_through", "INTEGER"),
+            // 1 for a group we are invited to and have not joined.
+            ("chats", "invited", "INTEGER NOT NULL DEFAULT 0"),
+            // 1 for a chat in LINE's message request box.
+            ("chats", "request", "INTEGER NOT NULL DEFAULT 0"),
         ] {
             self.add_column_if_missing(table, column, definition)?;
         }
@@ -115,6 +122,9 @@ impl Store {
              -- The Raycast extension reads sender names from `people`.
              CREATE VIEW IF NOT EXISTS people AS SELECT mid AS id, name FROM users;",
         )?;
+        // 1 for a friend (not blocked), 0 for anyone else we know.
+        self.add_column_if_missing("users", "friend", "INTEGER")?;
+        self.add_column_if_missing("members", "invited", "INTEGER NOT NULL DEFAULT 0")?;
         let count: i64 = db.query_row("SELECT COUNT(*) FROM workspaces", [], |r| r.get(0))?;
         if count == 0 {
             db.execute("INSERT INTO workspaces VALUES ('main', 'หลัก', 0)", [])?;
@@ -221,11 +231,15 @@ impl Store {
         let tx = self.db.transaction()?;
         for c in chats {
             tx.execute(
-                "INSERT INTO chats (id,name,kind,preview,activity,unread,avatar,muted,picture,member_count) VALUES (?,?,?,?,?,?,?,?,?,?)
+                "INSERT INTO chats (id,name,kind,preview,activity,unread,avatar,muted,picture,member_count,invited,request) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
                  ON CONFLICT(id) DO UPDATE SET name=excluded.name, kind=excluded.kind, preview=excluded.preview, activity=excluded.activity,
                  unread=excluded.unread, avatar=COALESCE(excluded.avatar, chats.avatar), muted=excluded.muted,
-                 picture=COALESCE(excluded.picture, chats.picture), member_count=COALESCE(excluded.member_count, chats.member_count)",
-                params![c.id, c.name, c.kind, c.preview, c.last_activity, c.unread, c.avatar, c.muted as i64, c.picture, c.member_count],
+                 picture=COALESCE(excluded.picture, chats.picture), member_count=COALESCE(excluded.member_count, chats.member_count),
+                 invited=excluded.invited, request=excluded.request",
+                params![
+                    c.id, c.name, c.kind, c.preview, c.last_activity, c.unread, c.avatar, c.muted as i64, c.picture, c.member_count,
+                    c.invited as i64, c.request as i64
+                ],
             )?;
         }
         tx.commit()?;
@@ -244,7 +258,7 @@ impl Store {
 
     fn chats_where<P: rusqlite::Params>(&self, filter: &str, params: P) -> Result<Vec<Chat>> {
         let mut stmt = self.db.prepare(&format!(
-            "SELECT id,name,kind,preview,activity,unread,avatar,muted,picture,member_count FROM chats {filter} ORDER BY activity DESC"
+            "SELECT id,name,kind,preview,activity,unread,avatar,muted,picture,member_count,invited,request FROM chats {filter} ORDER BY activity DESC"
         ))?;
         let rows = stmt.query_map(params, |r| {
             Ok(Chat {
@@ -258,6 +272,8 @@ impl Store {
                 muted: r.get::<_, i64>(7)? != 0,
                 picture: r.get(8)?,
                 member_count: r.get(9)?,
+                invited: r.get::<_, i64>(10)? != 0,
+                request: r.get::<_, i64>(11)? != 0,
             })
         })?;
         Ok(rows.collect::<rusqlite::Result<_>>()?)
@@ -314,6 +330,13 @@ impl Store {
     }
 
     pub fn delete_history(&self, chat_id: &str) -> Result<()> {
+        // Remember how far it went, so a history sync can't bring it back.
+        self.db.execute(
+            "UPDATE chats SET removed_through=MAX(COALESCE(removed_through,0),
+                COALESCE((SELECT MAX(CAST(id AS INTEGER)) FROM messages WHERE chat_id=?1 AND id GLOB '[0-9]*'),0))
+             WHERE id=?1",
+            [chat_id],
+        )?;
         self.db.execute(
             "DELETE FROM message_search WHERE id IN (SELECT id FROM messages WHERE chat_id=?)",
             [chat_id],
@@ -324,6 +347,49 @@ impl Store {
         )?;
         self.db
             .execute("DELETE FROM messages WHERE chat_id=?", [chat_id])?;
+        self.db
+            .execute("UPDATE chats SET preview='' WHERE id=?", [chat_id])?;
+        Ok(())
+    }
+
+    /// Delete a chat's messages up to and including `message_id`, as LINE's
+    /// `lastRemovedMessageId` says another device did, and keep them out of
+    /// later syncs. Returns whether anything was deleted.
+    pub fn remove_history_through(&self, chat_id: &str, message_id: i64) -> Result<bool> {
+        let current: Option<i64> = self
+            .db
+            .query_row("SELECT removed_through FROM chats WHERE id=?", [chat_id], |r| r.get(0))
+            .optional()?
+            .flatten();
+        if current.is_some_and(|c| c >= message_id) {
+            return Ok(false);
+        }
+        let older = "SELECT id FROM messages WHERE chat_id=?1 AND id GLOB '[0-9]*' AND CAST(id AS INTEGER)<=?2";
+        let p = params![chat_id, message_id];
+        self.db
+            .execute(&format!("DELETE FROM message_search WHERE id IN ({older})"), p)?;
+        self.db
+            .execute(&format!("DELETE FROM reactions WHERE message_id IN ({older})"), p)?;
+        let gone = self.db.execute(
+            "DELETE FROM messages WHERE chat_id=?1 AND id GLOB '[0-9]*' AND CAST(id AS INTEGER)<=?2",
+            p,
+        )?;
+        self.db.execute(
+            "UPDATE chats SET removed_through=?2 WHERE id=?1",
+            p,
+        )?;
+        Ok(gone > 0)
+    }
+
+    pub fn set_request(&self, chat_id: &str, request: bool) -> Result<()> {
+        self.db.execute(
+            "UPDATE chats SET request=? WHERE id=?",
+            params![request as i64, chat_id],
+        )?;
+        Ok(())
+    }
+
+    pub fn clear_preview(&self, chat_id: &str) -> Result<()> {
         self.db
             .execute("UPDATE chats SET preview='' WHERE id=?", [chat_id])?;
         Ok(())
@@ -360,25 +426,36 @@ impl Store {
         tx.execute("DELETE FROM members WHERE chat_id=?", [chat_id])?;
         for m in members.iter().filter(|m| !m.all) {
             tx.execute(
-                "INSERT OR REPLACE INTO members(chat_id,mid,name,picture) VALUES (?,?,?,?)",
-                params![chat_id, m.mid, m.name, m.picture],
+                "INSERT OR REPLACE INTO members(chat_id,mid,name,picture,invited) VALUES (?,?,?,?,?)",
+                params![chat_id, m.mid, m.name, m.picture, m.invited as i64],
             )?;
         }
         tx.commit()?;
         Ok(())
     }
 
+    /// A group's members, without the people only invited.
     pub fn members(&self, chat_id: &str) -> Result<Vec<ChatMember>> {
+        self.members_where(chat_id, false)
+    }
+
+    /// The people invited to a group who have not joined yet.
+    pub fn invitees(&self, chat_id: &str) -> Result<Vec<ChatMember>> {
+        self.members_where(chat_id, true)
+    }
+
+    fn members_where(&self, chat_id: &str, invited: bool) -> Result<Vec<ChatMember>> {
         let mut stmt = self.db.prepare(
-            "SELECT m.mid, COALESCE(NULLIF(m.name,''), u.name, m.mid), COALESCE(m.picture, u.picture)
-             FROM members m LEFT JOIN users u ON u.mid=m.mid WHERE m.chat_id=?",
+            "SELECT m.mid, COALESCE(NULLIF(m.name,''), u.name, m.mid), COALESCE(m.picture, u.picture), m.invited
+             FROM members m LEFT JOIN users u ON u.mid=m.mid WHERE m.chat_id=? AND m.invited=?",
         )?;
-        let rows = stmt.query_map([chat_id], |r| {
+        let rows = stmt.query_map(params![chat_id, invited as i64], |r| {
             Ok(ChatMember {
                 mid: r.get(0)?,
                 name: r.get(1)?,
                 picture: r.get(2)?,
                 all: false,
+                invited: r.get::<_, i64>(3)? != 0,
             })
         })?;
         Ok(rows.collect::<rusqlite::Result<_>>()?)
@@ -399,6 +476,33 @@ impl Store {
         }
         tx.commit()?;
         Ok(())
+    }
+
+    /// Mark exactly these mids as the account's friends.
+    pub fn set_friends(&mut self, mids: &[String]) -> Result<()> {
+        let tx = self.db.transaction()?;
+        tx.execute("UPDATE users SET friend=0 WHERE friend IS NOT NULL", [])?;
+        for mid in mids {
+            tx.execute("UPDATE users SET friend=1 WHERE mid=?", [mid])?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Friends and official accounts the user added, by name.
+    pub fn friends(&self) -> Result<Vec<Friend>> {
+        let mut stmt = self.db.prepare(
+            "SELECT mid,name,picture,COALESCE(kind,'dm') FROM users WHERE friend=1 AND name<>'' ORDER BY name",
+        )?;
+        let rows = stmt.query_map([], |r| {
+            Ok(Friend {
+                mid: r.get(0)?,
+                name: r.get(1)?,
+                picture: r.get(2)?,
+                kind: r.get(3)?,
+            })
+        })?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
 
     /// mid → (display name, avatar path) for everyone we know.
@@ -451,6 +555,31 @@ impl Store {
     }
 
     pub fn upsert_messages(&mut self, messages: &[Message]) -> Result<()> {
+        // Messages deleted from the chat's history stay deleted.
+        let mut removed: HashMap<&str, Option<i64>> = HashMap::new();
+        for m in messages {
+            if !removed.contains_key(m.chat_id.as_str()) {
+                let through: Option<i64> = self
+                    .db
+                    .query_row(
+                        "SELECT removed_through FROM chats WHERE id=?",
+                        [&m.chat_id],
+                        |r| r.get(0),
+                    )
+                    .optional()?
+                    .flatten();
+                removed.insert(&m.chat_id, through);
+            }
+        }
+        let kept: Vec<Message> = messages
+            .iter()
+            .filter(|m| {
+                let through = removed.get(m.chat_id.as_str()).copied().flatten();
+                !matches!((through, m.id.parse::<i64>()), (Some(t), Ok(id)) if id <= t)
+            })
+            .cloned()
+            .collect();
+        let messages = kept.as_slice();
         let names: Vec<Option<String>> = messages
             .iter()
             .map(|m| self.preferred_file_name(m.file_name.as_deref(), &m.id))
@@ -1003,6 +1132,23 @@ impl Store {
                 });
             }
         }
+        if has(SearchKind::Chat) {
+            // Friends we have no chat with yet, to start one.
+            let mut stmt = self.db.prepare(
+                "SELECT mid,name FROM users WHERE friend=1 AND name LIKE ? ESCAPE '\\'
+                 AND mid NOT IN (SELECT id FROM chats) ORDER BY name LIMIT 30",
+            )?;
+            for row in stmt.query_map([&like], |r| Ok((r.get(0)?, r.get(1)?)))? {
+                let (chat_id, title) = row?;
+                results.push(SearchHit {
+                    kind: SearchKind::Chat,
+                    chat_id,
+                    message_id: None,
+                    title,
+                    detail: String::new(),
+                });
+            }
+        }
         if has(SearchKind::Message) || has(SearchKind::File) {
             // The trigram tokenizer needs at least three characters.
             let use_fts = term.chars().count() >= 3;
@@ -1142,6 +1288,74 @@ mod tests {
         assert_eq!(s.search("ok", &[SearchKind::Message]).unwrap().len(), 1);
         // An empty query lists recent chats.
         assert_eq!(s.search("  ", &[SearchKind::Chat]).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn friends_come_from_the_friend_list_and_are_searchable() {
+        let mut s = Store::memory().unwrap();
+        let user = |mid: &str, name: &str| (mid.to_string(), name.to_string(), None, Some("dm".to_string()));
+        s.upsert_users(&[user("u1", "Alice"), user("u2", "Bob"), user("u3", "Alina")])
+            .unwrap();
+        s.set_friends(&["u1".into(), "u3".into()]).unwrap();
+        let names: Vec<String> = s.friends().unwrap().into_iter().map(|f| f.name).collect();
+        assert_eq!(names, ["Alice", "Alina"]);
+        // A friend with a chat row is found as that chat, once.
+        s.upsert_chats(&[chat("u1", "Alice")]).unwrap();
+        let hits = s.search("Ali", &[SearchKind::Chat]).unwrap();
+        let ids: Vec<&str> = hits.iter().map(|h| h.chat_id.as_str()).collect();
+        assert_eq!(ids, ["u1", "u3"]);
+        // Unfriended (or blocked) people drop out.
+        s.set_friends(&["u3".into()]).unwrap();
+        assert_eq!(s.friends().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn invitations_are_kept_apart() {
+        let mut s = Store::memory().unwrap();
+        let mut c = chat("c1", "Team");
+        c.kind = "group".into();
+        c.invited = true;
+        s.upsert_chats(&[c.clone()]).unwrap();
+        assert!(s.chat("c1").unwrap().unwrap().invited);
+        c.invited = false;
+        s.upsert_chats(&[c]).unwrap();
+        assert!(!s.chat("c1").unwrap().unwrap().invited);
+        let m = |mid: &str, invited: bool| ChatMember {
+            mid: mid.into(),
+            name: mid.into(),
+            invited,
+            ..Default::default()
+        };
+        s.upsert_members("c1", &[m("u1", false), m("u2", true)]).unwrap();
+        let mids = |v: Vec<ChatMember>| v.into_iter().map(|m| m.mid).collect::<Vec<_>>();
+        assert_eq!(mids(s.members("c1").unwrap()), ["u1"]);
+        assert_eq!(mids(s.invitees("c1").unwrap()), ["u2"]);
+    }
+
+    #[test]
+    fn history_deleted_elsewhere_stays_deleted() {
+        let mut s = Store::memory().unwrap();
+        s.upsert_chats(&[chat("u1", "A")]).unwrap();
+        s.upsert_messages(&[
+            msg("100", "u1", "old", 1.0),
+            msg("9007199254740993", "u1", "big", 2.0),
+            msg("local-1", "u1", "pending", 3.0),
+        ])
+        .unwrap();
+        assert!(s.remove_history_through("u1", 9007199254740993).unwrap());
+        let left: Vec<String> = s.messages("u1", 10).unwrap().into_iter().map(|m| m.id).collect();
+        assert_eq!(left, ["local-1"]);
+        assert!(!s.remove_history_through("u1", 50).unwrap());
+        // A history sync can't bring them back; newer ones still arrive.
+        s.upsert_messages(&[msg("100", "u1", "old", 1.0), msg("9007199254740994", "u1", "new", 4.0)])
+            .unwrap();
+        assert_eq!(s.messages("u1", 10).unwrap().len(), 2);
+        // Deleting the whole history here remembers how far it went.
+        s.upsert_chats(&[chat("u2", "B")]).unwrap();
+        s.upsert_messages(&[msg("7", "u2", "x", 1.0)]).unwrap();
+        s.delete_history("u2").unwrap();
+        s.upsert_messages(&[msg("7", "u2", "x", 1.0)]).unwrap();
+        assert!(s.messages("u2", 10).unwrap().is_empty());
     }
 
     #[test]

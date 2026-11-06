@@ -532,6 +532,9 @@ export function ChatRow({
               <span className="shrink-0 text-[13.5px] text-primary">({chat.memberCount})</span>
             ) : null}
             {chat.muted && <BellSlashIcon size={10} className="shrink-0 text-secondary" />}
+            {chat.request && (
+              <span className="shrink-0 rounded-[3px] bg-field px-1 text-[10.5px] leading-[15px] text-secondary">คำขอข้อความ</span>
+            )}
             <span className="ml-auto shrink-0 text-[11px] text-secondary">{listLabel(chat.lastActivity)}</span>
           </div>
           <div className="mt-0.5 flex items-start gap-2">

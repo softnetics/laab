@@ -289,22 +289,24 @@ pub async fn announce(
     text: &str,
 ) -> Result<()> {
     let l = line(state).await?;
-    l.client
-        .base
-        .talk()
-        .call(
-            "createChatRoomAnnouncement",
-            tv!({"chatRoomMid": chat_id, "type": "MESSAGE",
-                "contents": {"text": text, "link": format!("line://nv/chatMsg?chatId={chat_id}&messageId={message_id}")}}),
-        )
-        .await?;
+    l.chat(chat_id).announce(message_id, text).await?;
     Ok(())
 }
 
 // -- people -----------------------------------------------------------------
 
+/// Block or unblock with RelationService, as LINE for Android does
+/// (`blockRelation`, `unblockRelation`); the legacy Talk calls if it fails.
 pub async fn set_blocked(state: &Arc<AppState>, mid: &str, blocked: bool) -> Result<()> {
     let l = line(state).await?;
+    let relation = l.client.base.relation();
+    let result = if blocked {
+        relation.block_relation(mid).await
+    } else {
+        relation.unblock_relation(mid, None).await
+    };
+    let Err(e) = result else { return Ok(()) };
+    tracing::warn!("blockRelation/unblockRelation: {e}");
     let seq = talk_seq(&l).await?;
     let talk = l.client.base.talk();
     if blocked {
@@ -328,14 +330,60 @@ pub struct FoundContact {
     pub picture: Option<String>,
 }
 
-/// Find someone by LINE ID or a line.me / line:// profile link.
+/// A `GetContactV3Response`, or the legacy `Contact` (bare or under
+/// `contact`) of the old Talk lookups.
+fn found_contact(json: &Json) -> Option<FoundContact> {
+    if let Some(mid) = str_of(&json["targetUserMid"]) {
+        let detail = &json["targetProfileDetail"];
+        return Some(FoundContact {
+            name: str_of(&detail["profileName"]).unwrap_or_else(|| mid.clone()),
+            picture: str_of(&detail["picturePath"]),
+            mid,
+        });
+    }
+    let c = if json["contact"].is_null() { json } else { &json["contact"] };
+    let mid = str_of(&c["mid"])?;
+    Some(FoundContact {
+        name: str_of(&c["displayName"]).unwrap_or_else(|| mid.clone()),
+        picture: str_of(&c["picturePath"]),
+        mid,
+    })
+}
+
+/// Find someone by LINE ID or a line.me / line:// profile link, with
+/// `findContactBySearchIdOrTicketV3` as LINE for Android does (`lf3/b.java`).
+/// The legacy Talk lookups stay as a fallback.
 pub async fn find_contact(state: &Arc<AppState>, query: &str) -> Result<FoundContact> {
+    use line_rs::link::ProfileRef;
     let l = line(state).await?;
     let query = query.trim();
-    let raw = match LineLink::parse(query) {
-        Some(link @ LineLink::Profile(_)) => l.client.base.resolve_link(&link).await?,
+    let relation = l.client.base.relation();
+    let link = LineLink::parse(query);
+    let v3 = match &link {
+        Some(LineLink::Profile(ProfileRef::Ticket(t))) => relation.find_contact_by_ticket_v3(t).await,
+        Some(LineLink::Profile(ProfileRef::UserId(id))) => {
+            relation.find_contact_by_search_id_or_ticket_v3(id).await
+        }
+        // An official account's @id as a search id is unverified.
+        Some(LineLink::Profile(ProfileRef::OfficialAccount(id))) => {
+            relation
+                .find_contact_by_search_id_or_ticket_v3(&format!("@{}", id.trim_start_matches('@')))
+                .await
+        }
         Some(_) => bail!("ลิงก์นี้ไม่ใช่ลิงก์เพิ่มเพื่อน"),
-        None => {
+        None => relation.find_contact_by_search_id_or_ticket_v3(query).await,
+    };
+    match v3 {
+        Ok(v) => {
+            if let Some(found) = found_contact(&v.to_json()) {
+                return Ok(found);
+            }
+        }
+        Err(e) => tracing::warn!("findContactBySearchIdOrTicketV3: {e}"),
+    }
+    let raw = match link {
+        Some(link @ LineLink::Profile(_)) => l.client.base.resolve_link(&link).await?,
+        _ => {
             let id = query.trim_start_matches('@');
             l.client
                 .base
@@ -344,18 +392,7 @@ pub async fn find_contact(state: &Arc<AppState>, query: &str) -> Result<FoundCon
                 .await?
         }
     };
-    let json = raw.to_json();
-    let c = if json["contact"].is_null() {
-        &json
-    } else {
-        &json["contact"]
-    };
-    let mid = str_of(&c["mid"]).ok_or_else(|| anyhow!("ไม่พบผู้ใช้"))?;
-    Ok(FoundContact {
-        name: str_of(&c["displayName"]).unwrap_or_else(|| mid.clone()),
-        picture: str_of(&c["picturePath"]),
-        mid,
-    })
+    found_contact(&raw.to_json()).ok_or_else(|| anyhow!("ไม่พบผู้ใช้"))
 }
 
 #[derive(Serialize)]
@@ -371,12 +408,69 @@ pub struct ContactProfile {
     pub blocked: bool,
 }
 
-/// Someone's profile card: `getContact` for the name, status message and
-/// friend/blocked state, the home profile for the cover. The cover is a
-/// best effort: without it the card falls back to the profile picture.
+/// Someone's profile card: `getContactsV3` for the name, status message
+/// and friend/blocked state as LINE for Android reads them (the legacy
+/// `getContact` if V3 fails), the home profile for the cover. The cover is
+/// a best effort: without it the card falls back to the profile picture.
 pub async fn contact_profile(state: &Arc<AppState>, mid: &str) -> Result<ContactProfile> {
     let l = line(state).await?;
-    let c = l.client.base.talk().get_contact(mid).await?.to_json();
+    let mut card = match l
+        .client
+        .base
+        .relation()
+        .get_contacts_v3(&[mid.to_string()], None)
+        .await
+    {
+        Ok(v) => profile_from_v3(&v.to_json(), mid),
+        Err(e) => {
+            tracing::warn!("getContactsV3 {mid}: {e}");
+            None
+        }
+    };
+    if card.is_none() {
+        let c = l.client.base.talk().get_contact(mid).await?.to_json();
+        card = Some(profile_from_contact(&c, mid));
+    }
+    let mut card = card.expect("set above");
+    let home = line_rs::rest::home::HomeProfileQuery {
+        home_id: mid.into(),
+        ..Default::default()
+    };
+    card.cover = match l.client.base.rest().home().profile(home).await {
+        Ok(json) => cover_object_id(&json),
+        Err(e) => {
+            tracing::warn!("home profile {mid}: {e}");
+            None
+        }
+    };
+    Ok(card)
+}
+
+/// A profile card from a `getContactsV3` reply.
+fn profile_from_v3(json: &Json, mid: &str) -> Option<ContactProfile> {
+    let r = json["responses"]
+        .as_array()?
+        .iter()
+        .find(|r| r["targetUserMid"].as_str() == Some(mid))?;
+    let detail = &r["targetProfileDetail"];
+    let has = |d: &Json| d.get("user").is_some() || d.get("bot").is_some();
+    // statusMessage is a RichString{content, meta}.
+    let status = str_of(&detail["statusMessage"]["content"]).or_else(|| str_of(&detail["statusMessage"]));
+    Some(ContactProfile {
+        mid: mid.into(),
+        name: str_of(&r["friendDetail"]["user"]["overriddenName"])
+            .or_else(|| str_of(&detail["profileName"]))
+            .unwrap_or_else(|| mid.into()),
+        picture: str_of(&detail["picturePath"]),
+        status_message: status.filter(|s| !s.trim().is_empty()),
+        cover: None,
+        friend: has(&r["friendDetail"]),
+        blocked: has(&r["blockDetail"]),
+    })
+}
+
+/// A profile card from the legacy `getContact`.
+fn profile_from_contact(c: &Json, mid: &str) -> ContactProfile {
     // ContactStatus: FRIEND 1, FRIEND_BLOCKED 2, RECOMMEND_BLOCKED 4,
     // DELETED_BLOCKED 6. It arrives as a number or as the enum name.
     let status = c["status"]
@@ -391,28 +485,17 @@ pub async fn contact_profile(state: &Arc<AppState>, mid: &str) -> Result<Contact
             })
         })
         .unwrap_or(0);
-    let home = line_rs::rest::home::HomeProfileQuery {
-        home_id: mid.into(),
-        ..Default::default()
-    };
-    let cover = match l.client.base.rest().home().profile(home).await {
-        Ok(json) => cover_object_id(&json),
-        Err(e) => {
-            tracing::warn!("home profile {mid}: {e}");
-            None
-        }
-    };
-    Ok(ContactProfile {
+    ContactProfile {
         mid: mid.into(),
         name: str_of(&c["displayNameOverridden"])
             .or_else(|| str_of(&c["displayName"]))
             .unwrap_or_else(|| mid.into()),
         picture: str_of(&c["picturePath"]),
         status_message: str_of(&c["statusMessage"]).filter(|s| !s.trim().is_empty()),
-        cover,
+        cover: None,
         friend: matches!(status, 1 | 2),
         blocked: matches!(status, 2 | 4 | 6),
-    })
+    }
 }
 
 /// The cover's OBS path (see [`obs_path`]) in a home profile response.
@@ -478,6 +561,112 @@ pub async fn join_group_link(state: &Arc<AppState>, url: &str) -> Result<String>
         .unwrap_or_default();
     let _ = line::refresh_chats(state, false).await;
     Ok(mid)
+}
+
+/// Accept a chat from LINE's message request box, as the app does
+/// (`updateChatStatusBulk` with `trusted`).
+pub async fn accept_message_request(state: &Arc<AppState>, chat_id: &str) -> Result<()> {
+    let l = line(state).await?;
+    l.client
+        .base
+        .talk()
+        .update_chat_status_bulk(&[chat_id.to_string()], true)
+        .await?;
+    state.store().set_request(chat_id, false)?;
+    state.chats_changed();
+    Ok(())
+}
+
+// -- groups -----------------------------------------------------------------
+
+/// Reload a group's row and members after we changed it.
+async fn group_changed(state: &Arc<AppState>, l: &Arc<Line>, chat_id: &str) {
+    line::refresh_chat_row(state, l, chat_id).await;
+    if let Err(e) = line::load_members(state, chat_id, true).await {
+        tracing::warn!("reloading members: {e}");
+    }
+}
+
+/// Join a group we were invited to.
+pub async fn accept_invitation(state: &Arc<AppState>, chat_id: &str) -> Result<()> {
+    let l = line(state).await?;
+    l.chat(chat_id).accept_invitation().await?;
+    {
+        let mut store = state.store();
+        if let Ok(Some(mut c)) = store.chat(chat_id) {
+            c.invited = false;
+            c.preview.clear();
+            store.upsert_chats(&[c])?;
+        }
+    }
+    state.chats_changed();
+    group_changed(state, &l, chat_id).await;
+    Ok(())
+}
+
+/// Decline an invitation: the group leaves the list.
+pub async fn reject_invitation(state: &Arc<AppState>, chat_id: &str) -> Result<()> {
+    let l = line(state).await?;
+    l.chat(chat_id).reject_invitation().await?;
+    state.store().hide_chat(chat_id)?;
+    state.chats_changed();
+    Ok(())
+}
+
+/// Create a group named `name` with these people invited; returns its id.
+pub async fn create_group(state: &Arc<AppState>, name: &str, mids: &[String]) -> Result<String> {
+    let l = line(state).await?;
+    let mids: Vec<&str> = mids.iter().map(String::as_str).collect();
+    let chat = l.client.create_group(name.trim(), &mids).await?;
+    let id = chat.mid().to_string();
+    if id.is_empty() {
+        bail!("LINE ไม่ได้ส่งกลุ่มที่สร้างกลับมา");
+    }
+    let row = crate::model::Chat {
+        id: id.clone(),
+        name: if name.trim().is_empty() { id.clone() } else { name.trim().into() },
+        kind: "group".into(),
+        last_activity: now_ms(),
+        ..Default::default()
+    };
+    state.store().upsert_chats(&[row])?;
+    state.chats_changed();
+    group_changed(state, &l, &id).await;
+    Ok(id)
+}
+
+pub async fn invite_members(state: &Arc<AppState>, chat_id: &str, mids: &[String]) -> Result<()> {
+    let l = line(state).await?;
+    let mids: Vec<&str> = mids.iter().map(String::as_str).collect();
+    l.chat(chat_id).invite(&mids).await?;
+    group_changed(state, &l, chat_id).await;
+    Ok(())
+}
+
+pub async fn remove_member(state: &Arc<AppState>, chat_id: &str, mid: &str) -> Result<()> {
+    let l = line(state).await?;
+    l.chat(chat_id).kick(mid).await?;
+    group_changed(state, &l, chat_id).await;
+    Ok(())
+}
+
+pub async fn cancel_invitation(state: &Arc<AppState>, chat_id: &str, mids: &[String]) -> Result<()> {
+    let l = line(state).await?;
+    let mids: Vec<&str> = mids.iter().map(String::as_str).collect();
+    l.chat(chat_id).cancel_invitation(&mids).await?;
+    group_changed(state, &l, chat_id).await;
+    Ok(())
+}
+
+pub async fn rename_group(state: &Arc<AppState>, chat_id: &str, name: &str) -> Result<()> {
+    let name = name.trim();
+    if name.is_empty() {
+        bail!("ชื่อกลุ่มว่าง");
+    }
+    let l = line(state).await?;
+    l.chat(chat_id).update_name(name).await?;
+    group_changed(state, &l, chat_id).await;
+    Ok(())
 }
 
 // -- notes ------------------------------------------------------------------
@@ -653,19 +842,70 @@ fn check_timeline(code: i64, message: &str) -> Result<()> {
     Ok(())
 }
 
+/// Notes per `post/list.json` page.
+const NOTE_PAGE: u32 = 20;
+
+/// Every note of a group, newest first: page after page (`postLimit`, then
+/// the last post's id and time), as LINE for Android scrolls through them.
+/// Stops after 25 pages.
 pub async fn list_notes(state: &Arc<AppState>, chat_id: &str) -> Result<Vec<NotePost>> {
     let l = line(state).await?;
-    let reply = l
-        .client
-        .base
-        .timeline()
-        .list_post(ListPost {
-            home_id: chat_id.into(),
-            ..Default::default()
-        })
-        .await?;
-    check_timeline(reply.code, &reply.message)?;
-    Ok(parse_notes(&reply.result))
+    let timeline = l.client.base.timeline();
+    let mut query = ListPost {
+        home_id: chat_id.into(),
+        post_limit: Some(NOTE_PAGE),
+        ..Default::default()
+    };
+    let mut out: Vec<NotePost> = Vec::new();
+    for _ in 0..25 {
+        let reply = timeline.list_post(query.clone()).await?;
+        check_timeline(reply.code, &reply.message)?;
+        let page = parse_notes(&reply.result);
+        let fresh: Vec<NotePost> = page
+            .into_iter()
+            .filter(|n| !out.iter().any(|o| o.id == n.id))
+            .collect();
+        if fresh.is_empty() {
+            break;
+        }
+        out.extend(fresh);
+        match line_rs::timeline::next_page(&reply.result, &query) {
+            Some(next) => query = next,
+            None => break,
+        }
+    }
+    Ok(out)
+}
+
+/// Width and height of a PNG, GIF or JPEG, from its header.
+pub fn image_size(data: &[u8]) -> Option<(u32, u32)> {
+    let be16 = |i: usize| Some(u16::from_be_bytes(data.get(i..i + 2)?.try_into().ok()?) as u32);
+    if data.starts_with(b"\x89PNG\r\n\x1a\n") {
+        let w = u32::from_be_bytes(data.get(16..20)?.try_into().ok()?);
+        let h = u32::from_be_bytes(data.get(20..24)?.try_into().ok()?);
+        return Some((w, h));
+    }
+    if data.starts_with(b"GIF8") {
+        let le16 = |i: usize| Some(u16::from_le_bytes(data.get(i..i + 2)?.try_into().ok()?) as u32);
+        return Some((le16(6)?, le16(8)?));
+    }
+    if !data.starts_with(&[0xFF, 0xD8]) {
+        return None;
+    }
+    let mut i = 2;
+    while i + 4 <= data.len() {
+        if data[i] != 0xFF {
+            i += 1;
+            continue;
+        }
+        let marker = data[i + 1];
+        // Start of frame (not DHT 0xC4, JPG 0xC8 or DAC 0xCC).
+        if (0xC0..=0xCF).contains(&marker) && ![0xC4, 0xC8, 0xCC].contains(&marker) {
+            return Some((be16(i + 7)?, be16(i + 5)?));
+        }
+        i += 2 + be16(i + 2)? as usize;
+    }
+    None
 }
 
 /// Post a note with text and photos (uploaded to `myhome/h` first).
@@ -694,11 +934,16 @@ pub async fn create_note(
                 .as_deref(),
             Some("mp4" | "mov" | "m4v")
         );
+        // LINE for Android also sends where the object is and its size.
+        let mut media = PostMedia::note(String::new(), video);
+        media.size = Some(data.len() as u64);
+        if let Some((w, h)) = image_size(&data).filter(|_| !video) {
+            media.width = Some(w);
+            media.height = Some(h);
+        }
         let (object_id, _) = timeline.upload_note_media(video, data).await?;
-        post.contents.media.push(PostMedia {
-            object_id,
-            kind: if video { "VIDEO" } else { "PHOTO" }.into(),
-        });
+        media.object_id = object_id;
+        post.contents.media.push(media);
     }
     let reply = timeline.create_post(post).await?;
     check_timeline(reply.code, &reply.message)
@@ -715,56 +960,54 @@ pub async fn note_detail(
     let reply = timeline.get_post(chat_id, post_id).await?;
     check_timeline(reply.code, &reply.message)?;
     let note = parse_post(&reply.result["feed"]["post"]).ok_or_else(|| anyhow!("ไม่พบโน้ตนี้"))?;
-    // line-rs has no comment list; this is the endpoint LINE's note server
-    // answers (checked live 2026-10-22, POST with x-lhm: GET).
-    let mut headers = timeline.init().await?.clone();
-    headers.insert("x-lhm", reqwest::header::HeaderValue::from_static("GET"));
-    let url = url::Url::parse_with_params(
-        &format!(
-            "https://{}/ext/note/nt/api/v57/comment/getList.json",
-            l.client.base.endpoint
-        ),
-        &[
-            ("homeId", chat_id),
-            ("contentId", post_id),
-            ("actorId", chat_id),
-            ("limit", "100"),
-        ],
-    )?;
-    let body: Json = l
-        .client
-        .base
-        .http
-        .post(url)
-        .headers(headers)
-        .send()
-        .await?
-        .json()
-        .await?;
-    if body["code"].as_i64().unwrap_or(0) != 0 {
-        tracing::warn!("note comments {post_id}: {body}");
+    // LINE for Android names the post's author as actorId (vs3/a.java).
+    // LAAB used to send the group, which the note server was seen to
+    // answer; fall back to it if the author gets nothing.
+    let mut comments = Vec::new();
+    let mut actors = vec![note.author_mid.as_str(), chat_id];
+    actors.dedup();
+    for actor in actors.into_iter().filter(|a| !a.is_empty()) {
+        match timeline.list_comments(chat_id, post_id, actor, None).await {
+            Ok(r) if r.code == 0 => {
+                comments = parse_comments(&r.result);
+                if !comments.is_empty() || note.comment_count == 0 {
+                    break;
+                }
+            }
+            Ok(r) => tracing::warn!("note comments {post_id}: code {}", r.code),
+            Err(e) => tracing::warn!("note comments {post_id}: {e}"),
+        }
     }
-    Ok(NoteDetail {
-        note,
-        comments: parse_comments(&body["result"]),
-    })
+    Ok(NoteDetail { note, comments })
 }
 
+/// Comment on a note. `actorId` is the post's author, as LINE for Android
+/// sends it (`vs3/a.java`); it is looked up when not given.
 pub async fn add_comment(
     state: &Arc<AppState>,
     chat_id: &str,
     post_id: &str,
     text: &str,
+    author_mid: Option<&str>,
 ) -> Result<()> {
     if text.trim().is_empty() {
         bail!("empty_comment");
     }
     let l = line(state).await?;
-    let reply = l
-        .client
-        .base
-        .timeline()
-        .create_comment(post_id, text, chat_id, None, Vec::new())
+    let timeline = l.client.base.timeline();
+    let author = match author_mid.filter(|m| !m.is_empty()) {
+        Some(m) => m.to_string(),
+        None => {
+            let reply = timeline.get_post(chat_id, post_id).await?;
+            check_timeline(reply.code, &reply.message)?;
+            parse_post(&reply.result["feed"]["post"])
+                .map(|p| p.author_mid)
+                .filter(|m| !m.is_empty())
+                .ok_or_else(|| anyhow!("ไม่พบโน้ตนี้"))?
+        }
+    };
+    let reply = timeline
+        .create_comment(post_id, &author, text, chat_id, None, Vec::new())
         .await?;
     check_timeline(reply.code, &reply.message)
 }
@@ -1291,6 +1534,49 @@ mod tests {
         assert!(forward_request("u", "IMAGE", &stored(tv!({"SID": "emi"})), &key).is_none());
         assert!(forward_request("u", "VIDEO", &stored(tv!({"OID": "o"})), &json!({})).is_none());
         assert!(forward_request("u", "STICKER", &stored(tv!({"OID": "o"})), &key).is_none());
+    }
+
+    #[test]
+    fn reads_v3_and_legacy_contact_lookups() {
+        let v3 = json!({"targetUserMid": "u1", "userType": "USER",
+            "targetProfileDetail": {"profileName": "A", "picturePath": "/0h"}});
+        let f = found_contact(&v3).unwrap();
+        assert_eq!((f.mid.as_str(), f.name.as_str(), f.picture.as_deref()), ("u1", "A", Some("/0h")));
+        let legacy = json!({"contact": {"mid": "u2", "displayName": "B"}});
+        assert_eq!(found_contact(&legacy).unwrap().mid, "u2");
+        assert!(found_contact(&json!({})).is_none());
+    }
+
+    #[test]
+    fn profile_card_from_get_contacts_v3() {
+        let reply = json!({"responses": [{
+            "targetUserMid": "u1",
+            "targetProfileDetail": {"profileName": "A", "statusMessage": {"content": " hi "}},
+            "friendDetail": {"user": {}},
+            "blockDetail": {"user": {}},
+        }]});
+        let p = profile_from_v3(&reply, "u1").unwrap();
+        assert_eq!((p.name.as_str(), p.status_message.as_deref()), ("A", Some(" hi ")));
+        assert!(p.friend && p.blocked);
+        assert!(profile_from_v3(&reply, "u2").is_none());
+        let legacy = profile_from_contact(&json!({"displayName": "B", "status": "FRIEND_BLOCKED"}), "u2");
+        assert!(legacy.friend && legacy.blocked);
+    }
+
+    #[test]
+    fn reads_image_sizes_from_headers() {
+        let mut png = b"\x89PNG\r\n\x1a\n\0\0\0\x0dIHDR".to_vec();
+        png.extend(640u32.to_be_bytes());
+        png.extend(480u32.to_be_bytes());
+        assert_eq!(image_size(&png), Some((640, 480)));
+        let gif = b"GIF89a\x20\x03\x58\x02".to_vec();
+        assert_eq!(image_size(&gif), Some((800, 600)));
+        // SOI, an APP0 segment, then SOF0 with height 300 and width 400.
+        let jpeg = [
+            0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x04, 0x00, 0x00, 0xFF, 0xC0, 0x00, 0x11, 0x08, 0x01, 0x2C, 0x01, 0x90,
+        ];
+        assert_eq!(image_size(&jpeg), Some((400, 300)));
+        assert_eq!(image_size(b"nope"), None);
     }
 
     #[test]

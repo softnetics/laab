@@ -231,7 +231,7 @@ function NoteView({ chatId, postId, onBack }: { chatId: string; postId: string; 
     if (!comment.trim() || busy) return;
     setBusy(true);
     api
-      .addComment(chatId, postId, comment)
+      .addComment(chatId, postId, comment, data?.note.authorMid || null)
       .then(() => {
         setComment("");
         queryClient.invalidateQueries({ queryKey: key });
