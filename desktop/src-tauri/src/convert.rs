@@ -137,8 +137,33 @@ pub fn reaction_name(v: &Json) -> Option<String> {
     }
 }
 
-/// History `reactions`: `[{fromUserMid, atMillis, reactionType:{predefinedReactionType}}]`.
-/// Paid reactions carry unnamed thrift fields instead of a predefined type.
+/// How a reaction is stored: its predefined name, or for a paid one (a
+/// LINE emoji, `ReactionType.paidReactionType`)
+/// `PAID:<productId>:<emojiId>:<version>:<1 animated|0>`, or plain `PAID`
+/// when the emoji can't be read.
+pub fn reaction_kind(reaction_type: &Json) -> String {
+    reaction_name(&reaction_type["predefinedReactionType"])
+        .or_else(|| reaction_name(&reaction_type["1"]))
+        .unwrap_or_else(|| {
+            let paid = &reaction_type["paidReactionType"];
+            let paid = if paid.is_null() { &reaction_type["2"] } else { paid };
+            paid_kind(line_rs::client::message::PaidReaction::from_json(paid).as_ref())
+        })
+}
+
+/// [`reaction_kind`] of a paid reaction.
+pub fn paid_kind(paid: Option<&line_rs::client::message::PaidReaction>) -> String {
+    let safe = |s: &str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_');
+    match paid {
+        Some(p) if safe(&p.product_id) && safe(&p.emoji_id) => {
+            format!("PAID:{}:{}:{}:{}", p.product_id, p.emoji_id, p.version, u8::from(p.animated))
+        }
+        _ => "PAID".into(),
+    }
+}
+
+/// History `reactions`: `[{fromUserMid, atMillis, reactionType}]`; see
+/// [`reaction_kind`].
 pub fn parse_reactions(raw: &Json) -> Option<Vec<Reaction>> {
     let list = raw["reactions"].as_array()?;
     Some(
@@ -146,10 +171,8 @@ pub fn parse_reactions(raw: &Json) -> Option<Vec<Reaction>> {
             .filter_map(|r| {
                 let user_id = str_of(&r["fromUserMid"]).or_else(|| str_of(&r["1"]))?;
                 let kind = &r["reactionType"];
-                let reaction = reaction_name(&kind["predefinedReactionType"])
-                    .or_else(|| reaction_name(&kind["1"]))
-                    .unwrap_or_else(|| "PAID".into());
-                Some(Reaction { user_id, reaction })
+                let kind = if kind.is_null() { &r["3"] } else { kind };
+                Some(Reaction { user_id, reaction: reaction_kind(kind) })
             })
             .collect(),
     )
@@ -420,12 +443,15 @@ mod tests {
         let raw = json!({"id": "1", "reactions": [
             {"fromUserMid": "u1", "reactionType": {"predefinedReactionType": "LOVE"}},
             {"fromUserMid": "u2", "reactionType": {"predefinedReactionType": 2}},
-            {"fromUserMid": "u3", "reactionType": {"2": {"1": "p"}}}
+            {"fromUserMid": "u3", "reactionType": {"2": {"1": "p"}}},
+            {"fromUserMid": "u4", "reactionType": {"paidReactionType": {"productId": "5ac1", "emojiId": "007", "resourceType": "ANIMATION", "version": 3}}},
+            {"fromUserMid": "u5", "reactionType": {"2": {"1": "5ac1", "2": "001", "3": 1}}},
+            {"fromUserMid": "u6", "reactionType": {"paidReactionType": {"productId": "../x", "emojiId": "1"}}}
         ]});
         let r = parse_reactions(&raw).unwrap();
         assert_eq!(
             r.iter().map(|r| r.reaction.as_str()).collect::<Vec<_>>(),
-            ["LOVE", "NICE", "PAID"]
+            ["LOVE", "NICE", "PAID", "PAID:5ac1:007:3:1", "PAID:5ac1:001:1:0", "PAID"]
         );
     }
 

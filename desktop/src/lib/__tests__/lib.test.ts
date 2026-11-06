@@ -7,7 +7,7 @@ import { isAnimated, sticons } from "../media";
 import { findHits, ranges } from "../inChatSearch";
 import { linkify, liffId, previewUrl } from "../links";
 import { adjacentChat, filterChats, folderName, groupRows, listPreview } from "../chatList";
-import { nextReaction, topTypes } from "../reactions";
+import { nextReaction, paidEmoji, topTypes } from "../reactions";
 import { dayHeader, fullStamp, listLabel } from "../time";
 import type { ChatList, Message } from "../types";
 
@@ -292,6 +292,14 @@ describe("chat list", () => {
     expect(adjacentChat(["a", "b"], null, 1)).toBe("a");
     expect(adjacentChat(["a", "b"], null, -1)).toBe("b");
     expect(adjacentChat(["a", "b"], "b", 1)).toBeNull();
+  });
+});
+
+describe("paid reactions", () => {
+  it("reads the LINE emoji of a paid reaction", () => {
+    expect(paidEmoji("PAID:5ac1:007:3:1")).toEqual({ productId: "5ac1", emojiId: "007", version: 3, animated: true });
+    expect(paidEmoji("PAID")).toBeNull();
+    expect(paidEmoji("LOVE")).toBeNull();
   });
 });
 

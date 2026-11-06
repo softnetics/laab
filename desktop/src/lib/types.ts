@@ -39,7 +39,9 @@ export interface Reaction {
   reaction: ReactionName;
 }
 
-export type ReactionName = "NICE" | "LOVE" | "FUN" | "AMAZING" | "SAD" | "OMG" | "PAID";
+/** A paid reaction (a LINE emoji) is `PAID:<productId>:<emojiId>:<version>:<1|0 animated>`,
+ *  or plain `PAID` when its emoji is unknown. */
+export type ReactionName = "NICE" | "LOVE" | "FUN" | "AMAZING" | "SAD" | "OMG" | "PAID" | `PAID:${string}`;
 
 export interface Message {
   id: string;

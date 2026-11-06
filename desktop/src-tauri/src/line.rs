@@ -667,7 +667,7 @@ async fn handle_event(state: &Arc<AppState>, line: &Arc<Line>, ev: LineEvent) {
                     Some(
                         r.reaction
                             .map(|t| t.as_str().to_string())
-                            .unwrap_or("PAID".into()),
+                            .unwrap_or_else(|| convert::paid_kind(r.paid.as_ref())),
                     )
                 };
                 apply_reaction(state, &r.message_id, &user, name.as_deref());
@@ -757,10 +757,7 @@ async fn handle_event(state: &Arc<AppState>, line: &Arc<Line>, ev: LineEvent) {
                     let name = if curr.is_null() {
                         None
                     } else {
-                        Some(
-                            convert::reaction_name(&curr["predefinedReactionType"])
-                                .unwrap_or("PAID".into()),
-                        )
+                        Some(convert::reaction_kind(curr))
                     };
                     apply_reaction(state, &p(1), &line.me, name.as_deref());
                 }
