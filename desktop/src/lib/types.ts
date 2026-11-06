@@ -131,6 +131,18 @@ export interface Sticker {
   version: string | null;
 }
 
+/** A link's preview card (LINE's preview service). */
+export interface LinkPreview {
+  url: string;
+  title: string;
+  summary: string;
+  domain: string;
+  /** LINE's copy of the page's picture. */
+  image: string | null;
+  /** LINE refused the page: on its phishing or block list. */
+  warning: "phishing" | "blocked" | null;
+}
+
 export interface StickerPack {
   id: string;
   name: string;

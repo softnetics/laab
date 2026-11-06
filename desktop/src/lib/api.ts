@@ -20,6 +20,7 @@ import type {
   ContactProfile,
   Draft,
   Friend,
+  LinkPreview,
   MentionSpan,
   Message,
   NoteDetail,
@@ -180,6 +181,8 @@ export const api = {
   invitees: (chatId: string) => invoke<ChatMember[]>("invitees", { chatId }),
   chatMedia: (chatId: string, kind: "media" | "files" | "links") => invoke<Message[]>("chat_media", { chatId, kind }),
   saveText: (path: string, text: string) => invoke<void>("save_text", { path, text }),
+  /** A link's preview card from LINE's preview service, or null. */
+  linkPreview: (url: string) => invoke<LinkPreview | null>("link_preview", { url }),
   /** The name to offer when saving an attachment, with the extension of what it really is. */
   attachmentName: (chatId: string, messageId: string) => invoke<string>("attachment_name", { chatId, messageId }),
   saveAttachment: (chatId: string, messageId: string, dest: string | null = null) =>

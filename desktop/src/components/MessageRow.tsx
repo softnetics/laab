@@ -22,6 +22,7 @@ import { Popover } from "./Popover";
 import { ReactButton, ReactionBadge } from "./Reactions";
 import { ReadMark, type Reader } from "./ReadMark";
 import { RichImage } from "./RichImage";
+import { LinkCard, previewUrl } from "./LinkCard";
 import { RichText } from "./RichText";
 
 export interface RowContext {
@@ -429,6 +430,8 @@ function Content({
         </Bubble>
       );
   }
+  // LINE's app previews the first web link of a text message.
+  const link = m.contentType === "NONE" && m.unsent === 0 ? previewUrl(m.text) : null;
   if (isBlank(m)) {
     return (
       <Bubble mine={m.mine} tail={tail}>
@@ -455,6 +458,7 @@ function Content({
         }
       />
       {mention && <MentionCard span={mention.span} ctx={ctx} anchor={mention.el} onClose={() => setMention(null)} />}
+      {link && <LinkCard url={link} chatId={ctx.chatId} mine={m.mine} />}
     </Bubble>
   );
 }

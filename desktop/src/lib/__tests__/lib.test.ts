@@ -5,7 +5,7 @@ import { callBubbleLabel, chatEventText, noticeFor, readCall, readChatEvent, isB
 import { buildRows } from "../timeline";
 import { isAnimated } from "../media";
 import { findHits, ranges } from "../inChatSearch";
-import { linkify, liffId } from "../links";
+import { linkify, liffId, previewUrl } from "../links";
 import { adjacentChat, filterChats, folderName, groupRows, listPreview } from "../chatList";
 import { nextReaction, topTypes } from "../reactions";
 import { dayHeader, fullStamp, listLabel } from "../time";
@@ -193,6 +193,11 @@ describe("in-chat search", () => {
 });
 
 describe("links", () => {
+  it("previews the first web link only", () => {
+    expect(previewUrl("hi line://app/1 then www.a.com and https://b.com")).toBe("https://www.a.com");
+    expect(previewUrl("only line://nv/chat")).toBeNull();
+    expect(previewUrl("no links")).toBeNull();
+  });
   it("splits urls out of text and spots LIFF links", () => {
     expect(linkify("see https://a.com/x. ok").map((s) => s.url ?? null)).toEqual([null, "https://a.com/x", null]);
     expect(liffId("https://liff.line.me/1234567-AbCdEf12/x")).toBe("1234567-AbCdEf12");

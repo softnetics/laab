@@ -360,6 +360,13 @@ pub async fn stickers(state: S<'_>) -> R<Vec<StickerPack>> {
     crate::stickers::list(&s).await.map_err(err)
 }
 
+/// The preview card of a link in a message, from LINE's preview service
+/// (cached); `None` when there is none to show.
+#[tauri::command]
+pub async fn link_preview(state: S<'_>, url: String) -> R<Option<crate::preview::LinkPreview>> {
+    Ok(crate::preview::get(state.inner(), &url).await)
+}
+
 /// One owned package with all its stickers, loaded when the picker opens it.
 #[tauri::command]
 pub async fn sticker_pack(id: String, name: String, version: Option<String>) -> R<StickerPack> {
