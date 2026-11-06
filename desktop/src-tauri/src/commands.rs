@@ -350,47 +350,73 @@ pub async fn stickers(state: S<'_>) -> R<Vec<StickerPack>> {
     crate::stickers::list(&s).await.map_err(err)
 }
 
+/// A file [`send_files`] couldn't send, and why, in Thai.
+#[derive(Serialize, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct FileFailure {
+    pub path: String,
+    pub error: String,
+}
+
+async fn send_file(s: &AppState, chat: &line_rs::client::Chat, path: &str) -> Result<(), String> {
+    let p = std::path::Path::new(path);
+    let name = p
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("file")
+        .to_string();
+    let ext = p
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    let data = tokio::fs::read(p).await.map_err(|e| {
+        let text = send_failed(s, crate::usage::Action::SentFile, e);
+        format!("เปิด {name} ไม่ได้: {text}")
+    })?;
+    let result = match ext.as_str() {
+        "jpg" | "jpeg" | "png" | "gif" | "webp" | "heic" => chat.send_image(data, Some(&name)).await,
+        "mp4" | "mov" | "m4v" => chat.send_video(data, Some(&name), None).await,
+        _ => chat.send_file(data, &name).await,
+    };
+    match result {
+        Ok(_) => {
+            crate::usage::hit(crate::usage::Action::SentFile);
+            Ok(())
+        }
+        Err(e) => {
+            let text = send_failed(s, crate::usage::Action::SentFile, e);
+            Err(format!("ส่ง {name} ไม่สำเร็จ: {text}"))
+        }
+    }
+}
+
+/// Sends the files one by one, going on past one that fails, and returns
+/// the ones that failed so Retry sends only those.
 #[tauri::command]
-pub async fn send_files(state: S<'_>, chat_id: String, paths: Vec<String>) -> R<()> {
+pub async fn send_files(state: S<'_>, chat_id: String, paths: Vec<String>) -> R<Vec<FileFailure>> {
     let s = state.inner().clone();
     if s.demo {
         return Err("ต้องเข้าสู่ระบบ LINE ก่อนส่งไฟล์".into());
     }
     let l = s.line().await.ok_or("not_logged_in")?;
     let chat = l.chat(&chat_id);
+    let mut failed = Vec::new();
     for (i, path) in paths.iter().enumerate() {
-        let p = std::path::Path::new(path);
-        let name = p
+        let name = std::path::Path::new(path)
             .file_name()
             .and_then(|n| n.to_str())
-            .unwrap_or("file")
-            .to_string();
+            .unwrap_or("file");
         s.status(format!("กำลังส่ง {name} ({}/{})", i + 1, paths.len()));
-        let data = tokio::fs::read(p).await.map_err(|e| {
-            let text = send_failed(&s, crate::usage::Action::SentFile, e);
-            format!("เปิด {name} ไม่ได้: {text}")
-        })?;
-        let ext = p
-            .extension()
-            .and_then(|e| e.to_str())
-            .unwrap_or("")
-            .to_ascii_lowercase();
-        let result = match ext.as_str() {
-            "jpg" | "jpeg" | "png" | "gif" | "webp" | "heic" => {
-                chat.send_image(data, Some(&name)).await
-            }
-            "mp4" | "mov" | "m4v" => chat.send_video(data, Some(&name), None).await,
-            _ => chat.send_file(data, &name).await,
-        };
-        result.map_err(|e| {
-            let text = send_failed(&s, crate::usage::Action::SentFile, e);
-            format!("ส่ง {name} ไม่สำเร็จ: {text}")
-        })?;
-        crate::usage::hit(crate::usage::Action::SentFile);
+        if let Err(error) = send_file(&s, &chat, path).await {
+            failed.push(FileFailure { path: path.clone(), error });
+        }
     }
     s.status("เชื่อม LINE แล้ว");
-    let _ = line::fetch_history(&s, &chat_id).await;
-    Ok(())
+    if failed.len() < paths.len() {
+        let _ = line::fetch_history(&s, &chat_id).await;
+    }
+    Ok(failed)
 }
 
 #[tauri::command]

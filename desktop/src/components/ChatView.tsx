@@ -172,14 +172,15 @@ export function ChatView({ chatId, main }: { chatId: string; main: boolean }) {
     return () => window.removeEventListener("keydown", onKey, true);
   });
 
-  // Files dropped on the chat are sent one by one.
+  // Files dropped on the chat are sent one by one, through the composer so
+  // a failure shows there with Retry.
   useEffect(() => {
     const off = getCurrentWebview().onDragDropEvent((e) => {
       if (e.payload.type === "over" || e.payload.type === "enter") setDragging(true);
       else if (e.payload.type === "leave") setDragging(false);
       else if (e.payload.type === "drop") {
         setDragging(false);
-        if (e.payload.paths.length) api.sendFiles(chatId, e.payload.paths).catch((err) => notice(errorText(err)));
+        if (e.payload.paths.length) composer.current?.sendFiles(e.payload.paths);
       }
     });
     return () => {

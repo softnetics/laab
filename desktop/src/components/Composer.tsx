@@ -25,6 +25,8 @@ export interface ComposerHandle {
   focus: () => void;
   /** Close the mention picker; false if it was not open. */
   dismissPicker: () => boolean;
+  /** Send files (dropped on the chat), with Retry for those that fail. */
+  sendFiles: (paths: string[]) => void;
 }
 
 /** The message field. A transparent textarea sits over a mirror that colours
@@ -135,6 +137,7 @@ export const Composer = forwardRef<
       setDismissedAt(`${caret}:${query}`);
       return true;
     },
+    sendFiles: (paths) => sendFiles(paths),
   }));
   useEffect(() => (pickerOpen ? pushDismiss(() => setDismissedAt(`${caret}:${query}`)) : undefined), [pickerOpen, caret, query]);
 
@@ -198,9 +201,19 @@ export const Composer = forwardRef<
     const paths = Array.isArray(files) ? files : [files];
     sendFiles(paths);
   };
+  // Files go one by one and a failure doesn't stop the rest; Retry sends
+  // only the ones that failed.
   const sendFiles = (paths: string[]) =>
     api.sendFiles(chatId, paths).then(
-      () => setFailure(null),
+      (failed) => {
+        if (!failed.length) return setFailure(null);
+        const again = failed.map((f) => f.path);
+        setFailure({
+          title: paths.length > 1 ? `ส่งแล้ว ${paths.length - failed.length} จาก ${paths.length} ไฟล์` : "ยังไม่ได้ส่งไฟล์นี้",
+          detail: failed.map((f) => f.error).join("\n"),
+          retry: () => sendFiles(again),
+        });
+      },
       (e) => setFailure({ title: paths.length > 1 ? "ยังไม่ได้ส่งไฟล์เหล่านี้" : "ยังไม่ได้ส่งไฟล์นี้", detail: errorText(e), retry: () => sendFiles(paths) }),
     );
   useEffect(() => (failure ? pushDismiss(() => setFailure(null)) : undefined), [failure]);
@@ -300,7 +313,7 @@ export const Composer = forwardRef<
           </span>
           <div className="min-w-0 flex-1 leading-snug">
             <div className="text-[13.5px] font-medium text-badge-red">{failure.title}</div>
-            <div className="selectable text-[12.5px] text-pretty text-primary/80">{failure.detail}</div>
+            <div className="selectable text-[12.5px] text-pretty whitespace-pre-line text-primary/80">{failure.detail}</div>
           </div>
           {failure.retry && (
             <button

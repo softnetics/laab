@@ -75,7 +75,8 @@ export const api = {
     sent(invoke<Message>("send_text", { chatId, text, mentions, replyTo, reqSeq })),
   sendSticker: (chatId: string, sticker: Sticker) => sent(invoke<void>("send_sticker", { chatId, sticker })),
   stickers: () => invoke<StickerPack[]>("stickers"),
-  sendFiles: (chatId: string, paths: string[]) => sent(invoke<void>("send_files", { chatId, paths })),
+  /** Sends each file, going on past failures; resolves to the ones that failed. */
+  sendFiles: (chatId: string, paths: string[]) => sent(invoke<{ path: string; error: string }[]>("send_files", { chatId, paths })),
   download: (chatId: string, messageId: string, fileName: string | null) => invoke<string>("download", { chatId, messageId, fileName }),
   react: (chatId: string, messageId: string, reaction: ReactionName | null) => invoke<void>("react", { chatId, messageId, reaction }),
   setMuted: (chatId: string, muted: boolean) => invoke<void>("set_muted", { chatId, muted }),

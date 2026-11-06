@@ -1122,7 +1122,16 @@ async fn run(ctx: &Ctx, name: &str, args: &Value, trace: &mut Trace) -> R<Vec<Va
             check_files(&paths)?;
             gate(ctx, trace, Send, &[dir.scope(&chat)], format!("ส่งไฟล์ถึง {}:\n\n{}", dir.quoted(&chat), paths.join("\n"))).await?;
             trace.what = format!("ส่ง {} ถึง {}", file_names(&paths), dir.quoted(&chat));
-            commands::send_files(st(), chat, paths).await?;
+            let failed = commands::send_files(st(), chat, paths.clone()).await?;
+            if !failed.is_empty() {
+                let errors: Vec<String> = failed.into_iter().map(|f| f.error).collect();
+                return Err(format!(
+                    "sent {} of {} files; failed:\n{}",
+                    paths.len() - errors.len(),
+                    paths.len(),
+                    errors.join("\n")
+                ));
+            }
             done("files sent")
         }
         "react" => {
