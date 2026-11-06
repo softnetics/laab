@@ -5,7 +5,7 @@
 use std::sync::Arc;
 
 use anyhow::{Result, anyhow};
-use line_rs::client::liff::{self as lliff, ConsentPage, LiffViewOptions, PickerResult};
+use line_rs::client::liff::{self as lliff, ConsentPage, LiffDeviceSetting, LiffViewOptions, PickerResult};
 use serde::{Deserialize, Serialize};
 use serde_json::Value as Json;
 use tauri::{Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
@@ -198,7 +198,7 @@ pub async fn consent_info(state: &Arc<AppState>, url: &str, chat: Option<String>
     let link = parse_link(url).ok_or_else(|| anyhow!("invalid_liff_id"))?;
     let line = state.line().await.ok_or_else(|| anyhow!("not_logged_in"))?;
     let liff = line.client.liff();
-    let opts = view_options(&link, chat);
+    let opts = view_options(url, &link, chat);
     let consent = match liff.issue_view(&opts).await {
         Ok(_) => return Ok(ConsentInfo { permissions: vec![], consent_url: String::new() }),
         Err(e) => lliff::consent_required(&e).ok_or_else(|| anyhow!("{e}"))?,
@@ -214,13 +214,25 @@ pub async fn consent_info(state: &Arc<AppState>, url: &str, chat: Option<String>
     Ok(info)
 }
 
-fn view_options(link: &LiffLink, chat: Option<String>) -> LiffViewOptions {
+/// The view request for opening `url`, as LINE for Android fills it:
+/// with the device's settings, and the URL's domain and the URL itself.
+fn view_options(url: &str, link: &LiffLink, chat: Option<String>) -> LiffViewOptions {
     LiffViewOptions {
         chat_mid: chat,
         liff_id: Some(link.id.clone()),
         lang: Some(lang()),
+        device_setting: Some(DEVICE),
+        ..Default::default()
     }
+    .for_url(url)
 }
+
+/// A Mac plays videos on its own and has no in-app purchases (LAAB can't
+/// buy through Google Play or the App Store), nor an advertising id.
+const DEVICE: LiffDeviceSetting = LiffDeviceSetting {
+    video_auto_play_allowed: true,
+    in_app_purchase_available: false,
+};
 
 /// Issue a LIFF view for `url`. Errors with `liff_consent_required` until the
 /// user agrees on LINE's consent page; it never consents silently.
@@ -242,7 +254,7 @@ pub async fn issue(
     let Some(line) = state.line().await else {
         return Ok(web("ยังไม่ได้เข้าสู่ระบบ"));
     };
-    let opts = view_options(&link, chat);
+    let opts = view_options(url, &link, chat);
     let liff = line.client.liff();
     let view = match liff.issue_view(&opts).await {
         Ok(v) => v,
@@ -569,6 +581,7 @@ pub async fn share(
             chat_mid: Some(chat.clone()),
             liff_id: Some(liff_id.into()),
             lang: Some(lang()),
+            ..Default::default()
         };
         let ok = async {
             let v = line
@@ -668,6 +681,17 @@ mod tests {
         assert!(js.contains("CLIENT_UNSUPPORTED_OPERATION"));
         assert!(!js.contains("__FEATURES__") && !js.contains("__SCOPES__"));
         assert!(bridge(&Json::Null).contains("scopes: [],"));
+    }
+
+    #[test]
+    fn views_carry_the_device_and_the_url() {
+        let url = "https://liff.line.me/1234567890-AbCdEfGh/menu?x=1";
+        let link = parse_link(url).unwrap();
+        let o = view_options(url, &link, Some("c1".into()));
+        assert_eq!(o.device_setting, Some(DEVICE));
+        assert_eq!(o.domain.as_deref(), Some("liff.line.me"));
+        assert_eq!(o.requested_url.as_deref(), Some(url));
+        assert!(!o.subsequent_liff);
     }
 
     #[test]
