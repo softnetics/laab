@@ -204,7 +204,10 @@ function Actions({ item, say }: { item: ViewerItem; say: (text: string) => void 
   const run = (p: Promise<unknown>, done: string) => p.then(() => done && say(done)).catch((e) => say(errorText(e)));
   const local = () => (attachment ? api.download(chatId!, messageId!, item.fileName ?? null) : Promise.resolve(item.path!));
   const saveAs = async () => {
-    const dest = await save({ defaultPath: item.fileName ?? `LINE_${messageId}.${item.video ? "mp4" : "jpg"}` });
+    // Named by what the file really is (a GIF, a PNG, a HEIC photo...).
+    const name =
+      item.fileName ?? (await api.attachmentName(chatId!, messageId!).catch(() => `LINE_${messageId}.${item.video ? "mp4" : "jpg"}`));
+    const dest = await save({ defaultPath: name });
     if (dest) run(api.saveAttachment(chatId!, messageId!, dest), "บันทึกแล้ว");
   };
   if (!attachment && !item.path) return null;

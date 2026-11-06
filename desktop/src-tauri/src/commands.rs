@@ -1677,23 +1677,7 @@ pub async fn save_attachment(
     dest: Option<String>,
 ) -> R<String> {
     let s = state.inner().clone();
-    let m = s
-        .store()
-        .message(&message_id)
-        .map_err(err)?
-        .ok_or("ไม่พบข้อความ")?;
-    let src = match m
-        .file_path
-        .clone()
-        .or(m.image_path.clone())
-        .filter(|p| std::path::Path::new(p).exists())
-    {
-        Some(p) => std::path::PathBuf::from(p),
-        None if s.demo => return Err("ไม่มีไฟล์ในโหมด demo".into()),
-        None => crate::media::download_file(&s, &chat_id, &message_id, m.file_name.clone())
-            .await
-            .map_err(err)?,
-    };
+    let (m, src) = attachment(&s, &chat_id, &message_id).await?;
     let target = match dest.filter(|d| !d.is_empty()) {
         Some(d) => std::path::PathBuf::from(d),
         None => {
@@ -1705,6 +1689,38 @@ pub async fn save_attachment(
     };
     crate::vault::export(&src, &target).map_err(err)?;
     Ok(target.to_string_lossy().into_owned())
+}
+
+/// A message's attachment in the cache, downloaded if it isn't there yet.
+async fn attachment(s: &Arc<AppState>, chat_id: &str, message_id: &str) -> R<(Message, std::path::PathBuf)> {
+    let m = s
+        .store()
+        .message(message_id)
+        .map_err(err)?
+        .ok_or("ไม่พบข้อความ")?;
+    let src = match m
+        .file_path
+        .clone()
+        .or(m.image_path.clone())
+        .filter(|p| std::path::Path::new(p).exists())
+    {
+        Some(p) => std::path::PathBuf::from(p),
+        None if s.demo => return Err("ไม่มีไฟล์ในโหมด demo".into()),
+        None => crate::media::download_file(s, chat_id, message_id, m.file_name.clone())
+            .await
+            .map_err(err)?,
+    };
+    Ok((m, src))
+}
+
+/// The name to offer when saving an attachment: its own name, else
+/// `LINE_<id>` with the extension of what the file really is (a GIF, PNG,
+/// video...), not always `.jpg`.
+#[tauri::command]
+pub async fn attachment_name(state: S<'_>, chat_id: String, message_id: String) -> R<String> {
+    let s = state.inner().clone();
+    let (m, src) = attachment(&s, &chat_id, &message_id).await?;
+    Ok(crate::media::save_name(m.file_name.as_deref(), &message_id, &src))
 }
 
 /// Open a small LAAB window, like LINE's separate albums/notes and media windows.

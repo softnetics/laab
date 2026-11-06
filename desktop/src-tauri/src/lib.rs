@@ -334,6 +334,7 @@ pub fn run() {
             commands::chat_media,
             commands::save_text,
             commands::save_attachment,
+            commands::attachment_name,
             commands::open_aux_window,
             commands::open_viewer,
             commands::viewer_payload,

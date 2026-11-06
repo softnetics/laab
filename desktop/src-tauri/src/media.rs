@@ -248,6 +248,17 @@ fn save_plain(path: &Path, data: &[u8]) -> Result<PathBuf> {
 
 /// The extension for a file that starts with `head`.
 pub fn extension_of(head: &[u8]) -> &'static str {
+    // An ISO media file names what it is in its `ftyp` brand.
+    if let [_, _, _, _, b'f', b't', b'y', b'p', brand @ ..] = head
+        && brand.len() >= 4
+    {
+        match &brand[..4] {
+            b"heic" | b"heix" | b"mif1" | b"msf1" => return "heic",
+            b"qt  " => return "mov",
+            b"M4A " => return "m4a",
+            _ => {}
+        }
+    }
     match sniff_mime(head, Path::new("")) {
         "image/png" => "png",
         "image/jpeg" => "jpg",
@@ -682,6 +693,17 @@ mod tests {
         assert_eq!(save_name(Some("notes.txt"), "7", &full), "notes.txt");
         std::fs::write(&full, b"\0\0\0\x18ftypmp42").unwrap();
         assert_eq!(save_name(None, "7", &full), "LINE_7.mp4");
+        for (head, ext) in [
+            (&b"GIF89a\x01\0"[..], "gif"),
+            (b"\xff\xd8\xff\xe0", "jpg"),
+            (b"RIFF\0\0\0\0WEBPVP8 ", "webp"),
+            (b"\0\0\0\x18ftypheic\0\0", "heic"),
+            (b"\0\0\0\x14ftypqt  \0\0", "mov"),
+            (b"\0\0\0\x20ftypM4A \0\0", "m4a"),
+        ] {
+            std::fs::write(&full, head).unwrap();
+            assert_eq!(save_name(None, "7", &full), format!("LINE_7.{ext}"));
+        }
     }
 
     #[test]
