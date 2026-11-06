@@ -42,6 +42,9 @@ export interface UiState {
   renamingFolder: string | null;
   /** The composer is replying to, or editing, a message. */
   composerMode: { chatId: string; kind: "reply" | "edit"; message: Message } | null;
+  /** Chats whose messages, stickers and files go without a notification on
+   *  the others' devices, until switched off or LAAB quits. */
+  silentChats: string[];
   /** Translations shown under messages, by message id. */
   translations: Record<string, string>;
   /** A confirmation dialog. */
@@ -102,6 +105,7 @@ export const ui = createStore<UiState>({
   sentAt: 0,
   railPage: "chats",
   composerMode: null,
+  silentChats: [],
   translations: {},
   confirm: null,
   sheet: null,

@@ -15,9 +15,9 @@ import {
   targets,
 } from "../lib/mentions";
 import type { ChatMember, DraftMention } from "../lib/types";
-import { pushDismiss, setUi, useUi } from "../lib/ui";
+import { pushDismiss, setUi, ui, useUi } from "../lib/ui";
 import { Avatar } from "./Avatar";
-import { CloseIcon, PaperclipIcon, SmileIcon, WarningIcon } from "./Icons";
+import { BellSlashIcon, CloseIcon, PaperclipIcon, SmileIcon, WarningIcon } from "./Icons";
 
 const LINE_HEIGHT = 20;
 const MAX_LINES = 6;
@@ -61,6 +61,11 @@ export const Composer = forwardRef<
   const [failure, setFailure] = useState<{ title: string; detail: string; retry: (() => void) | null } | null>(null);
   const pickerOpenedAt = useRef(0);
   const focusRequest = useUi((s) => s.composerFocus);
+  // "Send silently": no notification on the others' devices, for this chat
+  // until switched off.
+  const silent = useUi((s) => s.silentChats.includes(chatId));
+  const toggleSilent = () =>
+    setUi({ silentChats: silent ? ui.state.silentChats.filter((c) => c !== chatId) : [...ui.state.silentChats, chatId] });
   // Replying to or editing a message (from its right-click menu).
   const modeAll = useUi((s) => s.composerMode);
   const mode = modeAll?.chatId === chatId ? modeAll : null;
@@ -177,9 +182,9 @@ export const Composer = forwardRef<
         savedDraft.current = null;
       } else {
         const replyTo = current?.kind === "reply" ? current.message.id : null;
-        const key = JSON.stringify([chatId, body, spans, replyTo]);
+        const key = JSON.stringify([chatId, body, spans, replyTo, silent]);
         if (unsent.current?.key !== key) unsent.current = { key, reqSeq: await api.newReqSeq() };
-        await api.sendText(chatId, body, spans, replyTo, unsent.current.reqSeq);
+        await api.sendText(chatId, body, spans, replyTo, unsent.current.reqSeq, silent);
         unsent.current = null;
       }
       if (current) setUi({ composerMode: null });
@@ -205,7 +210,7 @@ export const Composer = forwardRef<
   // Files go one by one and a failure doesn't stop the rest; Retry sends
   // only the ones that failed.
   const sendFiles = (paths: string[]) =>
-    api.sendFiles(chatId, paths).then(
+    api.sendFiles(chatId, paths, ui.state.silentChats.includes(chatId)).then(
       (failed) => {
         if (!failed.length) return setFailure(null);
         const again = failed.map((f) => f.path);
@@ -400,6 +405,16 @@ export const Composer = forwardRef<
         >
           <PaperclipIcon size={21} strokeWidth={1.6} />
         </button>
+        <button
+          title={silent ? "ส่งแบบไม่มีการแจ้งเตือนอยู่ คลิกเพื่อส่งแบบปกติ" : "ส่งแบบไม่มีการแจ้งเตือน"}
+          aria-pressed={silent}
+          disabled={disabled}
+          onClick={(e) => (e.stopPropagation(), toggleSilent())}
+          className={`grid h-8 w-8 place-items-center hover:text-primary disabled:opacity-40 ${silent ? "text-line-green" : ""}`}
+        >
+          <BellSlashIcon size={19} />
+        </button>
+        {silent && <span className="text-[12px] text-line-green">ไม่แจ้งเตือน</span>}
         <div className="flex-1" />
         <button
           title="สติกเกอร์"

@@ -74,12 +74,20 @@ export const api = {
   reloadChat: (chatId: string) => invoke<void>("reload_chat", { chatId }),
   /** A reqSeq for one message, sent again with each retry of it. */
   newReqSeq: () => invoke<number>("new_req_seq"),
-  sendText: (chatId: string, text: string, mentions: MentionSpan[], replyTo: string | null = null, reqSeq: number | null = null) =>
-    sent(invoke<Message>("send_text", { chatId, text, mentions, replyTo, reqSeq })),
-  sendSticker: (chatId: string, sticker: Sticker) => sent(invoke<void>("send_sticker", { chatId, sticker })),
+  sendText: (
+    chatId: string,
+    text: string,
+    mentions: MentionSpan[],
+    replyTo: string | null = null,
+    reqSeq: number | null = null,
+    silent = false,
+  ) => sent(invoke<Message>("send_text", { chatId, text, mentions, replyTo, reqSeq, silent })),
+  /** `silent`: without a notification on the others' devices. */
+  sendSticker: (chatId: string, sticker: Sticker, silent = false) => sent(invoke<void>("send_sticker", { chatId, sticker, silent })),
   stickers: () => invoke<StickerPack[]>("stickers"),
   /** Sends each file, going on past failures; resolves to the ones that failed. */
-  sendFiles: (chatId: string, paths: string[]) => sent(invoke<{ path: string; error: string }[]>("send_files", { chatId, paths })),
+  sendFiles: (chatId: string, paths: string[], silent = false) =>
+    sent(invoke<{ path: string; error: string }[]>("send_files", { chatId, paths, silent })),
   download: (chatId: string, messageId: string, fileName: string | null) => invoke<string>("download", { chatId, messageId, fileName }),
   react: (chatId: string, messageId: string, reaction: ReactionName | null) => invoke<void>("react", { chatId, messageId, reaction }),
   setMuted: (chatId: string, muted: boolean) => invoke<void>("set_muted", { chatId, muted }),

@@ -271,6 +271,7 @@ pub async fn send_text(
     mentions: Vec<MentionSpan>,
     reply_to: Option<String>,
     req_seq: Option<i64>,
+    silent: Option<bool>,
 ) -> R<Message> {
     let s = state.inner().clone();
     if s.demo {
@@ -290,6 +291,8 @@ pub async fn send_text(
     if let Some(seq) = req_seq {
         input = input.req_seq(seq);
     }
+    // Without a notification on the others' devices (`NOTIFICATION_DISABLED`).
+    input = input.silent(silent.unwrap_or(false));
     let sent = l
         .client
         .send_message(&chat_id, input)
@@ -318,7 +321,7 @@ pub async fn send_text(
 }
 
 #[tauri::command]
-pub async fn send_sticker(state: S<'_>, chat_id: String, sticker: Sticker) -> R<()> {
+pub async fn send_sticker(state: S<'_>, chat_id: String, sticker: Sticker, silent: Option<bool>) -> R<()> {
     let s = state.inner().clone();
     if s.demo {
         return Err("ต้องเข้าสู่ระบบ LINE ก่อนส่งสติกเกอร์".into());
@@ -326,7 +329,7 @@ pub async fn send_sticker(state: S<'_>, chat_id: String, sticker: Sticker) -> R<
     let l = s.line().await.ok_or("not_logged_in")?;
     let version = sticker.version.clone().unwrap_or_else(|| "1".into());
     let input =
-        MessageInput::sticker(&sticker.package_id, &sticker.sticker_id, &version).e2ee(false);
+        MessageInput::sticker(&sticker.package_id, &sticker.sticker_id, &version).e2ee(false).silent(silent.unwrap_or(false));
     let sent = l.client.send_message(&chat_id, input).await.map_err(|e| {
         let owned = e.error_code() != Some(line_rs::ErrorCode::UserNotStickerOwner);
         let text = send_failed(&s, crate::usage::Action::SentSticker, e);
@@ -457,7 +460,7 @@ struct Prepared {
 /// Read `path` and work out what LINE's app sends with it: a photo's size,
 /// a photo's size and thumbnail, a video's length and thumbnail, an audio
 /// clip's length.
-async fn prepare_file(s: &AppState, path: &str) -> Result<Prepared, String> {
+async fn prepare_file(s: &AppState, path: &str, silent: bool) -> Result<Prepared, String> {
     let p = std::path::Path::new(path);
     let name = file_name(path).to_string();
     let kind = file_kind(path);
@@ -472,7 +475,7 @@ async fn prepare_file(s: &AppState, path: &str) -> Result<Prepared, String> {
         let text = send_failed(s, crate::usage::Action::SentFile, e);
         format!("เปิด {name} ไม่ได้: {text}")
     })?;
-    let mut opts = MediaOptions::new();
+    let mut opts = MediaOptions::new().silent(silent);
     match kind {
         ObjType::Gif => opts = opts.animated(true),
         ObjType::Image => {
@@ -525,8 +528,8 @@ fn sent_result(
     }
 }
 
-async fn send_file(s: &AppState, chat: &line_rs::client::Chat, path: &str) -> Result<(), String> {
-    let f = prepare_file(s, path).await?;
+async fn send_file(s: &AppState, chat: &line_rs::client::Chat, path: &str, silent: bool) -> Result<(), String> {
+    let f = prepare_file(s, path, silent).await?;
     let res = chat.send_media_with(f.kind, f.file, f.opts).await;
     sent_result(s, &f.name, f.kind, res)
 }
@@ -536,11 +539,12 @@ async fn send_photo_group(
     s: &AppState,
     chat: &line_rs::client::Chat,
     paths: &[&String],
+    silent: bool,
 ) -> Vec<Result<(), String>> {
     let mut results: Vec<Result<(), String>> = Vec::with_capacity(paths.len());
     let mut ready = Vec::new();
     for (i, path) in paths.iter().enumerate() {
-        match prepare_file(s, path).await {
+        match prepare_file(s, path, silent).await {
             Ok(f) => {
                 ready.push((i, f));
                 results.push(Ok(()));
@@ -559,9 +563,11 @@ async fn send_photo_group(
 
 /// Sends the files, going on past one that fails, and returns the ones
 /// that failed so Retry sends only those. Two or more photos go as one
-/// photo group (see [`send_plan`]).
+/// photo group (see [`send_plan`]). `silent`: without a notification on
+/// the others' devices.
 #[tauri::command]
-pub async fn send_files(state: S<'_>, chat_id: String, paths: Vec<String>) -> R<Vec<FileFailure>> {
+pub async fn send_files(state: S<'_>, chat_id: String, paths: Vec<String>, silent: Option<bool>) -> R<Vec<FileFailure>> {
+    let silent = silent.unwrap_or(false);
     let s = state.inner().clone();
     if s.demo {
         return Err("ต้องเข้าสู่ระบบ LINE ก่อนส่งไฟล์".into());
@@ -575,7 +581,7 @@ pub async fn send_files(state: S<'_>, chat_id: String, paths: Vec<String>) -> R<
             SendStep::One(i) => {
                 done += 1;
                 s.status(format!("กำลังส่ง {} ({done}/{})", file_name(&paths[i]), paths.len()));
-                if let Err(error) = send_file(&s, &chat, &paths[i]).await {
+                if let Err(error) = send_file(&s, &chat, &paths[i], silent).await {
                     failed.push(FileFailure { path: paths[i].clone(), error });
                 }
             }
@@ -583,7 +589,7 @@ pub async fn send_files(state: S<'_>, chat_id: String, paths: Vec<String>) -> R<
                 done += group.len();
                 s.status(format!("กำลังส่งรูป {} รูป ({done}/{})", group.len(), paths.len()));
                 let group: Vec<&String> = group.iter().map(|&i| &paths[i]).collect();
-                for (path, res) in group.iter().zip(send_photo_group(&s, &chat, &group).await) {
+                for (path, res) in group.iter().zip(send_photo_group(&s, &chat, &group, silent).await) {
                     if let Err(error) = res {
                         failed.push(FileFailure { path: (*path).clone(), error });
                     }

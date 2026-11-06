@@ -2,7 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
 import { api, errorText, mediaUrl, q, queryClient } from "../lib/api";
 import type { Sticker } from "../lib/types";
-import { notice } from "../lib/ui";
+import { notice, ui } from "../lib/ui";
 import { CloseIcon } from "./Icons";
 import { Spinner } from "./kit";
 
@@ -15,7 +15,7 @@ export function StickerPanel({ chatId, onClose }: { chatId: string; onClose: () 
   const current = packs?.find((p) => p.id === pack);
   const send = async (s: Sticker) => {
     try {
-      await api.sendSticker(chatId, s);
+      await api.sendSticker(chatId, s, ui.state.silentChats.includes(chatId));
       queryClient.invalidateQueries({ queryKey: ["stickers"] });
     } catch (e) {
       const text = errorText(e);
