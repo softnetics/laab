@@ -4,6 +4,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use line_rs::client::{MessageInput, ReactionType};
+use line_rs::obs::{MediaOptions, ObjType, ObsFile};
 use serde::{Deserialize, Serialize};
 use tauri::{Manager, State, WebviewUrl, WebviewWindowBuilder};
 
@@ -358,6 +359,38 @@ pub struct FileFailure {
     pub error: String,
 }
 
+/// How a file goes to LINE, by its extension: photos, GIFs (animated),
+/// videos and audio clips as media, anything else as a file.
+fn media_kind(ext: &str) -> ObjType {
+    match ext {
+        "jpg" | "jpeg" | "png" | "webp" | "heic" => ObjType::Image,
+        "gif" => ObjType::Gif,
+        "mp4" | "mov" | "m4v" => ObjType::Video,
+        "m4a" | "aac" | "mp3" => ObjType::Audio,
+        _ => ObjType::File,
+    }
+}
+
+/// An audio clip's length, from macOS's `afinfo`. LINE shows a clip sent
+/// without one as 0:00.
+async fn audio_duration_ms(path: &std::path::Path) -> Option<u64> {
+    let out = tokio::process::Command::new("/usr/bin/afinfo")
+        .arg(path)
+        .output()
+        .await
+        .ok()?;
+    let text = String::from_utf8_lossy(&out.stdout);
+    let secs: f64 = text
+        .lines()
+        .find_map(|l| l.trim().strip_prefix("estimated duration:"))?
+        .trim()
+        .trim_end_matches("sec")
+        .trim()
+        .parse()
+        .ok()?;
+    (secs.is_finite() && secs > 0.0).then(|| (secs * 1000.0).round() as u64)
+}
+
 async fn send_file(s: &AppState, chat: &line_rs::client::Chat, path: &str) -> Result<(), String> {
     let p = std::path::Path::new(path);
     let name = p
@@ -370,16 +403,23 @@ async fn send_file(s: &AppState, chat: &line_rs::client::Chat, path: &str) -> Re
         .and_then(|e| e.to_str())
         .unwrap_or("")
         .to_ascii_lowercase();
+    let kind = media_kind(&ext);
     let data = tokio::fs::read(p).await.map_err(|e| {
         let text = send_failed(s, crate::usage::Action::SentFile, e);
         format!("เปิด {name} ไม่ได้: {text}")
     })?;
-    let result = match ext.as_str() {
-        "jpg" | "jpeg" | "png" | "gif" | "webp" | "heic" => chat.send_image(data, Some(&name)).await,
-        "mp4" | "mov" | "m4v" => chat.send_video(data, Some(&name), None).await,
-        _ => chat.send_file(data, &name).await,
-    };
-    match result {
+    let mut opts = MediaOptions::new();
+    match kind {
+        ObjType::Gif => opts = opts.animated(true),
+        ObjType::Audio => {
+            if let Some(ms) = audio_duration_ms(p).await {
+                opts = opts.duration_ms(ms);
+            }
+        }
+        _ => {}
+    }
+    let file = ObsFile::new(data).name(name.clone());
+    match chat.send_media_with(kind, file, opts).await {
         Ok(_) => {
             crate::usage::hit(crate::usage::Action::SentFile);
             Ok(())
@@ -1583,5 +1623,23 @@ mod tests {
             aux_route("media", "c1", None, Some(String::new()), 6),
             "/media/c1?at=6"
         );
+    }
+
+    #[test]
+    fn files_go_as_the_media_their_extension_says() {
+        assert_eq!(media_kind("jpg"), ObjType::Image);
+        assert_eq!(media_kind("gif"), ObjType::Gif);
+        assert_eq!(media_kind("mov"), ObjType::Video);
+        assert_eq!(media_kind("m4a"), ObjType::Audio);
+        assert_eq!(media_kind("mp3"), ObjType::Audio);
+        assert_eq!(media_kind("pdf"), ObjType::File);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn reads_an_audio_clips_length() {
+        let ms = audio_duration_ms(std::path::Path::new("/System/Library/Sounds/Glass.aiff")).await;
+        assert!(ms.is_some_and(|ms| ms > 500 && ms < 5000), "{ms:?}");
+        assert_eq!(audio_duration_ms(std::path::Path::new("/nonexistent.m4a")).await, None);
     }
 }
