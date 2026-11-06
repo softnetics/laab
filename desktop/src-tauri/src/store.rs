@@ -9,7 +9,7 @@ use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 
 use crate::model::{
-    Chat, ChatMember, MentionSpan, Message, Reaction, SearchHit, SearchKind, Workspace,
+    Chat, ChatMember, Friend, MentionSpan, Message, Reaction, SearchHit, SearchKind, Workspace,
 };
 
 pub struct Store {
@@ -115,6 +115,8 @@ impl Store {
              -- The Raycast extension reads sender names from `people`.
              CREATE VIEW IF NOT EXISTS people AS SELECT mid AS id, name FROM users;",
         )?;
+        // 1 for a friend (not blocked), 0 for anyone else we know.
+        self.add_column_if_missing("users", "friend", "INTEGER")?;
         let count: i64 = db.query_row("SELECT COUNT(*) FROM workspaces", [], |r| r.get(0))?;
         if count == 0 {
             db.execute("INSERT INTO workspaces VALUES ('main', 'หลัก', 0)", [])?;
@@ -399,6 +401,33 @@ impl Store {
         }
         tx.commit()?;
         Ok(())
+    }
+
+    /// Mark exactly these mids as the account's friends.
+    pub fn set_friends(&mut self, mids: &[String]) -> Result<()> {
+        let tx = self.db.transaction()?;
+        tx.execute("UPDATE users SET friend=0 WHERE friend IS NOT NULL", [])?;
+        for mid in mids {
+            tx.execute("UPDATE users SET friend=1 WHERE mid=?", [mid])?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Friends and official accounts the user added, by name.
+    pub fn friends(&self) -> Result<Vec<Friend>> {
+        let mut stmt = self.db.prepare(
+            "SELECT mid,name,picture,COALESCE(kind,'dm') FROM users WHERE friend=1 AND name<>'' ORDER BY name",
+        )?;
+        let rows = stmt.query_map([], |r| {
+            Ok(Friend {
+                mid: r.get(0)?,
+                name: r.get(1)?,
+                picture: r.get(2)?,
+                kind: r.get(3)?,
+            })
+        })?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
 
     /// mid → (display name, avatar path) for everyone we know.
@@ -1003,6 +1032,23 @@ impl Store {
                 });
             }
         }
+        if has(SearchKind::Chat) {
+            // Friends we have no chat with yet, to start one.
+            let mut stmt = self.db.prepare(
+                "SELECT mid,name FROM users WHERE friend=1 AND name LIKE ? ESCAPE '\\'
+                 AND mid NOT IN (SELECT id FROM chats) ORDER BY name LIMIT 30",
+            )?;
+            for row in stmt.query_map([&like], |r| Ok((r.get(0)?, r.get(1)?)))? {
+                let (chat_id, title) = row?;
+                results.push(SearchHit {
+                    kind: SearchKind::Chat,
+                    chat_id,
+                    message_id: None,
+                    title,
+                    detail: String::new(),
+                });
+            }
+        }
         if has(SearchKind::Message) || has(SearchKind::File) {
             // The trigram tokenizer needs at least three characters.
             let use_fts = term.chars().count() >= 3;
@@ -1142,6 +1188,25 @@ mod tests {
         assert_eq!(s.search("ok", &[SearchKind::Message]).unwrap().len(), 1);
         // An empty query lists recent chats.
         assert_eq!(s.search("  ", &[SearchKind::Chat]).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn friends_come_from_the_friend_list_and_are_searchable() {
+        let mut s = Store::memory().unwrap();
+        let user = |mid: &str, name: &str| (mid.to_string(), name.to_string(), None, Some("dm".to_string()));
+        s.upsert_users(&[user("u1", "Alice"), user("u2", "Bob"), user("u3", "Alina")])
+            .unwrap();
+        s.set_friends(&["u1".into(), "u3".into()]).unwrap();
+        let names: Vec<String> = s.friends().unwrap().into_iter().map(|f| f.name).collect();
+        assert_eq!(names, ["Alice", "Alina"]);
+        // A friend with a chat row is found as that chat, once.
+        s.upsert_chats(&[chat("u1", "Alice")]).unwrap();
+        let hits = s.search("Ali", &[SearchKind::Chat]).unwrap();
+        let ids: Vec<&str> = hits.iter().map(|h| h.chat_id.as_str()).collect();
+        assert_eq!(ids, ["u1", "u3"]);
+        // Unfriended (or blocked) people drop out.
+        s.set_friends(&["u3".into()]).unwrap();
+        assert_eq!(s.friends().unwrap().len(), 1);
     }
 
     #[test]

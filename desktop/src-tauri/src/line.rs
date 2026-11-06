@@ -870,13 +870,10 @@ async fn new_chat_row(state: &Arc<AppState>, line: &Arc<Line>, chat_id: &str) ->
     {
         chat.name = name;
         chat.picture = pic;
-    } else if let Ok(contacts) = line
-        .client
-        .base
-        .talk()
-        .get_contacts(&[chat_id.to_string()])
+    } else if let Some(c) = fetch_contacts(line, &[chat_id.to_string()])
         .await
-        && let Some(c) = contacts_from(&contacts.to_json()).into_iter().next()
+        .into_iter()
+        .next()
     {
         chat.name = c.name;
         chat.picture = c.picture;
@@ -912,10 +909,10 @@ async fn refresh_chat_row(state: &Arc<AppState>, line: &Arc<Line>, chat_id: &str
             }
         }
     } else {
-        let contacts = line.client.base.talk().get_contacts(&[chat_id.to_string()]).await;
-        let Some(c) = contacts
-            .ok()
-            .and_then(|c| contacts_from(&c.to_json()).into_iter().next())
+        let Some(c) = fetch_contacts(line, &[chat_id.to_string()])
+            .await
+            .into_iter()
+            .next()
         else {
             return;
         };
@@ -954,13 +951,45 @@ fn apply_group(chat: &mut Chat, raw: &Json) {
 // Contacts
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct ContactInfo {
     pub mid: String,
     pub name: String,
     pub picture: Option<String>,
     pub bot: bool,
     pub muted: Option<bool>,
+    /// Whether they are a friend, when the response says (V3 only).
+    pub friend: Option<bool>,
+    /// Whether the account blocked them, when the response says (V3 only).
+    pub blocked: Option<bool>,
+}
+
+/// The `GetContactV3Response`s of a `getContactsV3` reply, as LINE for
+/// Android reads them: the name the user gave a friend, else their profile
+/// name.
+pub fn contacts_from_v3(json: &Json) -> Vec<ContactInfo> {
+    let has_detail = |d: &Json| d.get("user").is_some() || d.get("bot").is_some();
+    json["responses"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|r| {
+            let mid = str_of(&r["targetUserMid"])?;
+            let detail = &r["targetProfileDetail"];
+            let ty = &r["userType"];
+            Some(ContactInfo {
+                name: str_of(&r["friendDetail"]["user"]["overriddenName"])
+                    .or_else(|| str_of(&detail["profileName"]))
+                    .unwrap_or_default(),
+                picture: str_of(&detail["picturePath"]),
+                bot: ty.as_str() == Some("BOT") || ty.as_i64() == Some(2),
+                muted: r["notificationSettingEntry"]["notificationSetting"]["mute"].as_bool(),
+                friend: r.get("friendDetail").map(has_detail),
+                blocked: r.get("blockDetail").map(has_detail),
+                mid,
+            })
+        })
+        .collect()
 }
 
 /// Find every `Contact`-shaped object in a response. `getContacts`,
@@ -990,6 +1019,7 @@ pub fn contacts_from(json: &Json) -> Vec<ContactInfo> {
                             || o.get("capableBuddy").and_then(Json::as_bool) == Some(true),
                         // CONTACT_SETTING_NOTIFICATION_DISABLE is bit 1.
                         muted: settings.map(|s| s & 1 == 1),
+                        ..Default::default()
                     });
                     return;
                 }
@@ -1003,9 +1033,22 @@ pub fn contacts_from(json: &Json) -> Vec<ContactInfo> {
     out
 }
 
+/// Contacts by mid: `getContactsV3` on RelationService, as LINE for Android
+/// reads them, then the legacy `getContacts` / `getContactsV2` for a chunk
+/// V3 refuses.
 pub async fn fetch_contacts(line: &Line, mids: &[String]) -> Vec<ContactInfo> {
     let mut out = Vec::new();
-    for chunk in mids.chunks(40) {
+    for chunk in mids.chunks(50) {
+        match line.client.base.relation().get_contacts_v3(chunk, None).await {
+            Ok(v) => {
+                let found = contacts_from_v3(&v.to_json());
+                if !found.is_empty() {
+                    out.extend(found);
+                    continue;
+                }
+            }
+            Err(e) => tracing::warn!("getContactsV3: {e}"),
+        }
         let talk = line.client.base.talk();
         match talk.get_contacts(chunk).await {
             Ok(v) => out.extend(contacts_from(&v.to_json())),
@@ -1019,6 +1062,42 @@ pub async fn fetch_contacts(line: &Line, mids: &[String]) -> Vec<ContactInfo> {
         }
     }
     out
+}
+
+/// Every friend's mid, users and official accounts, from RelationService
+/// as LINE for Android reads it; the legacy `getAllContactIds` if that
+/// fails. `None` when neither answers.
+async fn friend_mids(line: &Line) -> Option<Vec<String>> {
+    let relation = line.client.base.relation();
+    match relation.all_user_friend_ids().await {
+        Ok(mut mids) => {
+            match relation.all_bot_friend_ids().await {
+                Ok(bots) => mids.extend(bots),
+                Err(e) => tracing::warn!("getBotFriendIds: {e}"),
+            }
+            return Some(mids);
+        }
+        Err(e) => tracing::warn!("getUserFriendIds: {e}"),
+    }
+    match line
+        .client
+        .base
+        .talk()
+        .get_all_contact_ids(tv!({"syncReason": "INTERNAL"}))
+        .await
+    {
+        Ok(v) => Some(
+            v.as_list()
+                .unwrap_or_default()
+                .iter()
+                .filter_map(|m| m.as_str().map(str::to_string))
+                .collect(),
+        ),
+        Err(e) => {
+            tracing::warn!("getAllContactIds: {e}");
+            None
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1151,24 +1230,8 @@ pub async fn refresh_chats(state: &Arc<AppState>, full: bool) -> Result<()> {
         .collect();
 
     // Friends and 1:1 partners.
-    let mut mids: Vec<String> = match line
-        .client
-        .base
-        .talk()
-        .get_all_contact_ids(tv!({"syncReason": "INTERNAL"}))
-        .await
-    {
-        Ok(v) => v
-            .as_list()
-            .unwrap_or_default()
-            .iter()
-            .filter_map(|m| m.as_str().map(str::to_string))
-            .collect(),
-        Err(e) => {
-            tracing::warn!("getAllContactIds: {e}");
-            vec![]
-        }
-    };
+    let friends = friend_mids(&line).await;
+    let mut mids: Vec<String> = friends.clone().unwrap_or_default();
     for mid in rows.keys().filter(|m| m.starts_with('u')) {
         if !mids.contains(mid) {
             mids.push(mid.clone());
@@ -1189,8 +1252,21 @@ pub async fn refresh_chats(state: &Arc<AppState>, full: bool) -> Result<()> {
             })
             .collect();
         logged("saving contacts", store.upsert_users(&users));
+        if let Some(friends) = &friends {
+            let listed: HashSet<&str> = friends.iter().map(String::as_str).collect();
+            let current: Vec<String> = contacts
+                .iter()
+                .filter(|c| c.friend.unwrap_or(listed.contains(c.mid.as_str())) && c.blocked != Some(true))
+                .map(|c| c.mid.clone())
+                .collect();
+            logged("saving friends", store.set_friends(&current));
+        }
     }
+    let friend_set: HashSet<String> = friends.unwrap_or_default().into_iter().collect();
     for c in contacts {
+        if !friend_set.contains(&c.mid) && !rows.contains_key(&c.mid) {
+            continue;
+        }
         let row = rows.entry(c.mid.clone()).or_insert_with(|| Chat {
             id: c.mid.clone(),
             name: c.mid.clone(),
@@ -1631,6 +1707,34 @@ pub async fn ensure_media_message(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reads_get_contacts_v3_like_the_app() {
+        let reply = serde_json::json!({"responses": [
+            {
+                "targetUserMid": "u1",
+                "userType": "USER",
+                "targetProfileDetail": {"profileName": "Profile", "picturePath": "/0h1"},
+                "friendDetail": {"user": {"overriddenName": "Nick"}},
+                "blockDetail": {"notBlocked": {}},
+                "notificationSettingEntry": {"notificationSetting": {"mute": true}},
+            },
+            {
+                "targetUserMid": "u2",
+                "userType": "BOT",
+                "targetProfileDetail": {"profileName": "Shop"},
+                "friendDetail": {"notFriend": {}},
+                "blockDetail": {"bot": {}},
+            },
+            {"userType": "USER"},
+        ]});
+        let c = contacts_from_v3(&reply);
+        assert_eq!(c.len(), 2);
+        assert_eq!((c[0].name.as_str(), c[0].picture.as_deref()), ("Nick", Some("/0h1")));
+        assert_eq!((c[0].friend, c[0].blocked, c[0].muted, c[0].bot), (Some(true), Some(false), Some(true), false));
+        assert_eq!((c[1].name.as_str(), c[1].bot), ("Shop", true));
+        assert_eq!((c[1].friend, c[1].blocked), (Some(false), Some(true)));
+    }
 
     #[test]
     fn stored_chunks_come_back_as_bytes() {

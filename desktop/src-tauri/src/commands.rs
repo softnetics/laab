@@ -96,6 +96,12 @@ pub fn people(state: S<'_>) -> R<HashMap<String, Person>> {
         .collect())
 }
 
+/// Friends and official accounts the user added, by name.
+#[tauri::command]
+pub fn friends(state: S<'_>) -> R<Vec<crate::model::Friend>> {
+    state.store().friends().map_err(err)
+}
+
 #[tauri::command]
 pub fn messages(state: S<'_>, chat_id: String, limit: Option<usize>) -> R<Vec<Message>> {
     let me = state.my_mid();
@@ -569,10 +575,24 @@ pub async fn set_muted(state: S<'_>, chat_id: String, muted: bool) -> R<()> {
     let Some(l) = s.line().await else {
         return Ok(());
     };
+    // 1:1 chats: updateNotificationSetting, as LINE for Android mutes them;
+    // the legacy contact setting if that fails.
     let result = if chat_id.starts_with('u') {
-        match l.client.get_user(&chat_id).await {
-            Ok(u) => u.set_notification_disabled(muted).await.map(|_| ()),
-            Err(e) => Err(e),
+        match l
+            .client
+            .base
+            .talk()
+            .update_notification_setting(&chat_id, muted)
+            .await
+        {
+            Ok(_) => Ok(()),
+            Err(e) => {
+                tracing::warn!("updateNotificationSetting: {e}");
+                match l.client.get_user(&chat_id).await {
+                    Ok(u) => u.set_notification_disabled(muted).await,
+                    Err(e) => Err(e),
+                }
+            }
         }
     } else {
         l.chat(&chat_id).set_muted(muted).await.map(|_| ())

@@ -266,6 +266,7 @@ pub fn run() {
             commands::set_draft,
             commands::raw_message,
             commands::send_postback,
+            commands::friends,
             commands::open_liff,
             commands::liff_dev_sessions,
             commands::liff_dev_action,

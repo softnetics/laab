@@ -1,5 +1,6 @@
+import { useQuery } from "@tanstack/react-query";
 import { useMemo, useState } from "react";
-import { useChatList, useSession } from "../lib/api";
+import { q as queries, useChatList, useSession } from "../lib/api";
 import { isKeepMemo } from "../lib/chatList";
 import { openChat } from "../lib/nav";
 import type { Chat } from "../lib/types";
@@ -13,7 +14,9 @@ const open = (id: string) => {
   openChat(id);
 };
 
-function Section({ title, items }: { title: string; items: Chat[] }) {
+type Row = Pick<Chat, "id" | "name" | "kind" | "picture" | "avatar" | "memberCount">;
+
+function Section({ title, items }: { title: string; items: Row[] }) {
   const [shown, setShown] = useState(true);
   if (!items.length) return null;
   return (
@@ -50,13 +53,20 @@ export function FriendsPage() {
   const [query, setQuery] = useState("");
   const me = s?.profile;
   const q = query.trim().toLocaleLowerCase("th");
-  const match = (c: Chat) => !q || c.name.toLocaleLowerCase("th").includes(q);
-  const byName = (a: Chat, b: Chat) => a.name.localeCompare(b.name, "th");
+  const { data: friendList } = useQuery(queries.friends);
+  const match = (c: Row) => !q || c.name.toLocaleLowerCase("th").includes(q);
+  const byName = (a: Row, b: Row) => a.name.localeCompare(b.name, "th");
   const groups = useMemo(() => (list?.chats ?? []).filter((c) => c.kind === "group" && match(c)).sort(byName), [list, q]);
-  const friends = useMemo(
-    () => (list?.chats ?? []).filter((c) => c.kind === "dm" && !isKeepMemo(c, me?.mid) && match(c)).sort(byName),
-    [list, q, me?.mid],
-  );
+  // LINE's friend list, not everyone with a chat: a chat row lends its
+  // cached avatar.
+  const friends = useMemo(() => {
+    const rows = new Map((list?.chats ?? []).map((c) => [c.id, c]));
+    return (friendList ?? [])
+      .filter((f) => f.kind === "dm" && f.mid !== me?.mid)
+      .map((f): Row => ({ id: f.mid, name: f.name, kind: f.kind, picture: f.picture, avatar: rows.get(f.mid)?.avatar ?? null, memberCount: null }))
+      .filter((f) => !isKeepMemo(f, me?.mid) && match(f))
+      .sort(byName);
+  }, [friendList, list, q, me?.mid]);
   return (
     <div className="flex h-full flex-col bg-list">
       <div className="drag px-4 pt-[34px] pb-2" data-tauri-drag-region>

@@ -230,8 +230,18 @@ pub async fn announce(
 
 // -- people -----------------------------------------------------------------
 
+/// Block or unblock with RelationService, as LINE for Android does
+/// (`blockRelation`, `unblockRelation`); the legacy Talk calls if it fails.
 pub async fn set_blocked(state: &Arc<AppState>, mid: &str, blocked: bool) -> Result<()> {
     let l = line(state).await?;
+    let relation = l.client.base.relation();
+    let result = if blocked {
+        relation.block_relation(mid).await
+    } else {
+        relation.unblock_relation(mid, None).await
+    };
+    let Err(e) = result else { return Ok(()) };
+    tracing::warn!("blockRelation/unblockRelation: {e}");
     let seq = talk_seq(&l).await?;
     let talk = l.client.base.talk();
     if blocked {
@@ -255,14 +265,60 @@ pub struct FoundContact {
     pub picture: Option<String>,
 }
 
-/// Find someone by LINE ID or a line.me / line:// profile link.
+/// A `GetContactV3Response`, or the legacy `Contact` (bare or under
+/// `contact`) of the old Talk lookups.
+fn found_contact(json: &Json) -> Option<FoundContact> {
+    if let Some(mid) = str_of(&json["targetUserMid"]) {
+        let detail = &json["targetProfileDetail"];
+        return Some(FoundContact {
+            name: str_of(&detail["profileName"]).unwrap_or_else(|| mid.clone()),
+            picture: str_of(&detail["picturePath"]),
+            mid,
+        });
+    }
+    let c = if json["contact"].is_null() { json } else { &json["contact"] };
+    let mid = str_of(&c["mid"])?;
+    Some(FoundContact {
+        name: str_of(&c["displayName"]).unwrap_or_else(|| mid.clone()),
+        picture: str_of(&c["picturePath"]),
+        mid,
+    })
+}
+
+/// Find someone by LINE ID or a line.me / line:// profile link, with
+/// `findContactBySearchIdOrTicketV3` as LINE for Android does (`lf3/b.java`).
+/// The legacy Talk lookups stay as a fallback.
 pub async fn find_contact(state: &Arc<AppState>, query: &str) -> Result<FoundContact> {
+    use line_rs::link::ProfileRef;
     let l = line(state).await?;
     let query = query.trim();
-    let raw = match LineLink::parse(query) {
-        Some(link @ LineLink::Profile(_)) => l.client.base.resolve_link(&link).await?,
+    let relation = l.client.base.relation();
+    let link = LineLink::parse(query);
+    let v3 = match &link {
+        Some(LineLink::Profile(ProfileRef::Ticket(t))) => relation.find_contact_by_ticket_v3(t).await,
+        Some(LineLink::Profile(ProfileRef::UserId(id))) => {
+            relation.find_contact_by_search_id_or_ticket_v3(id).await
+        }
+        // An official account's @id as a search id is unverified.
+        Some(LineLink::Profile(ProfileRef::OfficialAccount(id))) => {
+            relation
+                .find_contact_by_search_id_or_ticket_v3(&format!("@{}", id.trim_start_matches('@')))
+                .await
+        }
         Some(_) => bail!("ลิงก์นี้ไม่ใช่ลิงก์เพิ่มเพื่อน"),
-        None => {
+        None => relation.find_contact_by_search_id_or_ticket_v3(query).await,
+    };
+    match v3 {
+        Ok(v) => {
+            if let Some(found) = found_contact(&v.to_json()) {
+                return Ok(found);
+            }
+        }
+        Err(e) => tracing::warn!("findContactBySearchIdOrTicketV3: {e}"),
+    }
+    let raw = match link {
+        Some(link @ LineLink::Profile(_)) => l.client.base.resolve_link(&link).await?,
+        _ => {
             let id = query.trim_start_matches('@');
             l.client
                 .base
@@ -271,18 +327,7 @@ pub async fn find_contact(state: &Arc<AppState>, query: &str) -> Result<FoundCon
                 .await?
         }
     };
-    let json = raw.to_json();
-    let c = if json["contact"].is_null() {
-        &json
-    } else {
-        &json["contact"]
-    };
-    let mid = str_of(&c["mid"]).ok_or_else(|| anyhow!("ไม่พบผู้ใช้"))?;
-    Ok(FoundContact {
-        name: str_of(&c["displayName"]).unwrap_or_else(|| mid.clone()),
-        picture: str_of(&c["picturePath"]),
-        mid,
-    })
+    found_contact(&raw.to_json()).ok_or_else(|| anyhow!("ไม่พบผู้ใช้"))
 }
 
 #[derive(Serialize)]
@@ -298,12 +343,69 @@ pub struct ContactProfile {
     pub blocked: bool,
 }
 
-/// Someone's profile card: `getContact` for the name, status message and
-/// friend/blocked state, the home profile for the cover. The cover is a
-/// best effort: without it the card falls back to the profile picture.
+/// Someone's profile card: `getContactsV3` for the name, status message
+/// and friend/blocked state as LINE for Android reads them (the legacy
+/// `getContact` if V3 fails), the home profile for the cover. The cover is
+/// a best effort: without it the card falls back to the profile picture.
 pub async fn contact_profile(state: &Arc<AppState>, mid: &str) -> Result<ContactProfile> {
     let l = line(state).await?;
-    let c = l.client.base.talk().get_contact(mid).await?.to_json();
+    let mut card = match l
+        .client
+        .base
+        .relation()
+        .get_contacts_v3(&[mid.to_string()], None)
+        .await
+    {
+        Ok(v) => profile_from_v3(&v.to_json(), mid),
+        Err(e) => {
+            tracing::warn!("getContactsV3 {mid}: {e}");
+            None
+        }
+    };
+    if card.is_none() {
+        let c = l.client.base.talk().get_contact(mid).await?.to_json();
+        card = Some(profile_from_contact(&c, mid));
+    }
+    let mut card = card.expect("set above");
+    let home = line_rs::rest::home::HomeProfileQuery {
+        home_id: mid.into(),
+        ..Default::default()
+    };
+    card.cover = match l.client.base.rest().home().profile(home).await {
+        Ok(json) => cover_object_id(&json),
+        Err(e) => {
+            tracing::warn!("home profile {mid}: {e}");
+            None
+        }
+    };
+    Ok(card)
+}
+
+/// A profile card from a `getContactsV3` reply.
+fn profile_from_v3(json: &Json, mid: &str) -> Option<ContactProfile> {
+    let r = json["responses"]
+        .as_array()?
+        .iter()
+        .find(|r| r["targetUserMid"].as_str() == Some(mid))?;
+    let detail = &r["targetProfileDetail"];
+    let has = |d: &Json| d.get("user").is_some() || d.get("bot").is_some();
+    // statusMessage is a RichString{content, meta}.
+    let status = str_of(&detail["statusMessage"]["content"]).or_else(|| str_of(&detail["statusMessage"]));
+    Some(ContactProfile {
+        mid: mid.into(),
+        name: str_of(&r["friendDetail"]["user"]["overriddenName"])
+            .or_else(|| str_of(&detail["profileName"]))
+            .unwrap_or_else(|| mid.into()),
+        picture: str_of(&detail["picturePath"]),
+        status_message: status.filter(|s| !s.trim().is_empty()),
+        cover: None,
+        friend: has(&r["friendDetail"]),
+        blocked: has(&r["blockDetail"]),
+    })
+}
+
+/// A profile card from the legacy `getContact`.
+fn profile_from_contact(c: &Json, mid: &str) -> ContactProfile {
     // ContactStatus: FRIEND 1, FRIEND_BLOCKED 2, RECOMMEND_BLOCKED 4,
     // DELETED_BLOCKED 6. It arrives as a number or as the enum name.
     let status = c["status"]
@@ -318,28 +420,17 @@ pub async fn contact_profile(state: &Arc<AppState>, mid: &str) -> Result<Contact
             })
         })
         .unwrap_or(0);
-    let home = line_rs::rest::home::HomeProfileQuery {
-        home_id: mid.into(),
-        ..Default::default()
-    };
-    let cover = match l.client.base.rest().home().profile(home).await {
-        Ok(json) => cover_object_id(&json),
-        Err(e) => {
-            tracing::warn!("home profile {mid}: {e}");
-            None
-        }
-    };
-    Ok(ContactProfile {
+    ContactProfile {
         mid: mid.into(),
         name: str_of(&c["displayNameOverridden"])
             .or_else(|| str_of(&c["displayName"]))
             .unwrap_or_else(|| mid.into()),
         picture: str_of(&c["picturePath"]),
         status_message: str_of(&c["statusMessage"]).filter(|s| !s.trim().is_empty()),
-        cover,
+        cover: None,
         friend: matches!(status, 1 | 2),
         blocked: matches!(status, 2 | 4 | 6),
-    })
+    }
 }
 
 /// The cover's object id in a home profile response. The shape is not
@@ -1150,6 +1241,33 @@ pub async fn delete_album(state: &Arc<AppState>, chat_id: &str, album_id: &str) 
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn reads_v3_and_legacy_contact_lookups() {
+        let v3 = json!({"targetUserMid": "u1", "userType": "USER",
+            "targetProfileDetail": {"profileName": "A", "picturePath": "/0h"}});
+        let f = found_contact(&v3).unwrap();
+        assert_eq!((f.mid.as_str(), f.name.as_str(), f.picture.as_deref()), ("u1", "A", Some("/0h")));
+        let legacy = json!({"contact": {"mid": "u2", "displayName": "B"}});
+        assert_eq!(found_contact(&legacy).unwrap().mid, "u2");
+        assert!(found_contact(&json!({})).is_none());
+    }
+
+    #[test]
+    fn profile_card_from_get_contacts_v3() {
+        let reply = json!({"responses": [{
+            "targetUserMid": "u1",
+            "targetProfileDetail": {"profileName": "A", "statusMessage": {"content": " hi "}},
+            "friendDetail": {"user": {}},
+            "blockDetail": {"user": {}},
+        }]});
+        let p = profile_from_v3(&reply, "u1").unwrap();
+        assert_eq!((p.name.as_str(), p.status_message.as_deref()), ("A", Some(" hi ")));
+        assert!(p.friend && p.blocked);
+        assert!(profile_from_v3(&reply, "u2").is_none());
+        let legacy = profile_from_contact(&json!({"displayName": "B", "status": "FRIEND_BLOCKED"}), "u2");
+        assert!(legacy.friend && legacy.blocked);
+    }
 
     #[test]
     fn parses_note_feed() {

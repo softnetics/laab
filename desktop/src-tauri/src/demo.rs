@@ -167,6 +167,12 @@ pub fn seed(store: &mut Store, paths: &Paths) -> Result<()> {
     );
     users.push(("me".into(), "Nara".into(), None, None));
     store.upsert_users(&users)?;
+    let friends: Vec<String> = chats
+        .iter()
+        .filter(|c| c.id.starts_with('u'))
+        .map(|c| c.id.clone())
+        .collect();
+    store.set_friends(&friends)?;
 
     let msg = |id: &str, chat: &str, from: &str, text: &str, time: f64| Message {
         id: id.into(),

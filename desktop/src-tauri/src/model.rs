@@ -23,6 +23,17 @@ pub struct Chat {
     pub member_count: Option<i64>,
 }
 
+/// A friend or an official account the user added.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct Friend {
+    pub mid: String,
+    pub name: String,
+    pub picture: Option<String>,
+    /// `dm` or `bot`.
+    pub kind: String,
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct ChatMember {

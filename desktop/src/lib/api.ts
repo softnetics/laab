@@ -18,6 +18,7 @@ import type {
   ChatMember,
   ContactProfile,
   Draft,
+  Friend,
   MentionSpan,
   Message,
   NoteDetail,
@@ -59,6 +60,7 @@ export const api = {
   logout: () => invoke<void>("logout"),
   chats: () => invoke<ChatList>("chats"),
   people: () => invoke<Record<string, Person>>("people"),
+  friends: () => invoke<Friend[]>("friends"),
   messages: (chatId: string, limit: number) => invoke<Message[]>("messages", { chatId, limit }),
   /** Fetch the page of history before the oldest stored message; 0 at its start. */
   olderMessages: (chatId: string) => invoke<number>("older_messages", { chatId }),
@@ -183,6 +185,7 @@ export const q = {
   session: queryOptions({ queryKey: ["session"], queryFn: () => api.session().then(track) }),
   chats: queryOptions({ queryKey: ["chats"], queryFn: api.chats }),
   people: queryOptions({ queryKey: ["people"], queryFn: api.people }),
+  friends: queryOptions({ queryKey: ["friends"], queryFn: api.friends }),
   messages: (chatId: string) =>
     queryOptions({ queryKey: ["messages", chatId], queryFn: () => api.messages(chatId, messageLimit(chatId)) }),
   reads: (chatId: string) => queryOptions({ queryKey: ["reads", chatId], queryFn: () => api.reads(chatId) }),
@@ -220,6 +223,7 @@ export function useBackendEvents() {
       listen("chats-changed", () => {
         queryClient.invalidateQueries({ queryKey: ["chats"] });
         queryClient.invalidateQueries({ queryKey: ["people"] });
+        queryClient.invalidateQueries({ queryKey: ["friends"] });
       }),
       listen<{ chatId: string }>("messages-changed", (e) => queryClient.invalidateQueries({ queryKey: ["messages", e.payload.chatId] })),
       listen("mcp-changed", () => {

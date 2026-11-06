@@ -259,6 +259,14 @@ export interface ContactProfile {
 /** An official account's rich menu, in canvas pixels. */
 /** What a rich-menu area does: `web` opens `uri`, `postback` sends `data`, `sendMessage` sends `text`,
  *  `transition` shows `scene`, `clipboard` copies `clipboardText`. */
+/** A friend or an official account the user added. */
+export interface Friend {
+  mid: string;
+  name: string;
+  picture: string | null;
+  kind: "dm" | "bot";
+}
+
 export interface RichMenuAction {
   type: string;
   label: string | null;
