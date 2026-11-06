@@ -498,12 +498,10 @@ pub async fn download(
     crate::media::download_file(&s, &chat_id, &message_id, file_name)
         .await
         .map(|p| p.to_string_lossy().into_owned())
-        .map_err(|e| {
-            if e.to_string().contains("file_expired") {
-                "ไฟล์นี้หมดอายุแล้ว ดาวน์โหลดไม่ได้".into()
-            } else {
-                e.to_string()
-            }
+        .map_err(|e| match e.to_string().as_str() {
+            "file_expired" => "ไฟล์นี้หมดอายุแล้ว ดาวน์โหลดไม่ได้".into(),
+            "message_not_found" => "ไม่พบข้อความนี้ ลองเปิดแชตนี้ใหม่แล้วดาวน์โหลดอีกครั้ง".into(),
+            other => other.to_string(),
         })
 }
 

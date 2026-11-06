@@ -508,9 +508,9 @@ pub async fn download_file(
         .talk_message(id)
         .data(false)
         .await
-        .map_err(|e| anyhow!("download_failed: {e}"))?;
+        .map_err(crate::line::media_error)?;
     if data.is_empty() {
-        return Err(anyhow!("file_expired"));
+        return Err(anyhow!("download_failed: empty file"));
     }
     let name = file_name
         .filter(|n| !n.is_empty() && !n.starts_with('['))
