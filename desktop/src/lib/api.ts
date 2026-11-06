@@ -1,4 +1,4 @@
-import { invoke } from "@tauri-apps/api/core";
+import { invoke as tauriInvoke, type InvokeArgs } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { QueryClient, queryOptions, useQuery } from "@tanstack/react-query";
 import { useEffect } from "react";
@@ -37,6 +37,15 @@ import type {
 export const queryClient = new QueryClient({
   defaultOptions: { queries: { staleTime: Infinity, refetchOnWindowFocus: false, retry: false } },
 });
+
+/** Calls a command. A failure also goes to LAAB's log, so a problem report
+ *  can show which command failed and why. */
+function invoke<T>(command: string, args?: InvokeArgs): Promise<T> {
+  return tauriInvoke<T>(command, args).catch((e: unknown) => {
+    tauriInvoke("log_error", { command, error: String(e) }).catch(() => {});
+    throw e;
+  });
+}
 
 /** Mark a send from this app, so the chat scrolls down to it. */
 function sent<T>(p: Promise<T>): Promise<T> {

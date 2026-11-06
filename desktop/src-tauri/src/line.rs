@@ -144,6 +144,14 @@ async fn session_ended(state: Arc<AppState>, line: Arc<Line>, status: &str) {
     });
 }
 
+/// Logs an error the app carries on after, so the log shows why something
+/// went missing.
+fn logged<T, E: std::fmt::Display>(what: &str, result: std::result::Result<T, E>) {
+    if let Err(e) = result {
+        tracing::warn!("{what}: {e:#}");
+    }
+}
+
 /// Ask the server whether the session still works. A dead token ends it
 /// here; a logout reason makes line-rs emit `KickedOut`; a network error
 /// changes nothing.
@@ -152,7 +160,7 @@ async fn check_session(state: Arc<AppState>, line: Arc<Line>) {
         && token_dead(&e.to_string())
     {
         tracing::warn!("session expired: {e}");
-        analytics::failed(&state, analytics::Failure::SessionEnded { kicked: false }, "");
+        analytics::failed(&state, analytics::Failure::SessionEnded { kicked: None }, "");
         session_ended(state, line, EXPIRED).await;
     }
 }
@@ -349,7 +357,7 @@ async fn connected(state: Arc<AppState>, client: Client, device: Device) {
     let picture = str_of(&profile["picturePath"]);
     {
         let mut store = state.store();
-        let _ = store.upsert_users(&[(me.clone(), display_name.clone(), picture.clone(), None)]);
+        logged("saving my profile", store.upsert_users(&[(me.clone(), display_name.clone(), picture.clone(), None)]));
     }
     state.update_session(|s| {
         s.state = "signed_in".into();
@@ -376,7 +384,7 @@ async fn connected(state: Arc<AppState>, client: Client, device: Device) {
         // The open chat first, then the list and the background history sync.
         let open = s.focus.lock().unwrap().chat.clone();
         if let Some(chat) = open {
-            let _ = fetch_history(&s, &chat).await;
+            logged("loading history", fetch_history(&s, &chat).await);
         }
         if let Err(e) = refresh_chats(&s, false).await {
             s.status(format!("โหลดรายชื่อแชทไม่สำเร็จ: {e}"));
@@ -469,7 +477,11 @@ fn spawn_forwarders(state: &Arc<AppState>, line: &Arc<Line>) {
                 // `session_ended` stops this task, so it runs in its own.
                 Ok(line_rs::ClientEvent::KickedOut(reason)) => {
                     tracing::warn!("kicked out: {reason:?}");
-                    analytics::failed(&s, analytics::Failure::SessionEnded { kicked: true }, "");
+                    analytics::failed(
+                        &s,
+                        analytics::Failure::SessionEnded { kicked: Some(analytics::Kick::of(&reason)) },
+                        "",
+                    );
                     if let Some(line) = l.upgrade() {
                         tokio::spawn(session_ended(s.clone(), line, "ถูกออกจากระบบ เข้าสู่ระบบใหม่"));
                     }
@@ -480,7 +492,7 @@ fn spawn_forwarders(state: &Arc<AppState>, line: &Arc<Line>) {
                     let error = data["error"].as_str().unwrap_or("");
                     if kind == "RefreshError" && token_dead(error) {
                         tracing::warn!("session expired: {error}");
-                        analytics::failed(&s, analytics::Failure::SessionEnded { kicked: false }, "");
+                        analytics::failed(&s, analytics::Failure::SessionEnded { kicked: None }, "");
                         tokio::spawn(session_ended(s.clone(), line, EXPIRED));
                         break;
                     }
@@ -617,7 +629,7 @@ pub fn apply_read(state: &AppState, chat: &str, reader: &str, message_id: &str) 
     let current = store.reads(chat).ok().and_then(|r| r.get(reader).cloned());
     let next = reads::later(current.as_deref(), &cursor);
     if current.as_deref() != Some(next.as_str()) {
-        let _ = store.set_read(chat, reader, &next);
+        logged("saving read state", store.set_read(chat, reader, &next));
         drop(store);
         state.reads_changed(chat);
     }
@@ -637,7 +649,7 @@ pub fn apply_checked(state: &AppState, chat: &str, message_id: &str) {
     let others = recent.iter().filter(|m| !m.mine).map(|m| m.id.as_str());
     let unread = reads::unread_after(row.unread, message_id, others);
     if unread != row.unread {
-        let _ = store.set_unread(chat, unread);
+        logged("saving unread count", store.set_unread(chat, unread));
         drop(store);
         state.chats_changed();
     }
@@ -679,7 +691,7 @@ pub fn refresh_preview(state: &AppState, chat_id: &str) {
     };
     chat.preview = convert::preview_line(&last);
     chat.last_activity = chat.last_activity.max(last.created_time);
-    let _ = store.upsert_chats(&[chat]);
+    logged("saving chat", store.upsert_chats(&[chat]));
     drop(store);
     state.chats_changed();
 }
@@ -687,12 +699,12 @@ pub fn refresh_preview(state: &AppState, chat_id: &str) {
 async fn ingest_live(state: &Arc<AppState>, line: &Arc<Line>, msg: Message) {
     let chat_id = msg.chat_id.clone();
     let known = state.store().contains_message(&msg.id).unwrap_or(false);
-    let _ = state.store().upsert_messages(std::slice::from_ref(&msg));
+    logged("saving message", state.store().upsert_messages(std::slice::from_ref(&msg)));
     if let Some(list) = convert::parse_reactions(
         &serde_json::from_str(msg.raw.as_deref().unwrap_or("{}")).unwrap_or_default(),
     ) && !list.is_empty()
     {
-        let _ = state.store().replace_reactions(&msg.id, &list);
+        logged("saving reactions", state.store().replace_reactions(&msg.id, &list));
     }
     let (focused, active) = {
         let f = state.focus.lock().unwrap();
@@ -711,14 +723,14 @@ async fn ingest_live(state: &Arc<AppState>, line: &Arc<Line>, msg: Message) {
             chat.unread += 1;
         }
     }
-    let _ = state.store().upsert_chats(std::slice::from_ref(&chat));
+    logged("saving chat", state.store().upsert_chats(std::slice::from_ref(&chat)));
     state.messages_changed(&chat_id);
     state.chats_changed();
     if known {
         return;
     }
     if focused && active && !msg.mine {
-        let _ = line.chat(&chat_id).mark_as_read(&msg.id).await;
+        logged("marking read", line.chat(&chat_id).mark_as_read(&msg.id).await);
     }
     crate::notify::maybe_notify(state, &chat, &msg);
 }
@@ -837,9 +849,11 @@ pub async fn fetch_contacts(line: &Line, mids: &[String]) -> Vec<ContactInfo> {
         let talk = line.client.base.talk();
         match talk.get_contacts(chunk).await {
             Ok(v) => out.extend(contacts_from(&v.to_json())),
-            Err(_) => {
-                if let Ok(v) = talk.get_contacts_v2(chunk).await {
-                    out.extend(contacts_from(&v.to_json()));
+            Err(e) => {
+                tracing::warn!("getContacts: {e}");
+                match talk.get_contacts_v2(chunk).await {
+                    Ok(v) => out.extend(contacts_from(&v.to_json())),
+                    Err(e) => tracing::warn!("getContactsV2: {e}"),
                 }
             }
         }
@@ -897,7 +911,7 @@ async fn decrypt(line: &Line, raw: Value) -> (Value, bool) {
     match line.client.base.decrypt_e2ee_message(raw.clone()).await {
         Ok(v) => (with_e2ee_file_name(line, v).await, true),
         Err(e) => {
-            tracing::debug!("decrypt failed: {e}");
+            tracing::warn!("decrypt failed: {e}");
             (raw, false)
         }
     }
@@ -917,7 +931,7 @@ async fn with_e2ee_file_name(line: &Line, mut raw: Value) -> Value {
             .filter(|n| !n.is_empty())
             .map(str::to_string),
         Err(e) => {
-            tracing::debug!("file name decrypt failed: {e}");
+            tracing::warn!("file name decrypt failed: {e}");
             None
         }
     };
@@ -1014,7 +1028,7 @@ pub async fn refresh_chats(state: &Arc<AppState>, full: bool) -> Result<()> {
                 )
             })
             .collect();
-        let _ = store.upsert_users(&users);
+        logged("saving contacts", store.upsert_users(&users));
     }
     for c in contacts {
         let row = rows.entry(c.mid.clone()).or_insert_with(|| Chat {
@@ -1156,8 +1170,9 @@ async fn sync_history(state: &Arc<AppState>, full: bool) {
             s.sync_total = total;
             s.status = format!("กำลัง sync {}/{} แชท", i + 1, total);
         });
-        if fetch_history(state, &chat).await.is_ok() {
-            let _ = state.store().mark_synced(&chat, activity);
+        match fetch_history(state, &chat).await {
+            Ok(_) => logged("saving sync state", state.store().mark_synced(&chat, activity)),
+            Err(e) => tracing::warn!("syncing a chat: {e:#}"),
         }
         tokio::time::sleep(Duration::from_millis(60)).await;
     }
@@ -1251,7 +1266,7 @@ async fn store_raws(
         let s = state.clone();
         let c = chat_id.to_string();
         tokio::spawn(async move {
-            let _ = load_members(&s, &c, true).await;
+            logged("loading members", load_members(&s, &c, true).await);
         });
     }
     Ok(messages)
@@ -1371,7 +1386,7 @@ pub async fn load_members(
         let mut store = state.store();
         if let Ok(Some(mut c)) = store.chat(chat_id) {
             apply_group(&mut c, &raw);
-            let _ = store.upsert_chats(&[c]);
+            logged("saving chat", store.upsert_chats(&[c]));
         }
     }
     state.members_changed(chat_id);

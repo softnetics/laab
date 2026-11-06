@@ -829,10 +829,19 @@ pub fn send_report(state: S<'_>, report: String) -> R<()> {
 /// point into LAAB's scripts are kept; see `crash::from_js`.
 #[tauri::command]
 pub fn report_js_error(state: S<'_>, name: String, stack: String) {
+    tracing::warn!("uncaught {name}: {stack}");
     crate::analytics::send(
         &state,
         crate::analytics::Event::Exception(crate::crash::from_js(&name, &stack)),
     );
+}
+
+/// A command the UI called failed. Logged here because most commands hand
+/// their error to the UI and nothing else.
+#[tauri::command]
+pub fn log_error(command: String, error: String) {
+    let error: String = error.chars().take(500).collect();
+    tracing::warn!("{command} failed: {error}");
 }
 
 fn inside_data(state: &AppState, path: &str) -> R<std::path::PathBuf> {
