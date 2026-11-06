@@ -248,6 +248,7 @@ pub fn run() {
             commands::refresh,
             commands::reload_chat,
             commands::send_text,
+            commands::new_req_seq,
             commands::send_sticker,
             commands::stickers,
             commands::send_files,

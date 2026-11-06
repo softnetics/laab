@@ -243,6 +243,19 @@ fn store_sent(state: &AppState, msg: &Message) {
     state.messages_changed(&msg.chat_id);
 }
 
+/// A new `reqSeq` for [`send_text`], from line-rs's counter. The composer
+/// takes one per message and sends it again on Retry, so LINE can tell a
+/// retry from a new message when the first try's answer was lost.
+#[tauri::command]
+pub async fn new_req_seq(state: S<'_>) -> R<i64> {
+    let s = state.inner().clone();
+    if s.demo {
+        return Ok(0);
+    }
+    let l = s.line().await.ok_or("not_logged_in")?;
+    l.client.base.get_reqseq("talk").await.map_err(err)
+}
+
 #[tauri::command]
 pub async fn send_text(
     state: S<'_>,
@@ -250,6 +263,7 @@ pub async fn send_text(
     text: String,
     mentions: Vec<MentionSpan>,
     reply_to: Option<String>,
+    req_seq: Option<i64>,
 ) -> R<Message> {
     let s = state.inner().clone();
     if s.demo {
@@ -265,6 +279,9 @@ pub async fn send_text(
     }
     if let Some(meta) = convert::mention_metadata(&mentions) {
         input = input.metadata("MENTION", meta);
+    }
+    if let Some(seq) = req_seq {
+        input = input.req_seq(seq);
     }
     let sent = l
         .client

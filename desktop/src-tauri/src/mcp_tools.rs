@@ -1102,7 +1102,7 @@ async fn run(ctx: &Ctx, name: &str, args: &Value, trace: &mut Trace) -> R<Vec<Va
             let mentions = mention_spans(&t, &ids, &names)?.into_iter().map(|(s, _)| s).collect();
             gate(ctx, trace, Send, &[dir.scope(&chat)], format!("ส่งข้อความถึง {}:\n\n{}", dir.quoted(&chat), t)).await?;
             trace.what = format!("ส่งข้อความถึง {}: {}", dir.quoted(&chat), clip(&t, 80));
-            let m = commands::send_text(st(), chat, t, mentions, reply).await?;
+            let m = commands::send_text(st(), chat, t, mentions, reply, None).await?;
             Ok(text(json!({ "ok": true, "messageId": m.id, "time": time(m.created_time) })))
         }
         "send_sticker" => {

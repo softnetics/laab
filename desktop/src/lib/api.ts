@@ -69,8 +69,10 @@ export const api = {
   markRead: (chatId: string) => invoke<void>("mark_read", { chatId }),
   refresh: (full = true) => invoke<void>("refresh", { full }),
   reloadChat: (chatId: string) => invoke<void>("reload_chat", { chatId }),
-  sendText: (chatId: string, text: string, mentions: MentionSpan[], replyTo: string | null = null) =>
-    sent(invoke<Message>("send_text", { chatId, text, mentions, replyTo })),
+  /** A reqSeq for one message, sent again with each retry of it. */
+  newReqSeq: () => invoke<number>("new_req_seq"),
+  sendText: (chatId: string, text: string, mentions: MentionSpan[], replyTo: string | null = null, reqSeq: number | null = null) =>
+    sent(invoke<Message>("send_text", { chatId, text, mentions, replyTo, reqSeq })),
   sendSticker: (chatId: string, sticker: Sticker) => sent(invoke<void>("send_sticker", { chatId, sticker })),
   stickers: () => invoke<StickerPack[]>("stickers"),
   sendFiles: (chatId: string, paths: string[]) => sent(invoke<void>("send_files", { chatId, paths })),

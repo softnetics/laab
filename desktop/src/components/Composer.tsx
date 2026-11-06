@@ -154,6 +154,11 @@ export const Composer = forwardRef<
     area.current?.focus();
   };
 
+  // The reqSeq of the last message that failed to send. Sending the same
+  // message again reuses it, so if the first try reached LINE but its answer
+  // was lost (a timeout), LINE doesn't post it twice.
+  const unsent = useRef<{ key: string; reqSeq: number } | null>(null);
+
   const send = async () => {
     const body = text.replace(/\s+$/, "");
     if (!body.trim() || sending || disabled) return;
@@ -167,7 +172,11 @@ export const Composer = forwardRef<
         await api.editMessage(chatId, current.message.id, body);
         savedDraft.current = null;
       } else {
-        await api.sendText(chatId, body, spans, current?.kind === "reply" ? current.message.id : null);
+        const replyTo = current?.kind === "reply" ? current.message.id : null;
+        const key = JSON.stringify([chatId, body, spans, replyTo]);
+        if (unsent.current?.key !== key) unsent.current = { key, reqSeq: await api.newReqSeq() };
+        await api.sendText(chatId, body, spans, replyTo, unsent.current.reqSeq);
+        unsent.current = null;
       }
       if (current) setUi({ composerMode: null });
       setFailure(null);
