@@ -232,6 +232,48 @@ fn save_plain(path: &Path, data: &[u8]) -> Result<PathBuf> {
     Ok(path.to_path_buf())
 }
 
+/// The extension for a file that starts with `head`.
+pub fn extension_of(head: &[u8]) -> &'static str {
+    match sniff_mime(head, Path::new("")) {
+        "image/png" => "png",
+        "image/jpeg" => "jpg",
+        "image/gif" => "gif",
+        "image/webp" => "webp",
+        "video/mp4" => "mp4",
+        _ if head.starts_with(b"%PDF") => "pdf",
+        _ if head.starts_with(b"PK") => "zip",
+        _ => "bin",
+    }
+}
+
+/// A file name as the user sees it, safe to save under: only `/` and `:`
+/// (the path separators of macOS) become `_`, so the extension stays.
+pub fn clean_file_name(name: &str) -> String {
+    let clean: String = name
+        .chars()
+        .map(|c| if matches!(c, '/' | ':' | '\0') { '_' } else { c })
+        .collect();
+    match clean.trim() {
+        "" | "." | ".." => "file".into(),
+        _ => clean,
+    }
+}
+
+/// The name to save a message's attachment under: its own file name, or
+/// `LINE_<id>.<ext>` with the extension of the cached file's content
+/// (never the cache's own `.full`).
+pub fn save_name(file_name: Option<&str>, message_id: &str, cached: &Path) -> String {
+    match file_name.filter(|n| !n.trim().is_empty() && !n.starts_with('[')) {
+        Some(n) => clean_file_name(n),
+        None => {
+            let head = crate::vault::CacheFile::open(cached)
+                .and_then(|mut f| f.head(16))
+                .unwrap_or_default();
+            format!("LINE_{}.{}", safe_name(message_id), extension_of(&head))
+        }
+    }
+}
+
 pub fn safe_name(s: &str) -> String {
     s.chars()
         .map(|c| {
@@ -570,22 +612,8 @@ pub async fn download_file(
     }
     let name = file_name
         .filter(|n| !n.is_empty() && !n.starts_with('['))
-        .unwrap_or_else(|| {
-            let ext = match sniff_mime(&data, Path::new("")) {
-                "image/png" => "png",
-                "image/jpeg" => "jpg",
-                "image/gif" => "gif",
-                "video/mp4" => "mp4",
-                _ if data.starts_with(b"%PDF") => "pdf",
-                _ if data.starts_with(b"PK") => "zip",
-                _ => "bin",
-            };
-            format!("file.{ext}")
-        });
-    let clean: String = name
-        .chars()
-        .map(|c| if c == '/' || c == ':' { '_' } else { c })
-        .collect();
+        .unwrap_or_else(|| format!("file.{}", extension_of(&data)));
+    let clean = clean_file_name(&name);
     let path = state
         .paths
         .media()
@@ -609,6 +637,21 @@ mod tests {
             url_query("p=%2Fa&x=1"),
             vec![("p".into(), "/a".into()), ("x".into(), "1".into())]
         );
+    }
+
+    #[test]
+    fn saved_names_keep_their_extension() {
+        assert_eq!(clean_file_name("report v2.pdf"), "report v2.pdf");
+        assert_eq!(clean_file_name("a/b:c.tar.gz"), "a_b_c.tar.gz");
+        assert_eq!(clean_file_name(".."), "file");
+        let dir = tempfile::tempdir().unwrap();
+        let full = dir.path().join("7.full");
+        std::fs::write(&full, b"\x89PNG\r\n\x1a\nrest").unwrap();
+        assert_eq!(save_name(None, "7", &full), "LINE_7.png");
+        assert_eq!(save_name(Some("[Photo]"), "7", &full), "LINE_7.png");
+        assert_eq!(save_name(Some("notes.txt"), "7", &full), "notes.txt");
+        std::fs::write(&full, b"\0\0\0\x18ftypmp42").unwrap();
+        assert_eq!(save_name(None, "7", &full), "LINE_7.mp4");
     }
 
     #[test]

@@ -1445,10 +1445,7 @@ pub async fn save_attachment(
     let target = match dest.filter(|d| !d.is_empty()) {
         Some(d) => std::path::PathBuf::from(d),
         None => {
-            let name = m.file_name.clone().unwrap_or_else(|| {
-                let ext = src.extension().and_then(|e| e.to_str()).unwrap_or("jpg");
-                format!("LINE_{}.{ext}", message_id)
-            });
+            let name = crate::media::save_name(m.file_name.as_deref(), &message_id, &src);
             dirs::download_dir()
                 .ok_or("ไม่พบโฟลเดอร์ดาวน์โหลด")?
                 .join(name)

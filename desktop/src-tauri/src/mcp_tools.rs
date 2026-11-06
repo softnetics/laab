@@ -1022,13 +1022,10 @@ async fn run(ctx: &Ctx, name: &str, args: &Value, trace: &mut Trace) -> R<Vec<Va
                 None => dirs::download_dir(),
             }
             .ok_or("ไม่พบโฟลเดอร์ดาวน์โหลด")?;
-            let ext = match m.content_type.as_str() {
-                "VIDEO" => "mp4",
-                "AUDIO" => "m4a",
-                _ => "jpg",
-            };
-            let name = m.file_name.clone().unwrap_or_else(|| format!("LINE_{}.{ext}", m.id));
-            let target = unique_path(&dest, &crate::media::safe_name(&name));
+            // Download first: an unnamed photo or video is named by its content.
+            let cached = commands::download(st(), m.chat_id.clone(), m.id.clone(), m.file_name.clone()).await?;
+            let name = crate::media::save_name(m.file_name.as_deref(), &m.id, Path::new(&cached));
+            let target = unique_path(&dest, &name);
             let saved = commands::save_attachment(st(), m.chat_id.clone(), m.id.clone(), Some(target.to_string_lossy().into_owned())).await?;
             Ok(text(json!({ "path": saved })))
         }
