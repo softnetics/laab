@@ -418,25 +418,26 @@ async fn message_media(
     }
     let line = state.line().await.ok_or_else(|| anyhow!("not_logged_in"))?;
     crate::line::ensure_media_message(state, &line, chat, id).await?;
-    // An E2EE thumbnail is the `ud-preview` the sender uploaded; line-rs
-    // never downloads a whole video for it.
-    let data = line
-        .talk_message(id)
-        .data(preview)
+    let ext = if preview { "preview" } else { "full" };
+    let target = dir.join(format!("{}.{ext}", safe_name(id)));
+    // Streamed to disk: a video never sits in memory whole. An E2EE
+    // thumbnail is the `ud-preview` the sender uploaded; line-rs never
+    // downloads a whole video for it.
+    let mut file = crate::vault::Writer::create(&target)?;
+    line.talk_message(id)
+        .download_to(preview, &mut file)
         .await
         .map_err(crate::line::media_error)?;
-    // A "preview" that is the whole video is kept as the full file instead.
-    let full = !preview || sniff_mime(&data, Path::new("")) == "video/mp4";
-    let name = if full {
-        format!("{}.full", safe_name(id))
-    } else {
-        format!("{}.preview", safe_name(id))
-    };
-    let saved = save(&dir.join(name), &data)?;
-    crate::cache::schedule_trim(state);
-    if preview && full {
+    let video = sniff_mime(file.head(), Path::new("")) == "video/mp4";
+    if preview && video {
+        // Not a thumbnail: keep it as the full file.
+        let full = dir.join(format!("{}.full", safe_name(id)));
+        file.finish_as(&full)?;
+        crate::cache::schedule_trim(state);
         return Err(anyhow!("no thumbnail for {id}"));
     }
+    let saved = file.finish()?;
+    crate::cache::schedule_trim(state);
     if !preview {
         let _ = state
             .store()
@@ -541,23 +542,20 @@ pub async fn download_file(
     }
     let line = state.line().await.ok_or_else(|| anyhow!("not_logged_in"))?;
     crate::line::ensure_media_message(state, &line, chat, id).await?;
-    let data = line
-        .talk_message(id)
-        .data(false)
+    let dir = state.paths.media();
+    let mut file = crate::vault::Writer::create(&dir.join(format!("{}.download", safe_name(id))))?;
+    line.talk_message(id)
+        .download_to(false, &mut file)
         .await
         .map_err(crate::line::media_error)?;
-    if data.is_empty() {
+    if file.len() == 0 {
         return Err(anyhow!("download_failed: empty file"));
     }
     let name = file_name
         .filter(|n| !n.is_empty() && !n.starts_with('['))
-        .unwrap_or_else(|| format!("file.{}", extension_of(&data)));
+        .unwrap_or_else(|| format!("file.{}", extension_of(file.head())));
     let clean = clean_file_name(&name);
-    let path = state
-        .paths
-        .media()
-        .join(format!("{}.{clean}", safe_name(id)));
-    save(&path, &data)?;
+    let path = file.finish_as(&dir.join(format!("{}.{clean}", safe_name(id))))?;
     crate::cache::schedule_trim(state);
     state
         .store()

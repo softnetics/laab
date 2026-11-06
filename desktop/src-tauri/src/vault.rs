@@ -196,6 +196,150 @@ pub fn write(path: &Path, data: &[u8]) -> Result<()> {
     }
 }
 
+/// A cache file written as it arrives, so a big download never sits in
+/// memory whole: sealed one `CHUNK` at a time when there is a key, plain
+/// otherwise, into a temp file that [`finish`](Self::finish) renames into
+/// place. Dropped without `finish` (a failed download), the temp file is
+/// removed.
+pub struct Writer {
+    path: PathBuf,
+    tmp: PathBuf,
+    out: Option<File>,
+    sealer: Option<(&'static Aes256Gcm, [u8; 8])>,
+    buf: Vec<u8>,
+    index: u64,
+    head: Vec<u8>,
+    len: u64,
+}
+
+impl Writer {
+    pub fn create(path: &Path) -> Result<Self> {
+        Self::with_cipher(path, cipher())
+    }
+
+    fn with_cipher(path: &Path, cipher: Option<&'static Aes256Gcm>) -> Result<Self> {
+        if let Some(dir) = path.parent() {
+            fs::create_dir_all(dir)?;
+        }
+        // Its own temp file: two downloads of one file may overlap.
+        let tmp = path.with_file_name(format!("{}.{:08x}.tmp", file_name(path), OsRng.next_u32()));
+        let mut out = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode_private()
+            .open(&tmp)?;
+        let sealer = match cipher {
+            Some(c) => {
+                let mut prefix = [0u8; 8];
+                OsRng.fill_bytes(&mut prefix);
+                out.write_all(MAGIC)?;
+                out.write_all(&prefix)?;
+                Some((c, prefix))
+            }
+            None => None,
+        };
+        Ok(Self {
+            path: path.to_path_buf(),
+            tmp,
+            out: Some(out),
+            sealer,
+            buf: Vec::new(),
+            index: 0,
+            head: Vec::new(),
+            len: 0,
+        })
+    }
+
+    /// The first 16 bytes written, to tell what the file is.
+    pub fn head(&self) -> &[u8] {
+        &self.head
+    }
+
+    /// Plain bytes written so far.
+    pub fn len(&self) -> u64 {
+        self.len
+    }
+
+    fn seal_chunk(&mut self, n: usize, last: bool) -> std::io::Result<()> {
+        let (c, prefix) = self.sealer.expect("only sealed writers buffer");
+        let sealed = c
+            .encrypt(
+                Nonce::from_slice(&nonce(&prefix, self.index)),
+                Payload {
+                    msg: &self.buf[..n],
+                    aad: &aad(self.index, last),
+                },
+            )
+            .map_err(|_| std::io::Error::other("encrypt failed"))?;
+        self.out
+            .as_mut()
+            .expect("open until finish")
+            .write_all(&sealed)?;
+        self.buf.drain(..n);
+        self.index += 1;
+        Ok(())
+    }
+
+    /// Seal the last chunk and move the file into place.
+    pub fn finish(self) -> Result<PathBuf> {
+        let path = self.path.clone();
+        self.finish_as(&path)
+    }
+
+    /// [`finish`](Self::finish) under another name, for a file named by
+    /// what it turned out to be. On an error the temp file is removed.
+    pub fn finish_as(mut self, path: &Path) -> Result<PathBuf> {
+        if self.sealer.is_some() {
+            // The last chunk is never sealed early: `write` keeps more than
+            // a chunk's worth back, so it is still here, possibly empty.
+            self.seal_chunk(self.buf.len(), true)?;
+        }
+        let mut out = self.out.take().expect("open until finish");
+        let result = out
+            .flush()
+            .and_then(|_| fs::rename(&self.tmp, path))
+            .with_context(|| format!("save {}", path.display()));
+        if result.is_err() {
+            let _ = fs::remove_file(&self.tmp);
+        }
+        result.map(|_| path.to_path_buf())
+    }
+}
+
+impl Write for Writer {
+    fn write(&mut self, data: &[u8]) -> std::io::Result<usize> {
+        if self.head.len() < 16 {
+            let n = (16 - self.head.len()).min(data.len());
+            self.head.extend_from_slice(&data[..n]);
+        }
+        self.len += data.len() as u64;
+        if self.sealer.is_none() {
+            self.out
+                .as_mut()
+                .expect("open until finish")
+                .write_all(data)?;
+            return Ok(data.len());
+        }
+        self.buf.extend_from_slice(data);
+        while self.buf.len() as u64 > CHUNK {
+            self.seal_chunk(CHUNK as usize, false)?;
+        }
+        Ok(data.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+impl Drop for Writer {
+    fn drop(&mut self) {
+        if self.out.take().is_some() {
+            let _ = fs::remove_file(&self.tmp);
+        }
+    }
+}
+
 pub fn read(path: &Path) -> Result<Vec<u8>> {
     CacheFile::open(path)?.read_all()
 }
@@ -408,6 +552,42 @@ mod tests {
         // photo.jpg is the plain export; it sits outside the cache in real use.
         fs::remove_file(&out).unwrap();
         assert_eq!(encrypt_existing(&[dir.path().to_path_buf()]).unwrap(), 0);
+    }
+
+    #[test]
+    fn a_streamed_file_reads_like_a_written_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let c: &'static Aes256Gcm = Box::leak(Box::new(cache_cipher(KEY)));
+        for len in [0u64, 1, CHUNK, CHUNK + 1, CHUNK * 2, CHUNK * 3 + 77] {
+            let data: Vec<u8> = (0..len).map(|i| (i % 253) as u8).collect();
+            for step in [1usize, 1000, CHUNK as usize, data.len().max(1)] {
+                let path = dir.path().join("s.full");
+                let mut w = Writer::with_cipher(&path, Some(c)).unwrap();
+                for part in data.chunks(step) {
+                    w.write_all(part).unwrap();
+                }
+                assert_eq!(w.len(), len);
+                assert_eq!(w.head(), &data[..data.len().min(16)]);
+                assert_eq!(w.finish().unwrap(), path);
+                let bytes = fs::read(&path).unwrap();
+                assert_eq!(bytes.len(), sealed(&data).len(), "len={len} step={step}");
+                assert_eq!(open(dir.path(), &bytes).read_all().unwrap(), data);
+            }
+        }
+    }
+
+    #[test]
+    fn an_unfinished_stream_leaves_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("x.full");
+        let mut w = Writer::with_cipher(&path, None).unwrap();
+        w.write_all(b"half a file").unwrap();
+        drop(w);
+        assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 0);
+        let mut w = Writer::with_cipher(&path, None).unwrap();
+        w.write_all(b"plain").unwrap();
+        w.finish().unwrap();
+        assert_eq!(fs::read(&path).unwrap(), b"plain");
     }
 
     #[test]
