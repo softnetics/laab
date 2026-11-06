@@ -131,7 +131,8 @@ export const api = {
   listNotes: (chatId: string) => invoke<NotePost[]>("list_notes", { chatId }),
   createNote: (chatId: string, text: string, photos: string[] = []) => invoke<void>("create_note", { chatId, text, photos }),
   noteDetail: (chatId: string, postId: string) => invoke<NoteDetail>("note_detail", { chatId, postId }),
-  addComment: (chatId: string, postId: string, text: string) => invoke<void>("add_comment", { chatId, postId, text }),
+  addComment: (chatId: string, postId: string, text: string, authorMid: string | null = null) =>
+    invoke<void>("add_comment", { chatId, postId, text, authorMid }),
   deleteNote: (chatId: string, postId: string) => invoke<void>("delete_note", { chatId, postId }),
   calendarEvents: (chatId: string) => invoke<CalendarEvent[]>("calendar_events", { chatId }),
   allCalendarEvents: () => invoke<AllCalendars>("all_calendar_events"),

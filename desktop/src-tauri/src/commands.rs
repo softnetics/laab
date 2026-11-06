@@ -1674,9 +1674,15 @@ pub async fn note_detail(
 }
 
 #[tauri::command]
-pub async fn add_comment(state: S<'_>, chat_id: String, post_id: String, text: String) -> R<()> {
+pub async fn add_comment(
+    state: S<'_>,
+    chat_id: String,
+    post_id: String,
+    text: String,
+    author_mid: Option<String>,
+) -> R<()> {
     let s = live!(state);
-    crate::actions::add_comment(&s, &chat_id, &post_id, &text)
+    crate::actions::add_comment(&s, &chat_id, &post_id, &text, author_mid.as_deref())
         .await
         .map_err(|e| format!("แสดงความคิดเห็นไม่สำเร็จ: {e}"))
 }

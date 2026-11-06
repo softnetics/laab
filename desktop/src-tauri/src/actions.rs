@@ -743,19 +743,70 @@ fn check_timeline(code: i64, message: &str) -> Result<()> {
     Ok(())
 }
 
+/// Notes per `post/list.json` page.
+const NOTE_PAGE: u32 = 20;
+
+/// Every note of a group, newest first: page after page (`postLimit`, then
+/// the last post's id and time), as LINE for Android scrolls through them.
+/// Stops after 25 pages.
 pub async fn list_notes(state: &Arc<AppState>, chat_id: &str) -> Result<Vec<NotePost>> {
     let l = line(state).await?;
-    let reply = l
-        .client
-        .base
-        .timeline()
-        .list_post(ListPost {
-            home_id: chat_id.into(),
-            ..Default::default()
-        })
-        .await?;
-    check_timeline(reply.code, &reply.message)?;
-    Ok(parse_notes(&reply.result))
+    let timeline = l.client.base.timeline();
+    let mut query = ListPost {
+        home_id: chat_id.into(),
+        post_limit: Some(NOTE_PAGE),
+        ..Default::default()
+    };
+    let mut out: Vec<NotePost> = Vec::new();
+    for _ in 0..25 {
+        let reply = timeline.list_post(query.clone()).await?;
+        check_timeline(reply.code, &reply.message)?;
+        let page = parse_notes(&reply.result);
+        let fresh: Vec<NotePost> = page
+            .into_iter()
+            .filter(|n| !out.iter().any(|o| o.id == n.id))
+            .collect();
+        if fresh.is_empty() {
+            break;
+        }
+        out.extend(fresh);
+        match line_rs::timeline::next_page(&reply.result, &query) {
+            Some(next) => query = next,
+            None => break,
+        }
+    }
+    Ok(out)
+}
+
+/// Width and height of a PNG, GIF or JPEG, from its header.
+pub fn image_size(data: &[u8]) -> Option<(u32, u32)> {
+    let be16 = |i: usize| Some(u16::from_be_bytes(data.get(i..i + 2)?.try_into().ok()?) as u32);
+    if data.starts_with(b"\x89PNG\r\n\x1a\n") {
+        let w = u32::from_be_bytes(data.get(16..20)?.try_into().ok()?);
+        let h = u32::from_be_bytes(data.get(20..24)?.try_into().ok()?);
+        return Some((w, h));
+    }
+    if data.starts_with(b"GIF8") {
+        let le16 = |i: usize| Some(u16::from_le_bytes(data.get(i..i + 2)?.try_into().ok()?) as u32);
+        return Some((le16(6)?, le16(8)?));
+    }
+    if !data.starts_with(&[0xFF, 0xD8]) {
+        return None;
+    }
+    let mut i = 2;
+    while i + 4 <= data.len() {
+        if data[i] != 0xFF {
+            i += 1;
+            continue;
+        }
+        let marker = data[i + 1];
+        // Start of frame (not DHT 0xC4, JPG 0xC8 or DAC 0xCC).
+        if (0xC0..=0xCF).contains(&marker) && ![0xC4, 0xC8, 0xCC].contains(&marker) {
+            return Some((be16(i + 7)?, be16(i + 5)?));
+        }
+        i += 2 + be16(i + 2)? as usize;
+    }
+    None
 }
 
 /// Post a note with text and photos (uploaded to `myhome/h` first).
@@ -784,12 +835,16 @@ pub async fn create_note(
                 .as_deref(),
             Some("mp4" | "mov" | "m4v")
         );
+        // LINE for Android also sends where the object is and its size.
+        let mut media = PostMedia::note(String::new(), video);
+        media.size = Some(data.len() as u64);
+        if let Some((w, h)) = image_size(&data).filter(|_| !video) {
+            media.width = Some(w);
+            media.height = Some(h);
+        }
         let (object_id, _) = timeline.upload_note_media(video, data).await?;
-        post.contents.media.push(PostMedia {
-            object_id,
-            kind: if video { "VIDEO" } else { "PHOTO" }.into(),
-            ..Default::default()
-        });
+        media.object_id = object_id;
+        post.contents.media.push(media);
     }
     let reply = timeline.create_post(post).await?;
     check_timeline(reply.code, &reply.message)
@@ -806,56 +861,54 @@ pub async fn note_detail(
     let reply = timeline.get_post(chat_id, post_id).await?;
     check_timeline(reply.code, &reply.message)?;
     let note = parse_post(&reply.result["feed"]["post"]).ok_or_else(|| anyhow!("ไม่พบโน้ตนี้"))?;
-    // line-rs has no comment list; this is the endpoint LINE's note server
-    // answers (checked live 2026-10-22, POST with x-lhm: GET).
-    let mut headers = timeline.init().await?.clone();
-    headers.insert("x-lhm", reqwest::header::HeaderValue::from_static("GET"));
-    let url = url::Url::parse_with_params(
-        &format!(
-            "https://{}/ext/note/nt/api/v57/comment/getList.json",
-            l.client.base.endpoint
-        ),
-        &[
-            ("homeId", chat_id),
-            ("contentId", post_id),
-            ("actorId", chat_id),
-            ("limit", "100"),
-        ],
-    )?;
-    let body: Json = l
-        .client
-        .base
-        .http
-        .post(url)
-        .headers(headers)
-        .send()
-        .await?
-        .json()
-        .await?;
-    if body["code"].as_i64().unwrap_or(0) != 0 {
-        tracing::warn!("note comments {post_id}: {body}");
+    // LINE for Android names the post's author as actorId (vs3/a.java).
+    // LAAB used to send the group, which the note server was seen to
+    // answer; fall back to it if the author gets nothing.
+    let mut comments = Vec::new();
+    let mut actors = vec![note.author_mid.as_str(), chat_id];
+    actors.dedup();
+    for actor in actors.into_iter().filter(|a| !a.is_empty()) {
+        match timeline.list_comments(chat_id, post_id, actor, None).await {
+            Ok(r) if r.code == 0 => {
+                comments = parse_comments(&r.result);
+                if !comments.is_empty() || note.comment_count == 0 {
+                    break;
+                }
+            }
+            Ok(r) => tracing::warn!("note comments {post_id}: code {}", r.code),
+            Err(e) => tracing::warn!("note comments {post_id}: {e}"),
+        }
     }
-    Ok(NoteDetail {
-        note,
-        comments: parse_comments(&body["result"]),
-    })
+    Ok(NoteDetail { note, comments })
 }
 
+/// Comment on a note. `actorId` is the post's author, as LINE for Android
+/// sends it (`vs3/a.java`); it is looked up when not given.
 pub async fn add_comment(
     state: &Arc<AppState>,
     chat_id: &str,
     post_id: &str,
     text: &str,
+    author_mid: Option<&str>,
 ) -> Result<()> {
     if text.trim().is_empty() {
         bail!("empty_comment");
     }
     let l = line(state).await?;
-    let reply = l
-        .client
-        .base
-        .timeline()
-        .create_comment(post_id, chat_id, text, chat_id, None, Vec::new())
+    let timeline = l.client.base.timeline();
+    let author = match author_mid.filter(|m| !m.is_empty()) {
+        Some(m) => m.to_string(),
+        None => {
+            let reply = timeline.get_post(chat_id, post_id).await?;
+            check_timeline(reply.code, &reply.message)?;
+            parse_post(&reply.result["feed"]["post"])
+                .map(|p| p.author_mid)
+                .filter(|m| !m.is_empty())
+                .ok_or_else(|| anyhow!("ไม่พบโน้ตนี้"))?
+        }
+    };
+    let reply = timeline
+        .create_comment(post_id, &author, text, chat_id, None, Vec::new())
         .await?;
     check_timeline(reply.code, &reply.message)
 }
@@ -1359,6 +1412,22 @@ mod tests {
         assert!(profile_from_v3(&reply, "u2").is_none());
         let legacy = profile_from_contact(&json!({"displayName": "B", "status": "FRIEND_BLOCKED"}), "u2");
         assert!(legacy.friend && legacy.blocked);
+    }
+
+    #[test]
+    fn reads_image_sizes_from_headers() {
+        let mut png = b"\x89PNG\r\n\x1a\n\0\0\0\x0dIHDR".to_vec();
+        png.extend(640u32.to_be_bytes());
+        png.extend(480u32.to_be_bytes());
+        assert_eq!(image_size(&png), Some((640, 480)));
+        let gif = b"GIF89a\x20\x03\x58\x02".to_vec();
+        assert_eq!(image_size(&gif), Some((800, 600)));
+        // SOI, an APP0 segment, then SOF0 with height 300 and width 400.
+        let jpeg = [
+            0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x04, 0x00, 0x00, 0xFF, 0xC0, 0x00, 0x11, 0x08, 0x01, 0x2C, 0x01, 0x90,
+        ];
+        assert_eq!(image_size(&jpeg), Some((400, 300)));
+        assert_eq!(image_size(b"nope"), None);
     }
 
     #[test]

@@ -1189,7 +1189,7 @@ async fn run(ctx: &Ctx, name: &str, args: &Value, trace: &mut Trace) -> R<Vec<Va
             let post = arg_str(args, "post_id")?;
             let t = arg_str(args, "text")?;
             gate(ctx, trace, Send, &[dir.scope(&chat)], format!("แสดงความคิดเห็นในโน้ตของ {}:\n\n{}", dir.quoted(&chat), t)).await?;
-            commands::add_comment(st(), chat, post, t).await?;
+            commands::add_comment(st(), chat, post, t, None).await?;
             done("comment posted")
         }
         // ------------------------------------------------------------ manage
