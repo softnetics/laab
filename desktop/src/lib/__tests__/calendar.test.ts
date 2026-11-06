@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   agendaTimes,
   durationLabel,
+  zonedMs,
   parseTime,
   eventDays,
   longDayLabel,
@@ -67,14 +68,28 @@ describe("calendar", () => {
     expect(monthGrid(2026, 9)[0].key).toBe("2026-09-27");
   });
 
-  it("round-trips the form, all-day ending at the next midnight", () => {
+  it("round-trips the form, all-day ending at the next midnight in the event's zone", () => {
     const f = { ...newForm("2026-11-04"), title: "Release", allDay: true, endDate: "2026-11-05" };
     const input = inputOf(f, "Asia/Bangkok");
     if ("error" in input) throw new Error(input.error);
-    expect(input.start).toBe(new Date(2026, 10, 4).getTime());
-    expect(input.end).toBe(new Date(2026, 10, 6).getTime());
-    const back = formOf(ev({ ...input, timezone: Intl.DateTimeFormat().resolvedOptions().timeZone }));
+    // Midnight in Bangkok (UTC+7), whatever the Mac's zone.
+    expect(input.start).toBe(Date.UTC(2026, 10, 3, 17));
+    expect(input.end).toBe(Date.UTC(2026, 10, 5, 17));
+    expect(input.timezone).toBe("Asia/Bangkok");
+    const back = formOf(ev({ ...input }));
     expect([back.startDate, back.endDate]).toEqual(["2026-11-04", "2026-11-05"]);
+    // An edit keeps the event's zone.
+    const tokyo = inputOf({ ...f, allDay: false }, "Asia/Tokyo");
+    if ("error" in tokyo) throw new Error(tokyo.error);
+    expect(tokyo.timezone).toBe("Asia/Tokyo");
+  });
+
+  it("turns a wall time in a zone into an instant", () => {
+    expect(zonedMs("2026-11-04", "09:30", "Asia/Bangkok")).toBe(Date.UTC(2026, 10, 4, 2, 30));
+    expect(zonedMs("2026-11-04", "00:00", "Asia/Tokyo")).toBe(Date.UTC(2026, 10, 3, 15));
+    // Across New York's DST change (1 Nov 2026).
+    expect(zonedMs("2026-10-31", "12:00", "America/New_York")).toBe(Date.UTC(2026, 9, 31, 16));
+    expect(zonedMs("2026-11-02", "12:00", "America/New_York")).toBe(Date.UTC(2026, 10, 2, 17));
   });
 
   it("refuses an empty title or an end before the start", () => {

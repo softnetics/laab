@@ -11,6 +11,7 @@ import {
   type EventForm,
   formOf,
   inputOf,
+  localZone,
   longDayLabel,
   minutesBetween,
   monthGrid,
@@ -512,7 +513,8 @@ function Editor({
   };
   const save = () => {
     if (busy) return;
-    const input = inputOf(f);
+    // An edit keeps the event's own zone; a new one takes the Mac's.
+    const input = inputOf(f, event?.timezone || localZone());
     if ("error" in input) return setProblem(input.error);
     if (!chatId) return setProblem("เลือกปฏิทินก่อน");
     if (targets) remember(chatId);

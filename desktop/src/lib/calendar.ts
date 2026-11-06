@@ -241,16 +241,36 @@ function local(date: string, time = "00:00"): number {
   return new Date(y, m - 1, d, h || 0, min || 0).getTime();
 }
 
-/** The form as what LINE stores, or why it can't be saved. */
+/** Wall time `date` `time` in `zone` to epoch ms (the Mac's zone when the
+ *  zone is unknown). */
+export function zonedMs(date: string, time = "00:00", zone?: string): number {
+  if (!zone) return local(date, time);
+  const [y, m, d] = date.split("-").map(Number);
+  const [h, min] = time.split(":").map(Number);
+  const want = Date.UTC(y, m - 1, d, h || 0, min || 0);
+  // Guess, see what wall time that is in the zone, and correct by the
+  // difference; twice, for a guess that lands across a DST change.
+  let t = want;
+  for (let i = 0; i < 2; i++) {
+    const p = partsIn(t, zone);
+    t += want - Date.UTC(p.y, p.m, p.d, p.h, p.min);
+  }
+  return t;
+}
+
+/** The form as what LINE stores, or why it can't be saved. `zone` is the
+ *  event's own zone (an edit keeps it); a new event takes the Mac's. Timed
+ *  events are entered in the Mac's time, all-day ones as dates in `zone`. */
 export function inputOf(f: EventForm, zone = localZone()): CalendarEventInput | { error: string } {
   if (!f.title.trim()) return { error: "ใส่ชื่อนัดหมายก่อน" };
   if (!f.startDate || !f.endDate) return { error: "เลือกวันที่ก่อน" };
   let start: number;
   let end: number;
   if (f.allDay) {
-    start = local(f.startDate);
-    const last = new Date(local(f.endDate));
-    end = new Date(last.getFullYear(), last.getMonth(), last.getDate() + 1).getTime();
+    start = zonedMs(f.startDate, "00:00", zone);
+    const [y, m, d] = f.endDate.split("-").map(Number);
+    const next = new Date(Date.UTC(y, m - 1, d + 1));
+    end = zonedMs(dayKey(next.getUTCFullYear(), next.getUTCMonth(), next.getUTCDate()), "00:00", zone);
   } else {
     start = local(f.startDate, f.startTime);
     end = local(f.endDate, f.endTime);

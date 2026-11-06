@@ -12,7 +12,7 @@ use std::sync::Arc;
 
 use anyhow::{Result, anyhow, bail};
 use line_rs::client::TalkMessage;
-use line_rs::client::calendar::{EventInput, EventTarget, new_event_id};
+use line_rs::client::calendar::{self as cal, EventInput, EventTarget, new_event_id};
 use line_rs::link::LineLink;
 use line_rs::rest::translate::TranslateText;
 use line_rs::service::moa::{DownloadPhotoOptions, GetAlbumsOptions, GetPhotosOptions};
@@ -782,18 +782,21 @@ pub struct CalendarEventInput {
 }
 
 impl CalendarEventInput {
-    fn to_line(&self) -> EventInput {
-        EventInput {
-            title: self.title.trim().to_string(),
-            start_time: self.start / MS_PER_S,
-            end_time: self.end / MS_PER_S,
-            timezone: self.timezone.clone(),
-            is_all_day: self.all_day,
-            location: self.location.trim().to_string(),
-            url: self.url.trim().to_string(),
-            description: self.description.trim_end().to_string(),
-            color_id: 0,
-        }
+    /// The event to send: the form's fields over `base`, the event as LINE
+    /// last sent it (for an edit), so what the form doesn't show (repeats,
+    /// reminders, invitees, colour, stamp, the message it came from) goes
+    /// back as it was.
+    fn to_line(&self, base: Option<&cal::Event>) -> EventInput {
+        let mut out = base.map(EventInput::from_event).unwrap_or_default();
+        out.title = self.title.trim().to_string();
+        out.start_time = self.start / MS_PER_S;
+        out.end_time = self.end / MS_PER_S;
+        out.timezone = self.timezone.clone();
+        out.is_all_day = self.all_day;
+        out.location = self.location.trim().to_string();
+        out.url = self.url.trim().to_string();
+        out.description = self.description.trim_end().to_string();
+        out
     }
 }
 
@@ -921,6 +924,17 @@ pub async fn all_calendar_events(state: &Arc<AppState>) -> Result<AllCalendars> 
     Ok(all)
 }
 
+/// The event as LINE has it now, for an edit to start from.
+async fn fetch_event(l: &Line, chat_id: &str, event_id: &str) -> Result<Option<cal::Event>> {
+    Ok(l
+        .client
+        .base
+        .list_events_stream(calendar_target(chat_id), 0)
+        .await?
+        .into_iter()
+        .find(|e| e.id == event_id && !e.is_deleted))
+}
+
 /// Adds an event to a chat's calendar. `notify` posts LINE's "event
 /// created" card in the chat, as the app's switch does.
 pub async fn create_calendar_event(
@@ -936,7 +950,7 @@ pub async fn create_calendar_event(
         .create_event(
             calendar_target(chat_id),
             &id,
-            &event.to_line(),
+            &event.to_line(None),
             Some(notify),
         )
         .await?;
@@ -952,13 +966,16 @@ pub async fn update_calendar_event(
     notify: bool,
 ) -> Result<()> {
     let l = line(state).await?;
+    // LINE replaces the whole event, so start from what it has now.
+    let current = fetch_event(&l, chat_id, event_id).await?;
+    let previous = current.as_ref().map_or(updated_at, |e| e.client_updated_at.max(updated_at));
     l.client
         .base
         .update_event(
             calendar_target(chat_id),
             event_id,
-            &event.to_line(),
-            updated_at,
+            &event.to_line(current.as_ref()),
+            previous,
             Some(notify),
         )
         .await?;
@@ -1227,8 +1244,51 @@ mod tests {
             url: String::new(),
             description: String::new(),
         };
-        let out = input.to_line();
+        let out = input.to_line(None);
         assert_eq!((out.start_time, out.end_time), (1_793_703_600, 1_793_707_200));
+    }
+
+    #[test]
+    fn an_edit_keeps_what_the_form_does_not_show() {
+        let fetched = cal::Event {
+            id: "a-1".into(),
+            title: "old".into(),
+            timezone: "Asia/Tokyo".into(),
+            color_id: 4,
+            stamp_id: "s".into(),
+            message_id: Some("m".into()),
+            recurrence: Some(cal::Recurrence {
+                frequency: cal::Frequency::Weekly,
+                interval: 1,
+                by_day: vec!["MO".into()],
+                ..Default::default()
+            }),
+            reminders: vec![cal::Reminder::OneDayBefore],
+            invitees: vec![cal::Invitee {
+                invitee_id: "u2".into(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let input = CalendarEventInput {
+            title: " new ".into(),
+            start: 2_000_000,
+            end: 3_000_000,
+            all_day: false,
+            timezone: "Asia/Tokyo".into(),
+            location: String::new(),
+            url: String::new(),
+            description: String::new(),
+        };
+        let out = input.to_line(Some(&fetched));
+        assert_eq!(out.title, "new");
+        assert_eq!(out.color_id, 4);
+        assert_eq!(out.stamp_id, "s");
+        assert_eq!(out.message_id.as_deref(), Some("m"));
+        assert_eq!(out.recurrence, fetched.recurrence);
+        assert_eq!(out.reminders, [cal::Reminder::OneDayBefore]);
+        assert_eq!(out.invitees, ["u2"]);
+        assert_eq!(out.original_invitees, ["u2"]);
     }
 
     #[test]
