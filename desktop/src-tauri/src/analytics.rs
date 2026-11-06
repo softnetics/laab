@@ -103,6 +103,10 @@ pub enum Kick {
     IdentityChanged,
     ClientLoggedOut,
     AccountDeleted,
+    /// LINE no longer accepts this device's credentials.
+    AuthenticationFailed,
+    /// LINE says the account can't be used right now.
+    NotAvailable,
     Other,
 }
 
@@ -119,6 +123,8 @@ impl Kick {
             R::IdentifyModified => Kick::IdentityChanged,
             R::V3TokenClientLoggedOut => Kick::ClientLoggedOut,
             R::DeletedAccount => Kick::AccountDeleted,
+            R::AuthenticationFailed => Kick::AuthenticationFailed,
+            R::NotAvailableUser => Kick::NotAvailable,
             R::Other(_) => Kick::Other,
         }
     }
@@ -134,6 +140,8 @@ impl Kick {
             Kick::IdentityChanged => "identity_changed",
             Kick::ClientLoggedOut => "client_logged_out",
             Kick::AccountDeleted => "account_deleted",
+            Kick::AuthenticationFailed => "authentication_failed",
+            Kick::NotAvailable => "not_available",
             Kick::Other => "other",
         }
     }
