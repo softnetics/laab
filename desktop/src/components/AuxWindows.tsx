@@ -168,9 +168,9 @@ function NoteMediaGrid({ media, chatId }: { media: NotePost["media"]; chatId?: s
         <div
           key={m.objectId}
           className={`relative aspect-square overflow-hidden bg-field ${chatId ? "cursor-pointer" : ""}`}
-          onClick={() => chatId && openViewer(media.map((x) => ({ src: mediaUrl.note("h", x.objectId), chatId })), i)}
+          onClick={() => chatId && openViewer(media.map((x) => ({ src: mediaUrl.note(x.obs), chatId })), i)}
         >
-          <img src={mediaUrl.note("h", m.objectId)} className="h-full w-full object-cover" alt="" />
+          <img src={mediaUrl.note(m.obs)} className="h-full w-full object-cover" alt="" />
           {m.video && <PlayIcon size={18} className="absolute right-1.5 bottom-1.5 text-white drop-shadow" />}
         </div>
       ))}
@@ -188,7 +188,7 @@ function NoteMosaic({ media, total }: { media: NotePost["media"]; total: number 
   const more = Math.max(total, media.length) - n;
   const tile = (i: number, className = "") => (
     <div key={shown[i].objectId} className={`relative overflow-hidden bg-field ${className}`}>
-      <img src={mediaUrl.note("h", shown[i].objectId)} decoding="async" className="absolute inset-0 h-full w-full object-cover" alt="" />
+      <img src={mediaUrl.note(shown[i].obs)} decoding="async" className="absolute inset-0 h-full w-full object-cover" alt="" />
       {shown[i].video && <PlayIcon size={18} className="absolute right-1.5 bottom-1.5 text-white drop-shadow" />}
       {i === n - 1 && more > 0 && (
         <div className="absolute inset-0 grid place-items-center bg-black/30 text-[22px] text-white">+{more}</div>
@@ -273,8 +273,8 @@ function NoteView({ chatId, postId, onBack }: { chatId: string; postId: string; 
                 <span className="shrink-0 text-[11px] text-secondary">{ago(c.createdTime)}</span>
               </div>
               {c.text && <div className="selectable text-[13px] whitespace-pre-wrap">{c.text}</div>}
-              {c.images.map((id) => (
-                <img key={id} src={mediaUrl.note("cmt", id)} className="mt-1.5 max-h-40 max-w-[200px] rounded-[4px] object-cover" alt="" />
+              {c.images.map((obs) => (
+                <img key={obs} src={mediaUrl.note(obs)} className="mt-1.5 max-h-40 max-w-[200px] rounded-[4px] object-cover" alt="" />
               ))}
             </div>
           </div>

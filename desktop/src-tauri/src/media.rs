@@ -9,7 +9,8 @@
 //!   /sticker/<stickerId>?anim=1
 //!   /pack/<packageId>
 //!   /album/<chatId>/<albumId>/<oid>?video=1
-//!   /cover/<oid>
+//!   /cover/<service/namespace/oid, as one segment>
+//!   /note/<service>/<namespace>/<oid>
 //!   /local?path=<absolute path inside the data folder>
 
 use std::path::{Path, PathBuf};
@@ -190,7 +191,10 @@ pub async fn handle(state: Arc<AppState>, req: Request<Vec<u8>>) -> Response<Vec
             crate::actions::album_photo_file(&state, chat, album, oid, video).await
         }
         ["cover", oid] => crate::actions::cover_file(&state, oid).await,
-        ["note", svc, id] => note_media(&state, svc, id).await,
+        ["note", svc @ ("h" | "cmt"), id] => note_media(&state, &format!("myhome/{svc}"), id).await,
+        ["note", service, namespace, id] => {
+            note_media(&state, &format!("{service}/{namespace}"), id).await
+        }
         ["local"] => {
             let p = PathBuf::from(query(&req, "path").unwrap_or_default());
             if p.starts_with(&state.paths.root) {
@@ -506,29 +510,79 @@ async fn pack_icon(state: &AppState, id: &str) -> Result<PathBuf> {
     save_plain(&path, &data)
 }
 
-/// A note photo (`h`) or comment image (`cmt`) from OBS `myhome/<svc>`.
-async fn note_media(state: &Arc<AppState>, svc: &str, oid: &str) -> Result<PathBuf> {
-    if !matches!(svc, "h" | "cmt") {
-        return Err(anyhow!("unknown note media"));
-    }
+/// A note photo or comment image: OBS `base/oid`, where `base` is the
+/// `service/namespace` the post names (`myhome/h` and `myhome/cmt` by
+/// default).
+async fn note_media(state: &Arc<AppState>, base: &str, oid: &str) -> Result<PathBuf> {
     let path = state
         .paths
         .media()
-        .join(format!("note-{svc}-{}", safe_name(oid)));
+        .join(format!("note-{}-{}", safe_name(base), safe_name(oid)));
     if path.exists() {
         return Ok(path);
     }
-    let line = state.line().await.ok_or_else(|| anyhow!("not_logged_in"))?;
-    let data = line
-        .client
-        .base
-        .obs()
-        .download_object_for_service(&format!("myhome/{svc}"), oid, vec![])
-        .await
-        .map_err(|e| anyhow!("{e}"))?;
-    let saved = save(&path, &data)?;
+    let saved = home_obs_file(state, base, oid, &path).await?;
     crate::cache::schedule_trim(state);
     Ok(saved)
+}
+
+/// The MyHome channel token, issued once per session.
+static HOME_TOKEN: std::sync::Mutex<Option<(String, String)>> = std::sync::Mutex::new(None);
+
+async fn home_channel_token(line: &crate::line::Line) -> Option<String> {
+    let session = line.client.base.auth_token()?;
+    if let Some((s, token)) = HOME_TOKEN.lock().unwrap().as_ref()
+        && *s == session
+    {
+        return Some(token.clone());
+    }
+    match line
+        .client
+        .base
+        .rest()
+        .channel_token(line_rs::rest::channels::MYHOME)
+        .await
+    {
+        Ok(token) => {
+            *HOME_TOKEN.lock().unwrap() = Some((session, token.clone()));
+            Some(token)
+        }
+        Err(e) => {
+            tracing::warn!("home channel token: {e}");
+            None
+        }
+    }
+}
+
+/// Stream note, comment or cover media from OBS `base/oid` (`base` is
+/// `service/namespace`) into `dest`, with `X-Line-ChannelToken` as LINE
+/// sends with home images (`e80/m.java`).
+pub async fn home_obs_file(
+    state: &Arc<AppState>,
+    base: &str,
+    oid: &str,
+    dest: &Path,
+) -> Result<PathBuf> {
+    let parts: Vec<&str> = base.split('/').collect();
+    if parts.len() != 2
+        || parts.iter().any(|p| p.is_empty() || safe_name(p) != *p)
+        || oid.is_empty()
+    {
+        return Err(anyhow!("unknown note media"));
+    }
+    let line = state.line().await.ok_or_else(|| anyhow!("not_logged_in"))?;
+    let headers = match home_channel_token(&line).await {
+        Some(token) => vec![("X-Line-ChannelToken".to_string(), token)],
+        None => Vec::new(),
+    };
+    let mut file = crate::vault::Writer::create(dest)?;
+    line.client
+        .base
+        .obs()
+        .download_object_to(base, oid, headers, &mut file)
+        .await
+        .map_err(crate::line::media_error)?;
+    file.finish()
 }
 
 /// Download an attachment to `cache/media/<id>.<filename>` and record it.

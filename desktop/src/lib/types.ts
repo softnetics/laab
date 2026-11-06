@@ -174,7 +174,8 @@ export interface NotePost {
   authorMid: string;
   authorName: string;
   authorPicture: string | null;
-  media: { objectId: string; video: boolean }[];
+  /** `obs`: where it lies, `service/namespace/objectId`. */
+  media: { objectId: string; obs: string; video: boolean }[];
   text: string;
   createdTime: number;
   mediaCount: number;
@@ -236,6 +237,7 @@ export interface NoteComment {
   authorPicture: string | null;
   text: string;
   createdTime: number;
+  /** OBS paths of its images, `service/namespace/objectId`. */
   images: string[];
 }
 
