@@ -1320,6 +1320,36 @@ pub async fn save_to_keep(state: S<'_>, chat_id: String, message_id: String) -> 
         .map_err(|e| format!("บันทึกลง Keep ไม่สำเร็จ: {e}"))
 }
 
+/// A chat a forward or a shared contact couldn't reach, and why.
+#[derive(Serialize, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct SendFailure {
+    pub chat_id: String,
+    pub error: String,
+}
+
+fn failures(failed: Vec<(String, String)>) -> Vec<SendFailure> {
+    failed.into_iter().map(|(chat_id, error)| SendFailure { chat_id, error }).collect()
+}
+
+/// Forward a message to other chats; returns the ones that failed.
+#[tauri::command]
+pub async fn forward_message(state: S<'_>, chat_id: String, message_id: String, to: Vec<String>) -> R<Vec<SendFailure>> {
+    let s = live!(state);
+    Ok(failures(crate::actions::forward(&s, &chat_id, &message_id, &to).await))
+}
+
+/// Share someone's contact card with chats; returns the ones that failed.
+#[tauri::command]
+pub async fn share_contact(state: S<'_>, mid: String, name: Option<String>, to: Vec<String>) -> R<Vec<SendFailure>> {
+    let s = live!(state);
+    let name = name
+        .filter(|n| !n.trim().is_empty())
+        .or_else(|| s.store().chat(&mid).ok().flatten().map(|c| c.name))
+        .unwrap_or_default();
+    Ok(failures(crate::actions::share_contact(&s, &mid, &name, &to).await))
+}
+
 #[tauri::command]
 pub async fn hide_chat(state: S<'_>, chat_id: String) -> R<()> {
     let s = state.inner().clone();

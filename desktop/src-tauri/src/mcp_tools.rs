@@ -152,6 +152,12 @@ fn defs() -> Vec<Def> {
             "chat_id": s(CHAT), "paths": strings("Absolute paths of the files."),
             "silent": b("Send without a notification on the others' devices."),
         }), &["chat_id", "paths"], false, false),
+        d("forward_message", Send, "Forward a message", "Send a copy of a message (text, sticker, photo, video, file or contact) to another chat, as LINE's share does.", json!({
+            "message_id": s(MSG), "to_chat_id": s("The chat to send it to."),
+        }), &["message_id", "to_chat_id"], false, false),
+        d("share_contact", Send, "Share a contact", "Send someone's contact card to a chat.", json!({
+            "mid": s("The person's (or official account's) mid."), "to_chat_id": s("The chat to send it to."),
+        }), &["mid", "to_chat_id"], false, false),
         d("react", Send, "React", "Set or remove the user's reaction on a message.", json!({
             "message_id": s(MSG),
             "reaction": { "type": ["string", "null"], "enum": ["NICE", "LOVE", "FUN", "AMAZING", "SAD", "OMG", null], "description": "The reaction, or null to remove it." },
@@ -1152,6 +1158,30 @@ async fn run(ctx: &Ctx, name: &str, args: &Value, trace: &mut Trace) -> R<Vec<Va
                 ));
             }
             done("files sent")
+        }
+        "forward_message" => {
+            let id = arg_str(args, "message_id")?;
+            let to = arg_str(args, "to_chat_id")?;
+            let (m, scope) = message(state, &dir, &id)?;
+            // Forwarding reads the message: never a way out of a chat the
+            // client may not read.
+            gate(ctx, trace, Read, &[scope], format!("อ่านข้อความใน {} เพื่อส่งต่อ", dir.quoted(&m.chat_id))).await?;
+            gate(ctx, trace, Send, &[dir.scope(&to)], format!("ส่งต่อข้อความจาก {} ถึง {}", dir.quoted(&m.chat_id), dir.quoted(&to))).await?;
+            let failed = commands::forward_message(st(), m.chat_id.clone(), id, vec![to]).await?;
+            match failed.into_iter().next() {
+                Some(f) => Err(f.error),
+                None => done("forwarded"),
+            }
+        }
+        "share_contact" => {
+            let mid = arg_str(args, "mid")?;
+            let to = arg_str(args, "to_chat_id")?;
+            gate(ctx, trace, Send, &[dir.scope(&to)], format!("ส่งรายชื่อ {} ถึง {}", dir.quoted(&mid), dir.quoted(&to))).await?;
+            let failed = commands::share_contact(st(), mid, None, vec![to]).await?;
+            match failed.into_iter().next() {
+                Some(f) => Err(f.error),
+                None => done("contact shared"),
+            }
         }
         "react" => {
             let id = arg_str(args, "message_id")?;

@@ -1,3 +1,4 @@
+import { ForwardSheet } from "./ForwardSheet";
 import { useHotkey } from "@tanstack/react-hotkeys";
 import { listen } from "@tauri-apps/api/event";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
@@ -162,6 +163,7 @@ export function MainLayout({ chatId }: { chatId: string | null }) {
       <ProfileSheet main />
       <LiffConsent />
       <SharePicker />
+      <ForwardSheet />
       {chatId && <RawInspector chatId={chatId} />}
     </div>
   );

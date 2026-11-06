@@ -4,7 +4,7 @@ import { api, errorText, mediaUrl, queryClient, useSession } from "../lib/api";
 import { openChat } from "../lib/nav";
 import { notice, setUi, useUi } from "../lib/ui";
 import { Avatar } from "./Avatar";
-import { BlockIcon, BubbleIcon, CloseIcon, PersonPlusIcon, WarningIcon } from "./Icons";
+import { BlockIcon, BubbleIcon, CloseIcon, PersonPlusIcon, SendIcon, WarningIcon } from "./Icons";
 import { Spinner } from "./kit";
 import { Sheet } from "./Sheet";
 
@@ -60,6 +60,7 @@ export function ProfileSheet({ main }: { main: boolean }) {
       actions.push({ label: "ปลดบล็อค", icon: <BlockIcon size={30} />, onClick: () => run(() => api.setBlocked(mid, false)) });
     } else if (data.friend) {
       if (main) actions.push({ label: "แชท", icon: <BubbleIcon size={30} />, onClick: () => (close(), openChat(mid)) });
+      actions.push({ label: "แชร์", icon: <SendIcon size={28} />, onClick: () => (close(), setUi({ forwarding: { kind: "contact", mid, name } })) });
     } else {
       actions.push({ label: "เพิ่มเพื่อน", icon: <PersonPlusIcon size={30} />, onClick: () => run(() => api.addFriend(mid)) });
       actions.push({ label: "บล็อค", icon: <BlockIcon size={30} />, onClick: block });

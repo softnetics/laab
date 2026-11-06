@@ -338,6 +338,8 @@ pub fn run() {
             commands::save_attachment,
             commands::attachment_name,
             commands::link_preview,
+            commands::forward_message,
+            commands::share_contact,
             commands::open_aux_window,
             commands::open_viewer,
             commands::viewer_payload,

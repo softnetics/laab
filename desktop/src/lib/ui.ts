@@ -1,4 +1,5 @@
 import { createStore, useStore } from "@tanstack/react-store";
+import type { Forwarding } from "../components/ForwardSheet";
 import type { Message, Workspace } from "./types";
 
 export type ChatFilter = "all" | "friends" | "groups" | "official" | `folder:${string}`;
@@ -45,6 +46,8 @@ export interface UiState {
   /** Chats whose messages, stickers and files go without a notification on
    *  the others' devices, until switched off or LAAB quits. */
   silentChats: string[];
+  /** A message or contact card being sent on to other chats. */
+  forwarding: Forwarding | null;
   /** Translations shown under messages, by message id. */
   translations: Record<string, string>;
   /** A confirmation dialog. */
@@ -106,6 +109,7 @@ export const ui = createStore<UiState>({
   railPage: "chats",
   composerMode: null,
   silentChats: [],
+  forwarding: null,
   translations: {},
   confirm: null,
   sheet: null,

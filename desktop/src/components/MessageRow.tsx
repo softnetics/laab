@@ -463,6 +463,13 @@ function Content({
   );
 }
 
+/** Whether a message can be sent on: what the backend copies. */
+function copyable(m: Message) {
+  if (["IMAGE", "VIDEO", "AUDIO", "FILE", "STICKER"].includes(m.contentType)) return true;
+  if (m.contentType === "CONTACT") return !!m.metadata.mid;
+  return m.contentType === "NONE" && !!m.text.trim();
+}
+
 /** LINE for Mac's message menu, in its order. Items LAAB cannot do (แชร์)
  *  are left out. รายงานปัญหา reports to LAAB, not to LINE. */
 function rowMenu(m: Message, dev: boolean, ctx?: RowContext) {
@@ -532,6 +539,7 @@ function rowMenu(m: Message, dev: boolean, ctx?: RowContext) {
                 .then((t) => setUi({ translations: { ...ui.state.translations, [m.id]: t } }))
                 .catch((e) => notice(errorText(e))),
             )}
+          {copyable(m) && item("ส่งต่อ…", () => setUi({ forwarding: { kind: "message", chatId: ctx.chatId, message: m } }))}
           {item("ส่งไปยัง Keep Memo", () => run(api.saveToKeep(ctx.chatId, m.id), "ส่งไปยัง Keep Memo แล้ว"))}
           {ctx.group && text && item("บันทึกที่โน้ต", () => run(api.createNote(ctx.chatId, m.text), "บันทึกที่โน้ตแล้ว"))}
           {text && (

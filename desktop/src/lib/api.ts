@@ -181,6 +181,12 @@ export const api = {
   invitees: (chatId: string) => invoke<ChatMember[]>("invitees", { chatId }),
   chatMedia: (chatId: string, kind: "media" | "files" | "links") => invoke<Message[]>("chat_media", { chatId, kind }),
   saveText: (path: string, text: string) => invoke<void>("save_text", { path, text }),
+  /** Send a copy of a message to chats; resolves to the ones that failed. */
+  forwardMessage: (chatId: string, messageId: string, to: string[]) =>
+    sent(invoke<{ chatId: string; error: string }[]>("forward_message", { chatId, messageId, to })),
+  /** Send someone's contact card to chats; resolves to the ones that failed. */
+  shareContact: (mid: string, name: string | null, to: string[]) =>
+    sent(invoke<{ chatId: string; error: string }[]>("share_contact", { mid, name, to })),
   /** A link's preview card from LINE's preview service, or null. */
   linkPreview: (url: string) => invoke<LinkPreview | null>("link_preview", { url }),
   /** The name to offer when saving an attachment, with the extension of what it really is. */
