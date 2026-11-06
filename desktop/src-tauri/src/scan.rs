@@ -19,7 +19,11 @@ pub async fn scan(app: &AppHandle, parent: Option<&tauri::WebviewWindow>) -> Opt
         .dialog()
         .message("เลือกรูปที่มี QR code หรือบาร์โค้ด หรือลากคลุมโค้ดบนหน้าจอ")
         .title("สแกนโค้ด")
-        .buttons(MessageDialogButtons::YesNoCancelCustom(PICK.into(), SCREEN.into(), "ยกเลิก".into()));
+        .buttons(MessageDialogButtons::YesNoCancelCustom(
+            PICK.into(),
+            SCREEN.into(),
+            "ยกเลิก".into(),
+        ));
     if let Some(w) = parent {
         dialog = dialog.parent(w);
     }
@@ -51,7 +55,10 @@ async fn pick_image(app: &AppHandle) -> Option<PathBuf> {
     app.dialog()
         .file()
         .set_title("เลือกรูปที่มีโค้ด")
-        .add_filter("รูปภาพ", &["png", "jpg", "jpeg", "heic", "gif", "tiff", "bmp", "webp"])
+        .add_filter(
+            "รูปภาพ",
+            &["png", "jpg", "jpeg", "heic", "gif", "tiff", "bmp", "webp"],
+        )
         .pick_file(move |f| {
             let _ = tx.send(f);
         });
@@ -61,7 +68,8 @@ async fn pick_image(app: &AppHandle) -> Option<PathBuf> {
 /// macOS's own region screenshot (⌘⇧4): the user drags over the code, or
 /// presses Escape and nothing is saved.
 async fn capture_region() -> Option<PathBuf> {
-    let path = std::env::temp_dir().join(format!("laab-scan-{}.png", crate::state::now_ms() as u64));
+    let path =
+        std::env::temp_dir().join(format!("laab-scan-{}.png", crate::state::now_ms() as u64));
     let status = tokio::process::Command::new("/usr/sbin/screencapture")
         .args(["-i", "-x", "-t", "png"])
         .arg(&path)
@@ -75,9 +83,9 @@ async fn capture_region() -> Option<PathBuf> {
 /// image at `path` (`VNDetectBarcodesRequest`).
 #[cfg(target_os = "macos")]
 pub fn read_code(path: &Path) -> Option<String> {
+    use objc2::msg_send;
     use objc2::rc::{Retained, autoreleasepool};
     use objc2::runtime::{AnyClass, AnyObject};
-    use objc2::msg_send;
     use objc2_foundation::{NSArray, NSDictionary, NSString, NSURL};
 
     #[link(name = "Vision", kind = "framework")]
@@ -95,7 +103,7 @@ pub fn read_code(path: &Path) -> Option<String> {
             initWithURL: &*url,
             options: &*options
         ];
-        let requests = NSArray::from_retained_slice(&[request.clone()]);
+        let requests = NSArray::from_retained_slice(std::slice::from_ref(&request));
         let ok: bool = msg_send![
             &*handler,
             performRequests: &*requests,
@@ -124,7 +132,10 @@ mod tests {
     #[test]
     fn reads_a_qr_code_from_an_image() {
         let qr = Path::new(env!("CARGO_MANIFEST_DIR")).join("testdata/qr.png");
-        assert_eq!(read_code(&qr).as_deref(), Some("https://example.com/laab-scan-test"));
+        assert_eq!(
+            read_code(&qr).as_deref(),
+            Some("https://example.com/laab-scan-test")
+        );
     }
 
     #[test]
