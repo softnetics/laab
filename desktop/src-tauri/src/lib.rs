@@ -267,6 +267,7 @@ pub fn run() {
             commands::set_draft,
             commands::raw_message,
             commands::send_postback,
+            commands::send_message_button,
             commands::friends,
             commands::accept_invitation,
             commands::accept_message_request,

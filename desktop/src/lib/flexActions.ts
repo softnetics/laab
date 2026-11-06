@@ -12,8 +12,10 @@ export async function performFlexAction(a: FlexAction, chatId: string, messageId
         if (url) await openUrl(url, chatId);
         return;
       }
+      // LINE sends the text through the bot's postback, not as a message
+      // of its own; LINE's server posts it in the chat.
       case "message":
-        if (a.text) await api.sendText(chatId, a.text, []);
+        if (a.text) await api.sendMessageButton(chatId, messageId, a.text);
         return;
       case "postback":
         await api.sendPostback(chatId, messageId, a.data ?? "", a.displayText ?? null, a.text ?? null);

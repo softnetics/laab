@@ -96,6 +96,9 @@ export const api = {
   /** A bot's postback button. `messageId` is null for rich-menu areas, whose `data` is the whole linepostback URL. */
   sendPostback: (chatId: string, messageId: string | null, data: string, displayText: string | null, text: string | null = null) =>
     invoke<void>("send_postback", { chatId, messageId, data, displayText, text }),
+  /** A flex or template "message" button: LINE posts `text` for the user through the bot. */
+  sendMessageButton: (chatId: string, messageId: string, text: string) =>
+    sent(invoke<void>("send_message_button", { chatId, messageId, text })),
   openLiff: (req: { url: string; chatId?: string | null; consent?: boolean; web?: boolean }) => invoke<void>("open_liff", { req }),
   liffDevSessions: () => invoke<LiffDevSession[]>("liff_dev_sessions"),
   liffDevAction: (label: string, action: "reload" | "inspect" | "close" | "reopen" | "web") =>

@@ -841,12 +841,28 @@ pub async fn send_postback(
     display_text: Option<String>,
     text: Option<String>,
 ) -> R<()> {
+    let url = postback_url(&data, display_text.as_deref(), text.as_deref());
+    post_back(&state, &chat_id, message_id, &url).await
+}
+
+/// A flex or template "message" button. LINE for Android doesn't send the
+/// text itself: it sends `linepostback://postback?_text=…` to
+/// `sendPostback` (`md2/b.f`, through `tr1/d` and `ot1/n`), in any chat,
+/// and LINE's server posts the text as the user's message.
+#[tauri::command]
+pub async fn send_message_button(state: S<'_>, chat_id: String, message_id: Option<String>, text: String) -> R<()> {
+    let url = line_rs::client::postback::message_url(&text);
+    post_back(&state, &chat_id, message_id, &url).await
+}
+
+/// `sendPostback` with `url`, from the bot that sent message `message_id`
+/// (none for a rich-menu area).
+async fn post_back(state: &S<'_>, chat_id: &str, message_id: Option<String>, url: &str) -> R<()> {
     let s = state.inner().clone();
     if s.demo {
         return Err("ต้องเข้าสู่ระบบ LINE ก่อน".into());
     }
     let l = s.line().await.ok_or("not_logged_in")?;
-    let url = postback_url(&data, display_text.as_deref(), text.as_deref());
     let message_id = message_id.filter(|m| !m.is_empty());
     // The flex message's sender is the bot the postback goes to.
     let from = message_id.as_deref().map(|id| {
@@ -854,13 +870,13 @@ pub async fn send_postback(
         msg.raw["from"]
             .as_str()
             .or(msg.raw["_from"].as_str())
-            .unwrap_or(&chat_id)
+            .unwrap_or(chat_id)
             .to_string()
     });
     l.client
         .base
         .talk()
-        .send_postback_url(&url, &chat_id, message_id.as_deref(), from.as_deref())
+        .send_postback_url(url, chat_id, message_id.as_deref(), from.as_deref())
         .await
         .map_err(|e| format!("ส่งคำตอบให้บอทไม่สำเร็จ: {e}"))?;
     Ok(())
