@@ -24,6 +24,10 @@ pub struct Chat {
     /// A group we are invited to and have not joined.
     #[serde(default)]
     pub invited: bool,
+    /// In LINE's message request box: started by someone who is not a
+    /// friend, and not accepted yet.
+    #[serde(default)]
+    pub request: bool,
 }
 
 /// A friend or an official account the user added.

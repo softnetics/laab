@@ -65,7 +65,7 @@ fn defs() -> Vec<Def> {
     vec![
         // ------------------------------------------------------------ read
         d("get_status", Read, "LAAB status", "Whether LAAB is signed in to LINE, who the user is, sync progress, and what the user allows by default.", json!({}), &[], true, false),
-        d("list_chats", Read, "List chats", "Chats, most recent first, with unread counts and the last message. Filter by name, kind, folder or unread.", json!({
+        d("list_chats", Read, "List chats", "Chats, most recent first, with unread counts and the last message. Filter by name, kind, folder or unread. invited marks a group invitation, messageRequest a chat from someone who is not a friend that the user has not accepted.", json!({
             "query": s("Only chats whose name contains this (case-insensitive)."),
             "kind": { "type": "string", "enum": ["dm", "group", "bot"], "description": "Only this kind of chat." },
             "folder_id": s("Only chats in this folder (from list_folders)."),
@@ -730,6 +730,9 @@ async fn run(ctx: &Ctx, name: &str, args: &Value, trace: &mut Trace) -> R<Vec<Va
                 }
                 if c.invited {
                     o.insert("invited".into(), json!(true));
+                }
+                if c.request {
+                    o.insert("messageRequest".into(), json!(true));
                 }
                 if dir.pinned.contains(&c.id) {
                     o.insert("pinned".into(), json!(true));

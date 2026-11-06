@@ -268,6 +268,7 @@ pub fn run() {
             commands::send_postback,
             commands::friends,
             commands::accept_invitation,
+            commands::accept_message_request,
             commands::reject_invitation,
             commands::create_group,
             commands::invite_members,

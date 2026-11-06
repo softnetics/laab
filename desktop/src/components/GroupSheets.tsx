@@ -262,6 +262,50 @@ export function InvitationBar({ chat }: { chat: Chat }) {
   );
 }
 
+/** Over the message box of a chat from someone who is not a friend, until
+ *  it is accepted (LINE keeps these in its message request box). */
+export function MessageRequestBar({ chat }: { chat: Chat }) {
+  const [busy, setBusy] = useState(false);
+  const accept = async () => {
+    setBusy(true);
+    try {
+      await api.acceptMessageRequest(chat.id);
+    } catch (e) {
+      notice(errorText(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <div className="flex shrink-0 items-center gap-3 border-t border-black/10 px-4 py-2.5">
+      <p className="flex-1 text-[12.5px] text-secondary">
+        {chat.id.startsWith("u") ? "ผู้ส่งยังไม่ได้เป็นเพื่อนกับคุณ" : "คุณถูกเพิ่มในแชทนี้โดยคนที่ไม่ได้เป็นเพื่อน"}
+      </p>
+      {chat.id.startsWith("u") && (
+        <button
+          className={buttonClass()}
+          disabled={busy}
+          onClick={() =>
+            setUi({
+              confirm: {
+                title: `ต้องการบล็อก ${chat.name} หรือไม่`,
+                body: "จะไม่ได้รับข้อความหรือการโทรจากบัญชีนี้",
+                action: "บล็อก",
+                run: () => api.setBlocked(chat.id, true),
+              },
+            })
+          }
+        >
+          บล็อก
+        </button>
+      )}
+      <button className={buttonClass(true)} disabled={busy} onClick={accept}>
+        ยอมรับ
+      </button>
+    </div>
+  );
+}
+
 /** The group named in the sheet, from the chat list. */
 export function useSheetChat(chatId: string | undefined) {
   return useChatList()?.chats.find((c) => c.id === chatId);

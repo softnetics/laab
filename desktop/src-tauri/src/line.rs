@@ -1434,6 +1434,22 @@ pub async fn refresh_chats(state: &Arc<AppState>, full: bool) -> Result<()> {
     }
     let listed: HashSet<String> = rows.keys().cloned().collect();
 
+    // Chats from people who are not friends wait in LINE's message request
+    // box until accepted. LINE leaves them out of its chat list; LAAB lists
+    // them marked as requests. `None` keeps what we knew.
+    let requests: Option<HashSet<String>> = match line.client.message_request_chats().await {
+        Ok(list) => Some(list.into_iter().map(|(mid, _)| mid).collect()),
+        Err(e) => {
+            tracing::warn!("getMessageRequestBoxList: {e}");
+            None
+        }
+    };
+    if let Some(requests) = &requests {
+        for (id, row) in rows.iter_mut() {
+            row.request = requests.contains(id);
+        }
+    }
+
     // Merge with what we have: a placeholder name never replaces a real one,
     // and mute is only trusted from the server for 1:1 chats.
     let merged: Vec<Chat> = {
@@ -1458,6 +1474,9 @@ pub async fn refresh_chats(state: &Arc<AppState>, full: bool) -> Result<()> {
                         c.muted = o.muted;
                     }
                     c.last_activity = c.last_activity.max(o.last_activity);
+                    if requests.is_none() {
+                        c.request = o.request;
+                    }
                 }
                 c
             })

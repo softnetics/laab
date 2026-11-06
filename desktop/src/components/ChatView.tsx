@@ -14,7 +14,7 @@ import { dismissTop, notice, ui } from "../lib/ui";
 import { Announcements } from "./Announcements";
 import { HeaderMenu } from "./ChatActions";
 import { Composer, type ComposerHandle } from "./Composer";
-import { InvitationBar } from "./GroupSheets";
+import { InvitationBar, MessageRequestBar } from "./GroupSheets";
 import { RichMenu } from "./RichMenu";
 import { BellSlashIcon, ChevronIcon, CloseIcon, ExternalIcon, MoreVIcon, NoteIcon, SearchIcon, SpeakerIcon } from "./Icons";
 import { popupClass } from "./kit";
@@ -313,6 +313,7 @@ export function ChatView({ chatId, main }: { chatId: string; main: boolean }) {
         search={search.open && search.debounced.trim() ? { query: search.debounced, hits, index: search.index } : null}
       />
       {stickers && <StickerPanel chatId={chatId} onClose={() => setStickers(false)} />}
+      {chat?.request && !chat.invited && <MessageRequestBar chat={chat} />}
       {chat?.invited ? (
         <InvitationBar chat={chat} />
       ) : (

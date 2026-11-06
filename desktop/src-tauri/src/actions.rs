@@ -501,6 +501,20 @@ pub async fn join_group_link(state: &Arc<AppState>, url: &str) -> Result<String>
     Ok(mid)
 }
 
+/// Accept a chat from LINE's message request box, as the app does
+/// (`updateChatStatusBulk` with `trusted`).
+pub async fn accept_message_request(state: &Arc<AppState>, chat_id: &str) -> Result<()> {
+    let l = line(state).await?;
+    l.client
+        .base
+        .talk()
+        .update_chat_status_bulk(&[chat_id.to_string()], true)
+        .await?;
+    state.store().set_request(chat_id, false)?;
+    state.chats_changed();
+    Ok(())
+}
+
 // -- groups -----------------------------------------------------------------
 
 /// Reload a group's row and members after we changed it.

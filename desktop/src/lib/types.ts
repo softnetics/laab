@@ -15,6 +15,8 @@ export interface Chat {
   memberCount: number | null;
   /** A group we are invited to and have not joined. */
   invited?: boolean;
+  /** In LINE's message request box: from someone who is not a friend, not accepted yet. */
+  request?: boolean;
 }
 
 export interface ChatMember {
