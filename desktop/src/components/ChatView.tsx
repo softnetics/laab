@@ -14,6 +14,7 @@ import { dismissTop, notice, ui } from "../lib/ui";
 import { Announcements } from "./Announcements";
 import { HeaderMenu } from "./ChatActions";
 import { Composer, type ComposerHandle } from "./Composer";
+import { InvitationBar } from "./GroupSheets";
 import { RichMenu } from "./RichMenu";
 import { BellSlashIcon, ChevronIcon, CloseIcon, ExternalIcon, MoreVIcon, NoteIcon, SearchIcon, SpeakerIcon } from "./Icons";
 import { popupClass } from "./kit";
@@ -312,26 +313,30 @@ export function ChatView({ chatId, main }: { chatId: string; main: boolean }) {
         search={search.open && search.debounced.trim() ? { query: search.debounced, hits, index: search.index } : null}
       />
       {stickers && <StickerPanel chatId={chatId} onClose={() => setStickers(false)} />}
-      <Composer
-        ref={composer}
-        chatId={chatId}
-        group={group}
-        disabled={!(signedIn || session?.state === "demo")}
-        members={members}
-        loadMembers={loadMembers}
-        stickerOpen={stickers}
-        onToggleStickers={() => setStickers((v) => !v)}
-        name={name}
-        picture={picture}
-        onStep={
-          main
-            ? (step) => {
-                const next = adjacentChat(ui.state.visibleChatIds, chatId, step);
-                if (next) openChat(next);
-              }
-            : undefined
-        }
-      />
+      {chat?.invited ? (
+        <InvitationBar chat={chat} />
+      ) : (
+        <Composer
+          ref={composer}
+          chatId={chatId}
+          group={group}
+          disabled={!(signedIn || session?.state === "demo")}
+          members={members}
+          loadMembers={loadMembers}
+          stickerOpen={stickers}
+          onToggleStickers={() => setStickers((v) => !v)}
+          name={name}
+          picture={picture}
+          onStep={
+            main
+              ? (step) => {
+                  const next = adjacentChat(ui.state.visibleChatIds, chatId, step);
+                  if (next) openChat(next);
+                }
+              : undefined
+          }
+        />
+      )}
       {chat?.kind === "bot" && <RichMenu key={chatId} chatId={chatId} />}
       <AnimatePresence>
         {dragging && (

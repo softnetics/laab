@@ -501,6 +501,98 @@ pub async fn join_group_link(state: &Arc<AppState>, url: &str) -> Result<String>
     Ok(mid)
 }
 
+// -- groups -----------------------------------------------------------------
+
+/// Reload a group's row and members after we changed it.
+async fn group_changed(state: &Arc<AppState>, l: &Arc<Line>, chat_id: &str) {
+    line::refresh_chat_row(state, l, chat_id).await;
+    if let Err(e) = line::load_members(state, chat_id, true).await {
+        tracing::warn!("reloading members: {e}");
+    }
+}
+
+/// Join a group we were invited to.
+pub async fn accept_invitation(state: &Arc<AppState>, chat_id: &str) -> Result<()> {
+    let l = line(state).await?;
+    l.chat(chat_id).accept_invitation().await?;
+    {
+        let mut store = state.store();
+        if let Ok(Some(mut c)) = store.chat(chat_id) {
+            c.invited = false;
+            c.preview.clear();
+            store.upsert_chats(&[c])?;
+        }
+    }
+    state.chats_changed();
+    group_changed(state, &l, chat_id).await;
+    Ok(())
+}
+
+/// Decline an invitation: the group leaves the list.
+pub async fn reject_invitation(state: &Arc<AppState>, chat_id: &str) -> Result<()> {
+    let l = line(state).await?;
+    l.chat(chat_id).reject_invitation().await?;
+    state.store().hide_chat(chat_id)?;
+    state.chats_changed();
+    Ok(())
+}
+
+/// Create a group named `name` with these people invited; returns its id.
+pub async fn create_group(state: &Arc<AppState>, name: &str, mids: &[String]) -> Result<String> {
+    let l = line(state).await?;
+    let mids: Vec<&str> = mids.iter().map(String::as_str).collect();
+    let chat = l.client.create_group(name.trim(), &mids).await?;
+    let id = chat.mid().to_string();
+    if id.is_empty() {
+        bail!("LINE ไม่ได้ส่งกลุ่มที่สร้างกลับมา");
+    }
+    let row = crate::model::Chat {
+        id: id.clone(),
+        name: if name.trim().is_empty() { id.clone() } else { name.trim().into() },
+        kind: "group".into(),
+        last_activity: now_ms(),
+        ..Default::default()
+    };
+    state.store().upsert_chats(&[row])?;
+    state.chats_changed();
+    group_changed(state, &l, &id).await;
+    Ok(id)
+}
+
+pub async fn invite_members(state: &Arc<AppState>, chat_id: &str, mids: &[String]) -> Result<()> {
+    let l = line(state).await?;
+    let mids: Vec<&str> = mids.iter().map(String::as_str).collect();
+    l.chat(chat_id).invite(&mids).await?;
+    group_changed(state, &l, chat_id).await;
+    Ok(())
+}
+
+pub async fn remove_member(state: &Arc<AppState>, chat_id: &str, mid: &str) -> Result<()> {
+    let l = line(state).await?;
+    l.chat(chat_id).kick(mid).await?;
+    group_changed(state, &l, chat_id).await;
+    Ok(())
+}
+
+pub async fn cancel_invitation(state: &Arc<AppState>, chat_id: &str, mids: &[String]) -> Result<()> {
+    let l = line(state).await?;
+    let mids: Vec<&str> = mids.iter().map(String::as_str).collect();
+    l.chat(chat_id).cancel_invitation(&mids).await?;
+    group_changed(state, &l, chat_id).await;
+    Ok(())
+}
+
+pub async fn rename_group(state: &Arc<AppState>, chat_id: &str, name: &str) -> Result<()> {
+    let name = name.trim();
+    if name.is_empty() {
+        bail!("ชื่อกลุ่มว่าง");
+    }
+    let l = line(state).await?;
+    l.chat(chat_id).update_name(name).await?;
+    group_changed(state, &l, chat_id).await;
+    Ok(())
+}
+
 // -- notes ------------------------------------------------------------------
 
 #[derive(Debug, Clone, Serialize, PartialEq)]

@@ -13,6 +13,8 @@ export interface Chat {
   muted: boolean;
   picture: string | null;
   memberCount: number | null;
+  /** A group we are invited to and have not joined. */
+  invited?: boolean;
 }
 
 export interface ChatMember {
@@ -20,6 +22,7 @@ export interface ChatMember {
   name: string;
   all?: boolean;
   picture?: string | null;
+  invited?: boolean;
 }
 
 export interface MentionSpan {

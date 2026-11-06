@@ -57,7 +57,13 @@ export interface UiState {
     dismissLabel?: string;
   } | null;
   /** Open sheets: add friend, notes and albums of a chat. */
-  sheet: { kind: "add-friend" } | { kind: "report"; messageId: string | null } | { kind: "mcp" } | null;
+  sheet:
+    | { kind: "add-friend" }
+    | { kind: "report"; messageId: string | null }
+    | { kind: "mcp" }
+    | { kind: "create-group" }
+    | { kind: "group-members"; chatId: string }
+    | null;
   /** Someone's profile card; name and picture show while it loads. */
   profile: { mid: string; name?: string; picture?: string | null } | null;
   /** What the column next to the left bar shows: chats, friends, add friend. */

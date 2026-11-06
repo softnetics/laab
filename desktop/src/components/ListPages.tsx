@@ -63,7 +63,14 @@ export function FriendsPage() {
     const rows = new Map((list?.chats ?? []).map((c) => [c.id, c]));
     return (friendList ?? [])
       .filter((f) => f.kind === "dm" && f.mid !== me?.mid)
-      .map((f): Row => ({ id: f.mid, name: f.name, kind: f.kind, picture: f.picture, avatar: rows.get(f.mid)?.avatar ?? null, memberCount: null }))
+      .map((f): Row => ({
+        id: f.mid,
+        name: f.name,
+        kind: f.kind,
+        picture: f.picture,
+        avatar: rows.get(f.mid)?.avatar ?? null,
+        memberCount: null,
+      }))
       .filter((f) => !isKeepMemo(f, me?.mid) && match(f))
       .sort(byName);
   }, [friendList, list, q, me?.mid]);
@@ -114,8 +121,8 @@ export function FriendsPage() {
   );
 }
 
-/** LINE for Mac's add-friend page; LAAB can search by ID or link and join
- *  groups by invite link (creating groups and OpenChat are not supported). */
+/** LINE for Mac's add-friend page; LAAB can search by ID or link, join
+ *  groups by invite link and create groups (OpenChat is not supported). */
 export function AddFriendPage() {
   return (
     <div className="flex h-full flex-col bg-list pt-[38px]">
@@ -127,6 +134,15 @@ export function AddFriendPage() {
           <PersonPlusIcon size={18} />
         </span>
         ค้นหาเพื่อน
+      </button>
+      <button
+        onClick={() => setUi({ sheet: { kind: "create-group" } })}
+        className="flex h-[50px] items-center gap-3 px-4 text-left text-[13.5px] hover:bg-row-hover"
+      >
+        <span className="grid h-9 w-9 place-items-center rounded-full bg-field">
+          <PersonPlusIcon size={18} />
+        </span>
+        สร้างกลุ่ม
       </button>
       <p className="px-4 pt-3 text-[12px] leading-relaxed text-secondary">
         ค้นหาด้วย LINE ID หรือลิงก์เพิ่มเพื่อน หรือวางลิงก์เชิญเพื่อเข้ากลุ่ม

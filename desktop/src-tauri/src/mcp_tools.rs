@@ -90,7 +90,7 @@ fn defs() -> Vec<Def> {
             "kinds": { "type": "array", "items": { "type": "string", "enum": ["chat", "message", "file"] }, "description": "What to search (default all)." },
             "limit": n("At most this many (default 50)."),
         }), &["query"], true, false),
-        d("list_members", Read, "List members", "Members of a group or room, with their mids.", json!({
+        d("list_members", Read, "List members", "Members of a group or room, with their mids; people invited but not joined have invited: true.", json!({
             "chat_id": s(CHAT),
             "refresh": b("Reload from LINE."),
         }), &["chat_id"], true, false),
@@ -184,12 +184,18 @@ fn defs() -> Vec<Def> {
         d("create_album", Manage, "Create an album", "Create an empty album in a chat.", json!({ "chat_id": s(CHAT), "title": s("Album name.") }), &["chat_id", "title"], false, false),
         d("rename_album", Manage, "Rename an album", "Rename an album.", json!({ "chat_id": s(CHAT), "album_id": s("Album id."), "title": s("New name.") }), &["chat_id", "album_id", "title"], false, false),
         d("delete_album", Manage, "Delete an album", "Delete an album and its photos.", json!({ "chat_id": s(CHAT), "album_id": s("Album id.") }), &["chat_id", "album_id"], false, true),
+        d("rename_group", Manage, "Rename a group", "Change a group's name for everyone in it.", json!({ "chat_id": s(CHAT), "name": s("The new name.") }), &["chat_id", "name"], false, false),
+        d("invite_to_group", Manage, "Invite to a group", "Invite people (by mid, from list_contacts) into a group.", json!({ "chat_id": s(CHAT), "mids": strings("Mids of the people to invite.") }), &["chat_id", "mids"], false, false),
+        d("remove_from_group", Manage, "Remove from a group", "Remove a member from a group.", json!({ "chat_id": s(CHAT), "mid": s("The member's mid, from list_members.") }), &["chat_id", "mid"], false, true),
+        d("cancel_group_invitation", Manage, "Cancel an invitation", "Withdraw invitations to a group that were not accepted yet.", json!({ "chat_id": s(CHAT), "mids": strings("Mids of invited people, from list_members (invited: true).") }), &["chat_id", "mids"], false, false),
+        d("create_group", Manage, "Create a group", "Create a group with these people invited; returns its chat id.", json!({ "name": s("Group name."), "mids": strings("Mids of the people to invite.") }), &["name", "mids"], false, false),
         d("save_to_keep", Manage, "Save to Keep", "Save a message to the user's Keep Memo.", json!({ "chat_id": s(CHAT), "message_id": s(MSG) }), &["chat_id", "message_id"], false, false),
         // ------------------------------------------------------------ account
         d("delete_chat_history", Account, "Delete chat history", "Delete a chat's history from the user's account. It can't be brought back.", json!({ "chat_id": s(CHAT) }), &["chat_id"], false, true),
         d("leave_group", Account, "Leave a group", "Leave a group or room.", json!({ "chat_id": s(CHAT) }), &["chat_id"], false, true),
         d("set_blocked", Account, "Block someone", "Block or unblock a person.", json!({ "mid": s("Their mid (`u…`)."), "blocked": b("true to block.") }), &["mid", "blocked"], false, true),
         d("add_friend", Account, "Add a friend", "Add someone as a friend (find them with find_contact).", json!({ "mid": s("Their mid.") }), &["mid"], false, false),
+        d("respond_to_invitation", Account, "Answer a group invitation", "Join a group the user was invited to (list_chats shows it with invited: true), or decline.", json!({ "chat_id": s(CHAT), "accept": b("true to join, false to decline.") }), &["chat_id", "accept"], false, false),
         d("join_group_by_link", Account, "Join a group", "Join a group by its invite link.", json!({ "url": s("The invite link.") }), &["url"], false, false),
     ]
 }
@@ -722,6 +728,9 @@ async fn run(ctx: &Ctx, name: &str, args: &Value, trace: &mut Trace) -> R<Vec<Va
                 if let Some(n) = c.member_count {
                     o.insert("members".into(), json!(n));
                 }
+                if c.invited {
+                    o.insert("invited".into(), json!(true));
+                }
                 if dir.pinned.contains(&c.id) {
                     o.insert("pinned".into(), json!(true));
                 }
@@ -863,11 +872,13 @@ async fn run(ctx: &Ctx, name: &str, args: &Value, trace: &mut Trace) -> R<Vec<Va
         "list_members" => {
             let chat = arg_str(args, "chat_id")?;
             gate(ctx, trace, Read, &[dir.scope(&chat)], format!("ดูสมาชิกของ {}", dir.quoted(&chat))).await?;
-            let members = commands::members(st(), chat, opt_bool(args, "refresh")).await?;
+            let members = commands::members(st(), chat.clone(), opt_bool(args, "refresh")).await?;
+            let invitees = state.store().invitees(&chat).unwrap_or_default();
             let out: Vec<Value> = members
                 .into_iter()
                 .filter(|m| !m.all)
                 .map(|m| json!({ "mid": m.mid, "name": m.name, "isMe": m.mid == me }))
+                .chain(invitees.into_iter().map(|m| json!({ "mid": m.mid, "name": m.name, "invited": true })))
                 .collect();
             Ok(text(json!({ "members": out })))
         }
@@ -1313,6 +1324,54 @@ async fn run(ctx: &Ctx, name: &str, args: &Value, trace: &mut Trace) -> R<Vec<Va
             commands::delete_album(st(), chat, album).await?;
             done("album deleted")
         }
+        "rename_group" => {
+            let chat = arg_str(args, "chat_id")?;
+            let name = arg_str(args, "name")?;
+            gate(ctx, trace, Manage, &[dir.scope(&chat)], format!("เปลี่ยนชื่อกลุ่ม {} เป็น “{name}”", dir.quoted(&chat))).await?;
+            commands::rename_group(st(), chat, name).await?;
+            done("group renamed")
+        }
+        "invite_to_group" => {
+            let chat = arg_str(args, "chat_id")?;
+            let mids = str_list(args, "mids");
+            if mids.is_empty() {
+                return Err("missing `mids`".into());
+            }
+            let who: Vec<String> = mids.iter().map(|m| dir.quoted(m)).collect();
+            gate(ctx, trace, Manage, &[dir.scope(&chat)], format!("เชิญ {} เข้า {}", who.join(", "), dir.quoted(&chat))).await?;
+            commands::invite_members(st(), chat, mids).await?;
+            done("invited")
+        }
+        "remove_from_group" => {
+            let chat = arg_str(args, "chat_id")?;
+            let mid = arg_str(args, "mid")?;
+            gate(ctx, trace, Manage, &[dir.scope(&chat)], format!("ลบ {} ออกจาก {}", dir.quoted(&mid), dir.quoted(&chat))).await?;
+            commands::remove_member(st(), chat, mid).await?;
+            done("removed")
+        }
+        "cancel_group_invitation" => {
+            let chat = arg_str(args, "chat_id")?;
+            let mids = str_list(args, "mids");
+            if mids.is_empty() {
+                return Err("missing `mids`".into());
+            }
+            let who: Vec<String> = mids.iter().map(|m| dir.quoted(m)).collect();
+            gate(ctx, trace, Manage, &[dir.scope(&chat)], format!("ยกเลิกคำเชิญ {} เข้า {}", who.join(", "), dir.quoted(&chat))).await?;
+            commands::cancel_invitation(st(), chat, mids).await?;
+            done("invitation canceled")
+        }
+        "create_group" => {
+            let name = arg_str(args, "name")?;
+            let mids = str_list(args, "mids");
+            if mids.is_empty() {
+                return Err("missing `mids`".into());
+            }
+            let who: Vec<String> = mids.iter().map(|m| dir.quoted(m)).collect();
+            let scopes: Vec<Scope> = mids.iter().map(|m| dir.scope(m)).collect();
+            gate(ctx, trace, Manage, &scopes, format!("สร้างกลุ่ม “{name}” และเชิญ {}", who.join(", "))).await?;
+            let chat = commands::create_group(st(), name, mids).await?;
+            Ok(text(json!({ "ok": true, "chatId": chat })))
+        }
         "save_to_keep" => {
             let chat = arg_str(args, "chat_id")?;
             let id = arg_str(args, "message_id")?;
@@ -1348,6 +1407,18 @@ async fn run(ctx: &Ctx, name: &str, args: &Value, trace: &mut Trace) -> R<Vec<Va
             gate(ctx, trace, Account, &[dir.scope(&mid)], format!("เพิ่ม {} เป็นเพื่อน", dir.quoted(&mid))).await?;
             commands::add_friend(st(), mid).await?;
             done("friend added")
+        }
+        "respond_to_invitation" => {
+            let chat = arg_str(args, "chat_id")?;
+            let accept = arg_bool(args, "accept")?;
+            gate(ctx, trace, Account, &[dir.scope(&chat)], format!("{}คำเชิญเข้ากลุ่ม {}", if accept { "ตอบรับ" } else { "ปฏิเสธ" }, dir.quoted(&chat))).await?;
+            if accept {
+                commands::accept_invitation(st(), chat).await?;
+                done("joined")
+            } else {
+                commands::reject_invitation(st(), chat).await?;
+                done("declined")
+            }
         }
         "join_group_by_link" => {
             let url = arg_str(args, "url")?;

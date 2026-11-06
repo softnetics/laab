@@ -3,6 +3,7 @@ import { api, errorText } from "../lib/api";
 import { openChat } from "../lib/nav";
 import { notice, setUi, useUi } from "../lib/ui";
 import { Avatar } from "./Avatar";
+import { CreateGroup, GroupMembers, useSheetChat } from "./GroupSheets";
 import { Spinner } from "./kit";
 import { McpSheet } from "./McpSheet";
 import { buttonClass, Sheet } from "./Sheet";
@@ -192,6 +193,7 @@ function Report({ messageId, onDone }: { messageId: string | null; onDone: () =>
 export function Sheets() {
   const sheet = useUi((s) => s.sheet);
   const close = () => setUi({ sheet: null });
+  const group = useSheetChat(sheet?.kind === "group-members" ? sheet.chatId : undefined);
   return (
     <>
       <Sheet open={sheet?.kind === "add-friend"} onClose={close} className="w-[440px]" title="ค้นหาเพื่อน">
@@ -199,6 +201,17 @@ export function Sheets() {
       </Sheet>
       <Sheet open={sheet?.kind === "report"} onClose={close} className="h-[min(600px,calc(100vh-48px))] w-[520px]" title="รายงานปัญหา">
         {sheet?.kind === "report" && <Report messageId={sheet.messageId} onDone={close} />}
+      </Sheet>
+      <Sheet open={sheet?.kind === "create-group"} onClose={close} className="h-[min(560px,calc(100vh-48px))] w-[420px]" title="สร้างกลุ่ม">
+        {sheet?.kind === "create-group" && <CreateGroup onDone={close} />}
+      </Sheet>
+      <Sheet
+        open={sheet?.kind === "group-members" && !!group}
+        onClose={close}
+        className="h-[min(600px,calc(100vh-48px))] w-[420px]"
+        title="สมาชิก"
+      >
+        {group && <GroupMembers key={group.id} chat={group} onDone={close} />}
       </Sheet>
       <Sheet open={sheet?.kind === "mcp"} onClose={close} className="h-[min(680px,calc(100vh-48px))] w-[min(760px,calc(100vw-48px))]">
         {sheet?.kind === "mcp" && <McpSheet onDone={close} />}

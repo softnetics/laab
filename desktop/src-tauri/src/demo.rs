@@ -346,6 +346,7 @@ pub fn seed(store: &mut Store, paths: &Paths) -> Result<()> {
             name: String::new(),
             all: false,
             picture: None,
+            invited: false,
         })
         .collect();
     members.extend(extra_team_members().into_iter().map(|(m, n)| ChatMember {
@@ -353,6 +354,7 @@ pub fn seed(store: &mut Store, paths: &Paths) -> Result<()> {
         name: n.into(),
         all: false,
         picture: None,
+        invited: false,
     }));
     store.upsert_members("c_harvest", &members)?;
 

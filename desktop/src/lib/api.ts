@@ -151,6 +151,14 @@ export const api = {
   deleteAlbum: (chatId: string, albumId: string) => invoke<void>("delete_album", { chatId, albumId }),
   deleteMessage: (messageId: string) => invoke<void>("delete_message", { messageId }),
   leaveGroup: (chatId: string) => invoke<void>("leave_group", { chatId }),
+  acceptInvitation: (chatId: string) => invoke<void>("accept_invitation", { chatId }),
+  rejectInvitation: (chatId: string) => invoke<void>("reject_invitation", { chatId }),
+  createGroup: (name: string, mids: string[]) => invoke<string>("create_group", { name, mids }),
+  inviteMembers: (chatId: string, mids: string[]) => invoke<void>("invite_members", { chatId, mids }),
+  removeMember: (chatId: string, mid: string) => invoke<void>("remove_member", { chatId, mid }),
+  cancelInvitation: (chatId: string, mids: string[]) => invoke<void>("cancel_invitation", { chatId, mids }),
+  renameGroup: (chatId: string, name: string) => invoke<void>("rename_group", { chatId, name }),
+  invitees: (chatId: string) => invoke<ChatMember[]>("invitees", { chatId }),
   chatMedia: (chatId: string, kind: "media" | "files" | "links") => invoke<Message[]>("chat_media", { chatId, kind }),
   saveText: (path: string, text: string) => invoke<void>("save_text", { path, text }),
   saveAttachment: (chatId: string, messageId: string, dest: string | null = null) =>
@@ -237,6 +245,7 @@ export function useBackendEvents() {
       listen<{ chatId: string }>("reads-changed", (e) => queryClient.invalidateQueries({ queryKey: ["reads", e.payload.chatId] })),
       listen<{ chatId: string }>("members-changed", (e) => {
         queryClient.invalidateQueries({ queryKey: ["members", e.payload.chatId] });
+        queryClient.invalidateQueries({ queryKey: ["invitees", e.payload.chatId] });
         queryClient.invalidateQueries({ queryKey: ["people"] });
       }),
     ];

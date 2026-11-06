@@ -657,11 +657,25 @@ async fn handle_event(state: &Arc<AppState>, line: &Arc<Line>, ev: LineEvent) {
                 apply_reaction(state, &r.message_id, &user, name.as_deref());
             }
             TalkEvent::Unsend { message_id, .. } => apply_unsend(state, &message_id),
+            // Invited to a group: it shows up in the list to accept or not.
+            TalkEvent::Invite { invitee_mids, .. } if invitee_mids.contains(&line.me) => {
+                let s = state.clone();
+                tokio::spawn(async move {
+                    logged("adding a group invitation", refresh_chats(&s, false).await);
+                });
+            }
+            // Removed from a group: it leaves the list, as when we leave.
+            TalkEvent::Kick { chat_mid, kicked_mids, .. } if kicked_mids.contains(&line.me) => {
+                state.members_loaded.lock().unwrap().remove(&chat_mid);
+                logged("hiding a chat we were removed from", state.store().hide_chat(&chat_mid));
+                state.chats_changed();
+            }
             TalkEvent::Invite { chat_mid, .. }
             | TalkEvent::Join { chat_mid, .. }
             | TalkEvent::Leave { chat_mid, .. }
             | TalkEvent::Kick { chat_mid, .. } => {
                 state.members_loaded.lock().unwrap().remove(&chat_mid);
+                state.members_changed(&chat_mid);
             }
             // We left a group, here or on another device: it leaves the
             // list, as in LINE, until a new message brings it back.
@@ -891,7 +905,7 @@ fn clear_history(state: &AppState, chat_id: &str) {
 }
 
 /// Fetch a chat's name, picture and mute again after LINE says it changed.
-async fn refresh_chat_row(state: &Arc<AppState>, line: &Arc<Line>, chat_id: &str) {
+pub async fn refresh_chat_row(state: &Arc<AppState>, line: &Arc<Line>, chat_id: &str) {
     let Some(mut chat) = state.store().chat(chat_id).ok().flatten() else {
         return;
     };
@@ -1362,16 +1376,23 @@ pub async fn refresh_chats(state: &Arc<AppState>, full: bool) -> Result<()> {
         .client
         .base
         .talk()
-        .get_all_chat_mids(tv!({"request": {"withMemberChats": true}, "syncReason": "INTERNAL"}))
+        .get_all_chat_mids(
+            tv!({"request": {"withMemberChats": true, "withInvitedChats": true}, "syncReason": "INTERNAL"}),
+        )
         .await;
     let groups_ok = joined.is_ok();
     if let Ok(joined) = joined {
-        let group_mids: Vec<String> = joined["memberChatMids"]
-            .as_list()
-            .unwrap_or_default()
-            .iter()
-            .filter_map(|v| v.as_str().map(str::to_string))
-            .collect();
+        let mids_of = |key: &str| -> Vec<String> {
+            joined[key]
+                .as_list()
+                .unwrap_or_default()
+                .iter()
+                .filter_map(|v| v.as_str().map(str::to_string))
+                .collect()
+        };
+        let invited: HashSet<String> = mids_of("invitedChatMids").into_iter().collect();
+        let mut group_mids = mids_of("memberChatMids");
+        group_mids.extend(invited.iter().cloned());
         for chunk in group_mids.chunks(50) {
             let res = line
                 .client
@@ -1379,7 +1400,7 @@ pub async fn refresh_chats(state: &Arc<AppState>, full: bool) -> Result<()> {
                 .talk()
                 .get_chats(GetChatsOptions {
                     chat_mids: chunk.to_vec(),
-                    with_invitees: Some(false),
+                    with_invitees: Some(chunk.iter().any(|m| invited.contains(m))),
                     with_members: Some(true),
                 })
                 .await;
@@ -1396,6 +1417,14 @@ pub async fn refresh_chats(state: &Arc<AppState>, full: bool) -> Result<()> {
                     ..Default::default()
                 });
                 apply_group(row, &json, &line.me, &people);
+                row.invited = invited.contains(&mid);
+                if row.invited {
+                    // Shown when the invitation came, until answered.
+                    if let Some(at) = num_of(&json["extra"]["groupExtra"]["inviteeMids"][line.me.as_str()]) {
+                        row.last_activity = row.last_activity.max(at);
+                    }
+                    row.preview = "คุณได้รับคำเชิญเข้ากลุ่ม".into();
+                }
                 if let Some(m) = json["notificationDisabled"].as_bool() {
                     row.muted = m;
                     server_mute.insert(mid.clone());
@@ -1702,13 +1731,18 @@ pub async fn load_members(
         .await
         .map_err(|e| anyhow!("{e}"))?;
     let raw = chat.raw.to_json();
-    let mids: Vec<String> = raw["extra"]["groupExtra"]["memberMids"]
-        .as_object()
-        .map(|m| m.keys().filter(|k| **k != line.me).cloned().collect())
-        .unwrap_or_default();
+    let others = |key: &str| -> Vec<String> {
+        raw["extra"]["groupExtra"][key]
+            .as_object()
+            .map(|m| m.keys().filter(|k| **k != line.me).cloned().collect())
+            .unwrap_or_default()
+    };
+    let mids = others("memberMids");
+    let invitees = others("inviteeMids");
     let people = state.store().people()?;
     let missing: Vec<String> = mids
         .iter()
+        .chain(&invitees)
         .filter(|m| !people.contains_key(*m))
         .cloned()
         .collect();
@@ -1722,17 +1756,20 @@ pub async fn load_members(
         store.upsert_users(&users)?;
     }
     let people = state.store().people()?;
+    let member = |mid: &String, invited: bool| {
+        let (name, picture) = people.get(mid).cloned().unwrap_or((mid.clone(), None));
+        ChatMember {
+            mid: mid.clone(),
+            name,
+            picture,
+            all: false,
+            invited,
+        }
+    };
     let members: Vec<ChatMember> = mids
         .iter()
-        .map(|mid| {
-            let (name, picture) = people.get(mid).cloned().unwrap_or((mid.clone(), None));
-            ChatMember {
-                mid: mid.clone(),
-                name,
-                picture,
-                all: false,
-            }
-        })
+        .map(|m| member(m, false))
+        .chain(invitees.iter().map(|m| member(m, true)))
         .collect();
     state.store().upsert_members(chat_id, &members)?;
     state

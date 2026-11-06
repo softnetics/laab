@@ -99,6 +99,8 @@ impl Store {
             // The newest message id deleted from the chat's history (here or
             // on another device); older messages never come back.
             ("chats", "removed_through", "INTEGER"),
+            // 1 for a group we are invited to and have not joined.
+            ("chats", "invited", "INTEGER NOT NULL DEFAULT 0"),
         ] {
             self.add_column_if_missing(table, column, definition)?;
         }
@@ -120,6 +122,7 @@ impl Store {
         )?;
         // 1 for a friend (not blocked), 0 for anyone else we know.
         self.add_column_if_missing("users", "friend", "INTEGER")?;
+        self.add_column_if_missing("members", "invited", "INTEGER NOT NULL DEFAULT 0")?;
         let count: i64 = db.query_row("SELECT COUNT(*) FROM workspaces", [], |r| r.get(0))?;
         if count == 0 {
             db.execute("INSERT INTO workspaces VALUES ('main', 'หลัก', 0)", [])?;
@@ -226,11 +229,12 @@ impl Store {
         let tx = self.db.transaction()?;
         for c in chats {
             tx.execute(
-                "INSERT INTO chats (id,name,kind,preview,activity,unread,avatar,muted,picture,member_count) VALUES (?,?,?,?,?,?,?,?,?,?)
+                "INSERT INTO chats (id,name,kind,preview,activity,unread,avatar,muted,picture,member_count,invited) VALUES (?,?,?,?,?,?,?,?,?,?,?)
                  ON CONFLICT(id) DO UPDATE SET name=excluded.name, kind=excluded.kind, preview=excluded.preview, activity=excluded.activity,
                  unread=excluded.unread, avatar=COALESCE(excluded.avatar, chats.avatar), muted=excluded.muted,
-                 picture=COALESCE(excluded.picture, chats.picture), member_count=COALESCE(excluded.member_count, chats.member_count)",
-                params![c.id, c.name, c.kind, c.preview, c.last_activity, c.unread, c.avatar, c.muted as i64, c.picture, c.member_count],
+                 picture=COALESCE(excluded.picture, chats.picture), member_count=COALESCE(excluded.member_count, chats.member_count),
+                 invited=excluded.invited",
+                params![c.id, c.name, c.kind, c.preview, c.last_activity, c.unread, c.avatar, c.muted as i64, c.picture, c.member_count, c.invited as i64],
             )?;
         }
         tx.commit()?;
@@ -249,7 +253,7 @@ impl Store {
 
     fn chats_where<P: rusqlite::Params>(&self, filter: &str, params: P) -> Result<Vec<Chat>> {
         let mut stmt = self.db.prepare(&format!(
-            "SELECT id,name,kind,preview,activity,unread,avatar,muted,picture,member_count FROM chats {filter} ORDER BY activity DESC"
+            "SELECT id,name,kind,preview,activity,unread,avatar,muted,picture,member_count,invited FROM chats {filter} ORDER BY activity DESC"
         ))?;
         let rows = stmt.query_map(params, |r| {
             Ok(Chat {
@@ -263,6 +267,7 @@ impl Store {
                 muted: r.get::<_, i64>(7)? != 0,
                 picture: r.get(8)?,
                 member_count: r.get(9)?,
+                invited: r.get::<_, i64>(10)? != 0,
             })
         })?;
         Ok(rows.collect::<rusqlite::Result<_>>()?)
@@ -407,25 +412,36 @@ impl Store {
         tx.execute("DELETE FROM members WHERE chat_id=?", [chat_id])?;
         for m in members.iter().filter(|m| !m.all) {
             tx.execute(
-                "INSERT OR REPLACE INTO members(chat_id,mid,name,picture) VALUES (?,?,?,?)",
-                params![chat_id, m.mid, m.name, m.picture],
+                "INSERT OR REPLACE INTO members(chat_id,mid,name,picture,invited) VALUES (?,?,?,?,?)",
+                params![chat_id, m.mid, m.name, m.picture, m.invited as i64],
             )?;
         }
         tx.commit()?;
         Ok(())
     }
 
+    /// A group's members, without the people only invited.
     pub fn members(&self, chat_id: &str) -> Result<Vec<ChatMember>> {
+        self.members_where(chat_id, false)
+    }
+
+    /// The people invited to a group who have not joined yet.
+    pub fn invitees(&self, chat_id: &str) -> Result<Vec<ChatMember>> {
+        self.members_where(chat_id, true)
+    }
+
+    fn members_where(&self, chat_id: &str, invited: bool) -> Result<Vec<ChatMember>> {
         let mut stmt = self.db.prepare(
-            "SELECT m.mid, COALESCE(NULLIF(m.name,''), u.name, m.mid), COALESCE(m.picture, u.picture)
-             FROM members m LEFT JOIN users u ON u.mid=m.mid WHERE m.chat_id=?",
+            "SELECT m.mid, COALESCE(NULLIF(m.name,''), u.name, m.mid), COALESCE(m.picture, u.picture), m.invited
+             FROM members m LEFT JOIN users u ON u.mid=m.mid WHERE m.chat_id=? AND m.invited=?",
         )?;
-        let rows = stmt.query_map([chat_id], |r| {
+        let rows = stmt.query_map(params![chat_id, invited as i64], |r| {
             Ok(ChatMember {
                 mid: r.get(0)?,
                 name: r.get(1)?,
                 picture: r.get(2)?,
                 all: false,
+                invited: r.get::<_, i64>(3)? != 0,
             })
         })?;
         Ok(rows.collect::<rusqlite::Result<_>>()?)
@@ -1277,6 +1293,29 @@ mod tests {
         // Unfriended (or blocked) people drop out.
         s.set_friends(&["u3".into()]).unwrap();
         assert_eq!(s.friends().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn invitations_are_kept_apart() {
+        let mut s = Store::memory().unwrap();
+        let mut c = chat("c1", "Team");
+        c.kind = "group".into();
+        c.invited = true;
+        s.upsert_chats(&[c.clone()]).unwrap();
+        assert!(s.chat("c1").unwrap().unwrap().invited);
+        c.invited = false;
+        s.upsert_chats(&[c]).unwrap();
+        assert!(!s.chat("c1").unwrap().unwrap().invited);
+        let m = |mid: &str, invited: bool| ChatMember {
+            mid: mid.into(),
+            name: mid.into(),
+            invited,
+            ..Default::default()
+        };
+        s.upsert_members("c1", &[m("u1", false), m("u2", true)]).unwrap();
+        let mids = |v: Vec<ChatMember>| v.into_iter().map(|m| m.mid).collect::<Vec<_>>();
+        assert_eq!(mids(s.members("c1").unwrap()), ["u1"]);
+        assert_eq!(mids(s.invitees("c1").unwrap()), ["u2"]);
     }
 
     #[test]

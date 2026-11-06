@@ -21,6 +21,9 @@ pub struct Chat {
     /// LINE `picturePath` (e.g. `/0h...`), used to fetch the avatar.
     pub picture: Option<String>,
     pub member_count: Option<i64>,
+    /// A group we are invited to and have not joined.
+    #[serde(default)]
+    pub invited: bool,
 }
 
 /// A friend or an official account the user added.
@@ -42,6 +45,9 @@ pub struct ChatMember {
     #[serde(default)]
     pub all: bool,
     pub picture: Option<String>,
+    /// Invited, not joined yet.
+    #[serde(default)]
+    pub invited: bool,
 }
 
 /// UTF-16 offsets into the message text, as LINE's `MENTION` metadata uses.

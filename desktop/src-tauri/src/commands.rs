@@ -1429,6 +1429,69 @@ pub async fn leave_group(state: S<'_>, chat_id: String) -> R<()> {
     Ok(())
 }
 
+#[tauri::command]
+pub async fn accept_invitation(state: S<'_>, chat_id: String) -> R<()> {
+    let s = live!(state);
+    crate::actions::accept_invitation(&s, &chat_id)
+        .await
+        .map_err(|e| format!("เข้ากลุ่มไม่สำเร็จ: {e}"))
+}
+
+#[tauri::command]
+pub async fn reject_invitation(state: S<'_>, chat_id: String) -> R<()> {
+    let s = live!(state);
+    crate::actions::reject_invitation(&s, &chat_id)
+        .await
+        .map_err(|e| format!("ปฏิเสธคำเชิญไม่สำเร็จ: {e}"))
+}
+
+#[tauri::command]
+pub async fn create_group(state: S<'_>, name: String, mids: Vec<String>) -> R<String> {
+    let s = live!(state);
+    crate::actions::create_group(&s, &name, &mids)
+        .await
+        .map_err(|e| format!("สร้างกลุ่มไม่สำเร็จ: {e}"))
+}
+
+#[tauri::command]
+pub async fn invite_members(state: S<'_>, chat_id: String, mids: Vec<String>) -> R<()> {
+    let s = live!(state);
+    crate::actions::invite_members(&s, &chat_id, &mids)
+        .await
+        .map_err(|e| format!("เชิญไม่สำเร็จ: {e}"))
+}
+
+#[tauri::command]
+pub async fn remove_member(state: S<'_>, chat_id: String, mid: String) -> R<()> {
+    let s = live!(state);
+    crate::actions::remove_member(&s, &chat_id, &mid)
+        .await
+        .map_err(|e| format!("ลบสมาชิกไม่สำเร็จ: {e}"))
+}
+
+#[tauri::command]
+pub async fn cancel_invitation(state: S<'_>, chat_id: String, mids: Vec<String>) -> R<()> {
+    let s = live!(state);
+    crate::actions::cancel_invitation(&s, &chat_id, &mids)
+        .await
+        .map_err(|e| format!("ยกเลิกคำเชิญไม่สำเร็จ: {e}"))
+}
+
+#[tauri::command]
+pub async fn rename_group(state: S<'_>, chat_id: String, name: String) -> R<()> {
+    let s = live!(state);
+    crate::actions::rename_group(&s, &chat_id, &name)
+        .await
+        .map_err(|e| format!("เปลี่ยนชื่อกลุ่มไม่สำเร็จ: {e}"))
+}
+
+/// People invited to a group who have not joined yet (load `members`
+/// first).
+#[tauri::command]
+pub fn invitees(state: S<'_>, chat_id: String) -> R<Vec<ChatMember>> {
+    state.store().invitees(&chat_id).map_err(err)
+}
+
 /// Photos & videos (`media`), files (`files`) or links (`links`) of a chat.
 #[tauri::command]
 pub fn chat_media(state: S<'_>, chat_id: String, kind: String) -> R<Vec<Message>> {
