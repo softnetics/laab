@@ -269,6 +269,13 @@ impl Store {
         Ok(())
     }
 
+    /// Undo [`hide_chat`](Self::hide_chat).
+    pub fn unhide_chat(&self, chat_id: &str) -> Result<()> {
+        self.db
+            .execute("UPDATE chats SET hidden_at=NULL WHERE id=?", [chat_id])?;
+        Ok(())
+    }
+
     /// Remove one message from this device only (LINE's "ลบ").
     pub fn delete_message(&self, message_id: &str) -> Result<Option<String>> {
         let chat: Option<String> = self
@@ -1292,6 +1299,9 @@ mod tests {
         s.upsert_chats(&[c.clone()]).unwrap();
         s.hide_chat("u1").unwrap();
         assert!(s.chats().unwrap().is_empty());
+        s.unhide_chat("u1").unwrap();
+        assert_eq!(s.chats().unwrap().len(), 1);
+        s.hide_chat("u1").unwrap();
         c.last_activity = 11.0;
         s.upsert_chats(&[c]).unwrap();
         assert_eq!(s.chats().unwrap().len(), 1);

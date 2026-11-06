@@ -629,6 +629,36 @@ async fn handle_event(state: &Arc<AppState>, line: &Arc<Line>, ev: LineEvent) {
             | TalkEvent::Kick { chat_mid, .. } => {
                 state.members_loaded.lock().unwrap().remove(&chat_mid);
             }
+            // We left a group, here or on another device: it leaves the
+            // list, as in LINE, until a new message brings it back.
+            TalkEvent::LeftChat { chat_mid } => {
+                state.members_loaded.lock().unwrap().remove(&chat_mid);
+                logged("hiding a chat we left", state.store().hide_chat(&chat_mid));
+                state.chats_changed();
+            }
+            TalkEvent::ChatHidden { chat_mid, hidden, .. } => {
+                let store = state.store();
+                logged(
+                    "hiding a chat",
+                    if hidden { store.hide_chat(&chat_mid) } else { store.unhide_chat(&chat_mid) },
+                );
+                drop(store);
+                state.chats_changed();
+            }
+            // The chat's history was deleted (`sendChatRemoved`, what
+            // "ลบประวัติแชท" sends), here or on another device.
+            TalkEvent::ChatRemoved { chat_mid, .. } => clear_history(state, &chat_mid),
+            // line-rs passes the params through without naming them. Only
+            // act when param1 names a chat we have, so an op we read wrong
+            // can't wipe every chat.
+            TalkEvent::AllMessagesRemoved { param1, .. } => {
+                if state.store().chat(&param1).ok().flatten().is_some() {
+                    clear_history(state, &param1);
+                } else {
+                    tracing::info!("REMOVE_ALL_MESSAGES without a known chat, ignored");
+                }
+            }
+            TalkEvent::ChatUpdated { chat_mid, .. } => refresh_chat_row(state, line, &chat_mid).await,
             _ => {}
         },
         LineEvent::Event(op) => {
@@ -819,6 +849,50 @@ async fn new_chat_row(state: &Arc<AppState>, line: &Arc<Line>, chat_id: &str) ->
         chat.kind = if c.bot { "bot".into() } else { "dm".into() };
     }
     chat
+}
+
+/// Delete a chat's history on this Mac, after it was deleted on LINE.
+fn clear_history(state: &AppState, chat_id: &str) {
+    logged("clearing a chat's history", state.store().delete_history(chat_id));
+    state.messages_changed(chat_id);
+    state.chats_changed();
+}
+
+/// Fetch a chat's name, picture and mute again after LINE says it changed.
+async fn refresh_chat_row(state: &Arc<AppState>, line: &Arc<Line>, chat_id: &str) {
+    let Some(mut chat) = state.store().chat(chat_id).ok().flatten() else {
+        return;
+    };
+    if chat_id.starts_with('c') || chat_id.starts_with('r') {
+        match line.client.get_chat(chat_id).await {
+            Ok(c) => {
+                let json = c.raw.to_json();
+                apply_group(&mut chat, &json);
+                if let Some(m) = json["notificationDisabled"].as_bool() {
+                    chat.muted = m;
+                }
+            }
+            Err(e) => {
+                tracing::warn!("reloading an updated chat: {}", e.full_message());
+                return;
+            }
+        }
+    } else {
+        let contacts = line.client.base.talk().get_contacts(&[chat_id.to_string()]).await;
+        let Some(c) = contacts
+            .ok()
+            .and_then(|c| contacts_from(&c.to_json()).into_iter().next())
+        else {
+            return;
+        };
+        chat.name = c.name;
+        chat.picture = c.picture.or(chat.picture);
+        if let Some(m) = c.muted {
+            chat.muted = m;
+        }
+    }
+    logged("saving an updated chat", state.store().upsert_chats(&[chat]));
+    state.chats_changed();
 }
 
 fn kind_for(mid: &str, bot: bool) -> String {
