@@ -176,16 +176,16 @@ fn forward_request(to: &str, content_type: &str, raw: &Value, payload: &Json) ->
     })
 }
 
-/// Send a stored E2EE media message to Keep by having LINE copy its
+/// Send a stored E2EE media message to `to` by having LINE copy its
 /// encrypted object (`copy.obs`), as LINE's app forwards, so nothing is
 /// downloaded or uploaded again.
-async fn keep_by_copy(state: &AppState, l: &Line, message_id: &str, content_type: &str) -> Result<()> {
+async fn forward_by_copy(state: &AppState, l: &Line, message_id: &str, content_type: &str, to: &str) -> Result<()> {
     let raw = line::stored_raw(state, message_id).ok_or_else(|| anyhow!("no stored message"))?;
     if raw["chunks"].as_list().is_none_or(|c| c.is_empty()) {
         bail!("not an E2EE message");
     }
     let payload = l.client.base.decrypt_e2ee_data_message(&raw).await?;
-    let request = forward_request(&l.me, content_type, &raw, &payload)
+    let request = forward_request(to, content_type, &raw, &payload)
         .ok_or_else(|| anyhow!("nothing to copy"))?;
     l.client.base.obs().forward_media(request).await?;
     Ok(())
@@ -211,21 +211,56 @@ fn translate_client(l: &Line) -> Arc<line_rs::rest::RestClient> {
 /// again.
 pub async fn save_to_keep(state: &Arc<AppState>, chat_id: &str, message_id: &str) -> Result<()> {
     let l = line(state).await?;
+    let me = l.me.clone();
+    drop(l);
+    let kind = state
+        .store()
+        .message(message_id)?
+        .map(|m| m.content_type)
+        .unwrap_or_default();
+    if kind == "STICKER" {
+        bail!("ยังบันทึกสติกเกอร์ลง Keep ไม่ได้");
+    }
+    send_copy(state, chat_id, message_id, &me).await
+}
+
+/// Forward a message to the chats `to`, as LINE's "แชร์" does. Returns
+/// each chat it couldn't reach, with why.
+pub async fn forward(state: &Arc<AppState>, chat_id: &str, message_id: &str, to: &[String]) -> Vec<(String, String)> {
+    let mut failed = Vec::new();
+    for target in to {
+        match send_copy(state, chat_id, message_id, target).await {
+            Ok(()) => {
+                let _ = line::fetch_history(state, target).await;
+            }
+            Err(e) => failed.push((target.clone(), e.to_string())),
+        }
+    }
+    failed
+}
+
+/// Send a copy of a stored message to `to`: text without its mentions
+/// (they name people of another chat), a sticker, a contact card, or
+/// media copied on LINE's side (`copy.obs`) and, when that fails, sent
+/// again from the file.
+async fn send_copy(state: &Arc<AppState>, chat_id: &str, message_id: &str, to: &str) -> Result<()> {
+    use line_rs::client::MessageInput;
+    let l = line(state).await?;
     let m = state
         .store()
         .message(message_id)?
         .ok_or_else(|| anyhow!("message_not_found"))?;
+    let chat = l.chat(to);
     match m.content_type.as_str() {
         kind @ ("IMAGE" | "VIDEO" | "AUDIO" | "FILE") => {
-            match keep_by_copy(state, &l, message_id, kind).await {
+            match forward_by_copy(state, &l, message_id, kind, to).await {
                 Ok(()) => return Ok(()),
-                Err(e) => tracing::info!("copy to Keep failed, sending the file again: {e}"),
+                Err(e) => tracing::info!("copy.obs failed, sending the file again: {e}"),
             }
             let path = crate::media::download_file(state, chat_id, message_id, m.file_name.clone())
                 .await?;
             let data = crate::vault::read(&path)?;
             let name = m.file_name.clone().unwrap_or_else(|| "file".into());
-            let chat = l.chat(&l.me);
             let duration = m.duration_ms.and_then(|d| u64::try_from(d).ok());
             let sent = match kind {
                 "IMAGE" => chat.send_image(data, Some(&name)).await,
@@ -235,15 +270,63 @@ pub async fn save_to_keep(state: &Arc<AppState>, chat_id: &str, message_id: &str
             };
             sent.map_err(|e| anyhow!("{e}"))?;
         }
-        "STICKER" => bail!("ยังบันทึกสติกเกอร์ลง Keep ไม่ได้"),
-        _ if !m.text.trim().is_empty() => {
-            l.client
-                .send_message(&l.me, line_rs::client::MessageInput::text(m.text.clone()))
-                .await?;
+        "STICKER" => {
+            let input = sticker_copy(&m).ok_or_else(|| anyhow!("ข้อความนี้ไม่มีสติกเกอร์ให้ส่งต่อ"))?;
+            l.client.send_message(to, input).await.map_err(refused_sticker)?;
         }
-        _ => bail!("ข้อความนี้ไม่มีเนื้อหาให้บันทึก"),
+        "CONTACT" => {
+            let mid = m.metadata.get("mid").filter(|v| !v.is_empty()).ok_or_else(|| anyhow!("ไม่มีรายชื่อให้ส่งต่อ"))?;
+            let name = m.metadata.get("displayName").cloned().unwrap_or_default();
+            chat.send_contact(mid, &name).await?;
+        }
+        _ if !m.text.trim().is_empty() => {
+            l.client.send_message(to, MessageInput::text(m.text.clone())).await?;
+        }
+        _ => bail!("ข้อความนี้ไม่มีเนื้อหาให้ส่งต่อ"),
     }
     Ok(())
+}
+
+/// A sticker message to send again: package, sticker, version and the
+/// option (animation, sound) recipients play it with.
+fn sticker_copy(m: &crate::model::Message) -> Option<line_rs::client::MessageInput> {
+    let id = m.sticker_id.as_deref().filter(|v| !v.is_empty())?;
+    let package = m.sticker_package.as_deref().filter(|v| !v.is_empty())?;
+    let version = m.sticker_version.as_deref().unwrap_or("1");
+    let mut input = line_rs::client::MessageInput::sticker(package, id, version).e2ee(false);
+    if let Some(opt) = m.metadata.get("STKOPT").filter(|v| !v.is_empty()) {
+        input = input.sticker_options(opt.clone());
+    }
+    Some(input)
+}
+
+fn refused_sticker(e: line_rs::Error) -> anyhow::Error {
+    if e.error_code() == Some(line_rs::ErrorCode::UserNotStickerOwner) {
+        anyhow!("สติกเกอร์นี้ไม่ได้อยู่ในบัญชีของคุณ จึงส่งต่อไม่ได้")
+    } else {
+        anyhow!("{e}")
+    }
+}
+
+/// Share someone's contact card with the chats `to`. Returns each chat it
+/// couldn't reach, with why.
+pub async fn share_contact(state: &Arc<AppState>, mid: &str, name: &str, to: &[String]) -> Vec<(String, String)> {
+    let mut failed = Vec::new();
+    for target in to {
+        let sent = async {
+            let l = line(state).await?;
+            l.chat(target).send_contact(mid, name).await?;
+            anyhow::Ok(())
+        }
+        .await;
+        match sent {
+            Ok(()) => {
+                let _ = line::fetch_history(state, target).await;
+            }
+            Err(e) => failed.push((target.clone(), e.to_string())),
+        }
+    }
+    failed
 }
 
 // -- chats ------------------------------------------------------------------

@@ -20,6 +20,7 @@ mod media;
 mod model;
 mod notify;
 mod paths;
+mod preview;
 mod probe;
 mod reads;
 mod report;
@@ -29,6 +30,7 @@ mod session;
 mod state;
 mod stickers;
 mod store;
+mod stream;
 mod traffic_lights;
 mod usage;
 mod vault;
@@ -253,6 +255,7 @@ pub fn run() {
             commands::new_req_seq,
             commands::send_sticker,
             commands::stickers,
+            commands::sticker_pack,
             commands::send_files,
             commands::download,
             commands::react,
@@ -337,6 +340,10 @@ pub fn run() {
             commands::chat_media,
             commands::save_text,
             commands::save_attachment,
+            commands::attachment_name,
+            commands::link_preview,
+            commands::forward_message,
+            commands::share_contact,
             commands::open_aux_window,
             commands::open_viewer,
             commands::viewer_payload,

@@ -20,6 +20,7 @@ import type {
   ContactProfile,
   Draft,
   Friend,
+  LinkPreview,
   MentionSpan,
   Message,
   NoteDetail,
@@ -76,12 +77,23 @@ export const api = {
   reloadChat: (chatId: string) => invoke<void>("reload_chat", { chatId }),
   /** A reqSeq for one message, sent again with each retry of it. */
   newReqSeq: () => invoke<number>("new_req_seq"),
-  sendText: (chatId: string, text: string, mentions: MentionSpan[], replyTo: string | null = null, reqSeq: number | null = null) =>
-    sent(invoke<Message>("send_text", { chatId, text, mentions, replyTo, reqSeq })),
-  sendSticker: (chatId: string, sticker: Sticker) => sent(invoke<void>("send_sticker", { chatId, sticker })),
+  sendText: (
+    chatId: string,
+    text: string,
+    mentions: MentionSpan[],
+    replyTo: string | null = null,
+    reqSeq: number | null = null,
+    silent = false,
+  ) => sent(invoke<Message>("send_text", { chatId, text, mentions, replyTo, reqSeq, silent })),
+  /** `silent`: without a notification on the others' devices. */
+  sendSticker: (chatId: string, sticker: Sticker, silent = false) => sent(invoke<void>("send_sticker", { chatId, sticker, silent })),
+  /** The recent stickers and every owned package, without their stickers. */
   stickers: () => invoke<StickerPack[]>("stickers"),
+  /** One package with all its stickers. */
+  stickerPack: (id: string, name: string, version: string | null) => invoke<StickerPack>("sticker_pack", { id, name, version }),
   /** Sends each file, going on past failures; resolves to the ones that failed. */
-  sendFiles: (chatId: string, paths: string[]) => sent(invoke<{ path: string; error: string }[]>("send_files", { chatId, paths })),
+  sendFiles: (chatId: string, paths: string[], silent = false) =>
+    sent(invoke<{ path: string; error: string }[]>("send_files", { chatId, paths, silent })),
   download: (chatId: string, messageId: string, fileName: string | null) => invoke<string>("download", { chatId, messageId, fileName }),
   react: (chatId: string, messageId: string, reaction: ReactionName | null) => invoke<void>("react", { chatId, messageId, reaction }),
   setMuted: (chatId: string, muted: boolean) => invoke<void>("set_muted", { chatId, muted }),
@@ -179,6 +191,16 @@ export const api = {
   invitees: (chatId: string) => invoke<ChatMember[]>("invitees", { chatId }),
   chatMedia: (chatId: string, kind: "media" | "files" | "links") => invoke<Message[]>("chat_media", { chatId, kind }),
   saveText: (path: string, text: string) => invoke<void>("save_text", { path, text }),
+  /** Send a copy of a message to chats; resolves to the ones that failed. */
+  forwardMessage: (chatId: string, messageId: string, to: string[]) =>
+    sent(invoke<{ chatId: string; error: string }[]>("forward_message", { chatId, messageId, to })),
+  /** Send someone's contact card to chats; resolves to the ones that failed. */
+  shareContact: (mid: string, name: string | null, to: string[]) =>
+    sent(invoke<{ chatId: string; error: string }[]>("share_contact", { mid, name, to })),
+  /** A link's preview card from LINE's preview service, or null. */
+  linkPreview: (url: string) => invoke<LinkPreview | null>("link_preview", { url }),
+  /** The name to offer when saving an attachment, with the extension of what it really is. */
+  attachmentName: (chatId: string, messageId: string) => invoke<string>("attachment_name", { chatId, messageId }),
   saveAttachment: (chatId: string, messageId: string, dest: string | null = null) =>
     invoke<string>("save_attachment", { chatId, messageId, dest }),
   /** LINE-style separate windows: `albums` (tab albums/notes), `media`
@@ -281,6 +303,9 @@ export const mediaUrl = {
   message: (chatId: string, id: string, preview = true) =>
     `${MEDIA}/message/${encodeURIComponent(chatId)}/${encodeURIComponent(id)}${preview ? "?preview=1" : ""}`,
   local: (path: string) => `${MEDIA}/local?path=${encodeURIComponent(path)}`,
+  /** A LINE emoji (sticon), with `anim` its animation. */
+  sticon: (productId: string, sticonId: string, version: number, anim = false) =>
+    `${MEDIA}/sticon/${encodeURIComponent(productId)}/${encodeURIComponent(sticonId)}?v=${version}${anim ? "&anim=1" : ""}`,
   sticker: (id: string, anim = true) => `${MEDIA}/sticker/${encodeURIComponent(id)}${anim ? "?anim=1" : ""}`,
   pack: (id: string) => `${MEDIA}/pack/${encodeURIComponent(id)}`,
   /** A profile cover photo (OBS `myhome/c`). */

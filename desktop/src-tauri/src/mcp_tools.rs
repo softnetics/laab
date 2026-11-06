@@ -142,13 +142,22 @@ fn defs() -> Vec<Def> {
             "text": s("The message."),
             "reply_to_message_id": s("Reply to this message."),
             "mention_ids": strings("Mids (or `all`) mentioned in the text as @Name (their name as list_members shows it)."),
+            "silent": b("Send without a notification on the others' devices."),
         }), &["chat_id", "text"], false, false),
         d("send_sticker", Send, "Send a sticker", "Send a sticker the user owns (from list_stickers).", json!({
             "chat_id": s(CHAT), "package_id": s("Package id."), "sticker_id": s("Sticker id."), "version": s("Package version, if listed."),
+            "silent": b("Send without a notification on the others' devices."),
         }), &["chat_id", "package_id", "sticker_id"], false, false),
         d("send_files", Send, "Send files", "Send files from this Mac. Photos and videos are sent as such, anything else as a file.", json!({
             "chat_id": s(CHAT), "paths": strings("Absolute paths of the files."),
+            "silent": b("Send without a notification on the others' devices."),
         }), &["chat_id", "paths"], false, false),
+        d("forward_message", Send, "Forward a message", "Send a copy of a message (text, sticker, photo, video, file or contact) to another chat, as LINE's share does.", json!({
+            "message_id": s(MSG), "to_chat_id": s("The chat to send it to."),
+        }), &["message_id", "to_chat_id"], false, false),
+        d("share_contact", Send, "Share a contact", "Send someone's contact card to a chat.", json!({
+            "mid": s("The person's (or official account's) mid."), "to_chat_id": s("The chat to send it to."),
+        }), &["mid", "to_chat_id"], false, false),
         d("react", Send, "React", "Set or remove the user's reaction on a message.", json!({
             "message_id": s(MSG),
             "reaction": { "type": ["string", "null"], "enum": ["NICE", "LOVE", "FUN", "AMAZING", "SAD", "OMG", null], "description": "The reaction, or null to remove it." },
@@ -1046,14 +1055,17 @@ async fn run(ctx: &Ctx, name: &str, args: &Value, trace: &mut Trace) -> R<Vec<Va
         "list_stickers" => {
             any_read(&settings, trace, "ดูสติกเกอร์")?;
             let packs = commands::stickers(st()).await?;
-            let out: Vec<Value> = packs
-                .into_iter()
-                .take(limit(args, 20, 200))
-                .map(|p| {
-                    let ids: Vec<&String> = p.stickers.iter().map(|s| &s.sticker_id).collect();
-                    json!({ "packageId": p.id, "name": p.name, "version": p.version, "recent": p.recent, "stickerIds": ids })
-                })
-                .collect();
+            let mut out: Vec<Value> = Vec::new();
+            for mut p in packs.into_iter().take(limit(args, 20, 200)) {
+                // Packages come without their stickers; load the ones listed.
+                if p.stickers.is_empty()
+                    && let Ok(full) = commands::sticker_pack(p.id.clone(), p.name.clone(), p.version.clone()).await
+                {
+                    p.stickers = full.stickers;
+                }
+                let ids: Vec<&String> = p.stickers.iter().map(|s| &s.sticker_id).collect();
+                out.push(json!({ "packageId": p.id, "name": p.name, "version": p.version, "recent": p.recent, "stickerIds": ids }));
+            }
             Ok(text(json!({ "packs": out })))
         }
         "translate" => {
@@ -1114,7 +1126,8 @@ async fn run(ctx: &Ctx, name: &str, args: &Value, trace: &mut Trace) -> R<Vec<Va
             let mentions = mention_spans(&t, &ids, &names)?.into_iter().map(|(s, _)| s).collect();
             gate(ctx, trace, Send, &[dir.scope(&chat)], format!("ส่งข้อความถึง {}:\n\n{}", dir.quoted(&chat), t)).await?;
             trace.what = format!("ส่งข้อความถึง {}: {}", dir.quoted(&chat), clip(&t, 80));
-            let m = commands::send_text(st(), chat, t, mentions, reply, None).await?;
+            let silent = opt_bool(args, "silent");
+            let m = commands::send_text(st(), chat, t, mentions, reply, None, silent).await?;
             Ok(text(json!({ "ok": true, "messageId": m.id, "time": time(m.created_time) })))
         }
         "send_sticker" => {
@@ -1125,7 +1138,7 @@ async fn run(ctx: &Ctx, name: &str, args: &Value, trace: &mut Trace) -> R<Vec<Va
                 version: opt_str(args, "version"),
             };
             gate(ctx, trace, Send, &[dir.scope(&chat)], format!("ส่งสติกเกอร์ถึง {}", dir.quoted(&chat))).await?;
-            commands::send_sticker(st(), chat, sticker).await?;
+            commands::send_sticker(st(), chat, sticker, opt_bool(args, "silent")).await?;
             done("sticker sent")
         }
         "send_files" => {
@@ -1134,7 +1147,7 @@ async fn run(ctx: &Ctx, name: &str, args: &Value, trace: &mut Trace) -> R<Vec<Va
             check_files(&paths)?;
             gate(ctx, trace, Send, &[dir.scope(&chat)], format!("ส่งไฟล์ถึง {}:\n\n{}", dir.quoted(&chat), paths.join("\n"))).await?;
             trace.what = format!("ส่ง {} ถึง {}", file_names(&paths), dir.quoted(&chat));
-            let failed = commands::send_files(st(), chat, paths.clone()).await?;
+            let failed = commands::send_files(st(), chat, paths.clone(), opt_bool(args, "silent")).await?;
             if !failed.is_empty() {
                 let errors: Vec<String> = failed.into_iter().map(|f| f.error).collect();
                 return Err(format!(
@@ -1145,6 +1158,30 @@ async fn run(ctx: &Ctx, name: &str, args: &Value, trace: &mut Trace) -> R<Vec<Va
                 ));
             }
             done("files sent")
+        }
+        "forward_message" => {
+            let id = arg_str(args, "message_id")?;
+            let to = arg_str(args, "to_chat_id")?;
+            let (m, scope) = message(state, &dir, &id)?;
+            // Forwarding reads the message: never a way out of a chat the
+            // client may not read.
+            gate(ctx, trace, Read, &[scope], format!("อ่านข้อความใน {} เพื่อส่งต่อ", dir.quoted(&m.chat_id))).await?;
+            gate(ctx, trace, Send, &[dir.scope(&to)], format!("ส่งต่อข้อความจาก {} ถึง {}", dir.quoted(&m.chat_id), dir.quoted(&to))).await?;
+            let failed = commands::forward_message(st(), m.chat_id.clone(), id, vec![to]).await?;
+            match failed.into_iter().next() {
+                Some(f) => Err(f.error),
+                None => done("forwarded"),
+            }
+        }
+        "share_contact" => {
+            let mid = arg_str(args, "mid")?;
+            let to = arg_str(args, "to_chat_id")?;
+            gate(ctx, trace, Send, &[dir.scope(&to)], format!("ส่งรายชื่อ {} ถึง {}", dir.quoted(&mid), dir.quoted(&to))).await?;
+            let failed = commands::share_contact(st(), mid, None, vec![to]).await?;
+            match failed.into_iter().next() {
+                Some(f) => Err(f.error),
+                None => done("contact shared"),
+            }
         }
         "react" => {
             let id = arg_str(args, "message_id")?;

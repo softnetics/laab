@@ -8,6 +8,7 @@
 //!   /message/<chatId>/<messageId>?preview=1
 //!   /sticker/<stickerId>?anim=1
 //!   /pack/<packageId>
+//!   /sticon/<productId>/<sticonId>?v=<version>&anim=1
 //!   /album/<chatId>/<albumId>/<oid>?video=1
 //!   /cover/<service/namespace/oid, as one segment>
 //!   /note/<service>/<namespace>/<oid>
@@ -108,7 +109,7 @@ pub fn sniff_mime(data: &[u8], path: &Path) -> &'static str {
     }
 }
 
-fn respond(status: StatusCode, body: Vec<u8>, mime: &str) -> Response<Vec<u8>> {
+pub(crate) fn respond(status: StatusCode, body: Vec<u8>, mime: &str) -> Response<Vec<u8>> {
     Response::builder()
         .status(status)
         .header(header::CONTENT_TYPE, mime)
@@ -139,7 +140,7 @@ pub fn byte_range(header: &str, len: u64) -> Option<(u64, u64)> {
     (start <= end && end < len).then_some((start, end))
 }
 
-fn file_response(path: &Path, range: Option<&str>) -> Option<Response<Vec<u8>>> {
+pub(crate) fn file_response(path: &Path, range: Option<&str>) -> Option<Response<Vec<u8>>> {
     let mut file = crate::vault::CacheFile::open(path)
         .inspect_err(|e| tracing::warn!("{e:#}"))
         .ok()?;
@@ -174,6 +175,17 @@ pub async fn handle(state: Arc<AppState>, req: Request<Vec<u8>>) -> Response<Vec
         .split('/')
         .map(decode)
         .collect();
+    let range = req
+        .headers()
+        .get(header::RANGE)
+        .and_then(|v| v.to_str().ok());
+    if let [kind, chat, id] = parts.as_slice()
+        && kind == "message"
+        && query(&req, "preview").is_none()
+        && let Some(res) = stream_video(&state, chat, id, range).await
+    {
+        return res;
+    }
     let result = match parts
         .iter()
         .map(String::as_str)
@@ -186,6 +198,10 @@ pub async fn handle(state: Arc<AppState>, req: Request<Vec<u8>>) -> Response<Vec
         }
         ["sticker", id] => sticker(&state, id, query(&req, "anim").is_some()).await,
         ["pack", id] => pack_icon(&state, id).await,
+        ["sticon", product, id] => {
+            let version = query(&req, "v").and_then(|v| v.parse().ok()).unwrap_or(1);
+            sticon(&state, product, id, version, query(&req, "anim").is_some()).await
+        }
         ["album", chat, album, oid] => {
             let video = query(&req, "video").is_some();
             crate::actions::album_photo_file(&state, chat, album, oid, video).await
@@ -205,10 +221,6 @@ pub async fn handle(state: Arc<AppState>, req: Request<Vec<u8>>) -> Response<Vec
         }
         _ => Err(anyhow!("unknown media path")),
     };
-    let range = req
-        .headers()
-        .get(header::RANGE)
-        .and_then(|v| v.to_str().ok());
     match result.ok().and_then(|p| file_response(&p, range)) {
         Some(r) => r,
         None => respond(StatusCode::NOT_FOUND, Vec::new(), "text/plain"),
@@ -241,6 +253,17 @@ fn save_plain(path: &Path, data: &[u8]) -> Result<PathBuf> {
 
 /// The extension for a file that starts with `head`.
 pub fn extension_of(head: &[u8]) -> &'static str {
+    // An ISO media file names what it is in its `ftyp` brand.
+    if let [_, _, _, _, b'f', b't', b'y', b'p', brand @ ..] = head
+        && brand.len() >= 4
+    {
+        match &brand[..4] {
+            b"heic" | b"heix" | b"mif1" | b"msf1" => return "heic",
+            b"qt  " => return "mov",
+            b"M4A " => return "m4a",
+            _ => {}
+        }
+    }
     match sniff_mime(head, Path::new("")) {
         "image/png" => "png",
         "image/jpeg" => "jpg",
@@ -453,6 +476,35 @@ async fn message_media(
     Ok(saved)
 }
 
+/// A video message that isn't cached yet plays while it downloads (see
+/// `stream.rs`). `None` for anything else.
+async fn stream_video(
+    state: &Arc<AppState>,
+    chat: &str,
+    id: &str,
+    range: Option<&str>,
+) -> Option<Response<Vec<u8>>> {
+    if state.demo || cached_media(&state.paths.media(), id, false).is_some() {
+        return None;
+    }
+    let message = state.store().message(id).ok().flatten()?;
+    if message.content_type != "VIDEO" {
+        return None;
+    }
+    let line = state.line().await?;
+    let not_found = || respond(StatusCode::NOT_FOUND, Vec::new(), "text/plain");
+    if let Err(e) = crate::line::ensure_media_message(state, &line, chat, id).await {
+        tracing::debug!("video {id}: {e:#}");
+        return Some(not_found());
+    }
+    let target = state.paths.media().join(format!("{}.full", safe_name(id)));
+    Some(
+        crate::stream::serve(state, &line, id, &target, range)
+            .await
+            .unwrap_or_else(not_found),
+    )
+}
+
 async fn sticker(state: &AppState, id: &str, anim: bool) -> Result<PathBuf> {
     let dir = state.paths.stickers();
     let id = safe_name(id);
@@ -492,6 +544,40 @@ async fn sticker(state: &AppState, id: &str, anim: bool) -> Result<PathBuf> {
         }
     }
     Err(anyhow!("sticker unavailable"))
+}
+
+/// Where a LINE emoji's picture is on the sticker CDN: LINE for Android's
+/// `sticonshop/v1/<product>/sticon/android/<id>[_animation].png?v=<version>`
+/// (`ev5/m.java`), then the order line-rs and older clients use (which of
+/// the two the CDN serves is unverified).
+fn sticon_urls(product: &str, id: &str, version: u64, anim: bool) -> [String; 2] {
+    let file = if anim { format!("{id}_animation.png") } else { format!("{id}.png") };
+    [
+        format!("https://stickershop.line-scdn.net/sticonshop/v1/{product}/sticon/android/{file}?v={version}"),
+        format!("https://stickershop.line-scdn.net/sticonshop/v1/sticon/{product}/android/{file}"),
+    ]
+}
+
+/// A LINE emoji's picture; public like stickers, so it stays plain.
+async fn sticon(state: &AppState, product: &str, id: &str, version: u64, anim: bool) -> Result<PathBuf> {
+    let (product, id) = (safe_name(product), safe_name(id));
+    let suffix = if anim { ".anim" } else { "" };
+    let path = state
+        .paths
+        .stickers()
+        .join(format!("sticon-{product}-{id}-{version}{suffix}.png"));
+    if path.exists() {
+        return Ok(path);
+    }
+    if state.demo {
+        return Err(anyhow!("demo"));
+    }
+    for url in sticon_urls(&product, &id, version, anim) {
+        if let Ok(data) = fetch(&url).await {
+            return save_plain(&path, &data);
+        }
+    }
+    Err(anyhow!("sticon unavailable"))
 }
 
 async fn pack_icon(state: &AppState, id: &str) -> Result<PathBuf> {
@@ -634,6 +720,17 @@ mod tests {
     }
 
     #[test]
+    fn sticon_pictures_follow_the_apps_path_first() {
+        let [app, old] = sticon_urls("5ac1", "001", 3, true);
+        assert_eq!(
+            app,
+            "https://stickershop.line-scdn.net/sticonshop/v1/5ac1/sticon/android/001_animation.png?v=3"
+        );
+        assert_eq!(old, "https://stickershop.line-scdn.net/sticonshop/v1/sticon/5ac1/android/001_animation.png");
+        assert!(sticon_urls("5ac1", "001", 1, false)[0].ends_with("/001.png?v=1"));
+    }
+
+    #[test]
     fn saved_names_keep_their_extension() {
         assert_eq!(clean_file_name("report v2.pdf"), "report v2.pdf");
         assert_eq!(clean_file_name("a/b:c.tar.gz"), "a_b_c.tar.gz");
@@ -646,6 +743,17 @@ mod tests {
         assert_eq!(save_name(Some("notes.txt"), "7", &full), "notes.txt");
         std::fs::write(&full, b"\0\0\0\x18ftypmp42").unwrap();
         assert_eq!(save_name(None, "7", &full), "LINE_7.mp4");
+        for (head, ext) in [
+            (&b"GIF89a\x01\0"[..], "gif"),
+            (b"\xff\xd8\xff\xe0", "jpg"),
+            (b"RIFF\0\0\0\0WEBPVP8 ", "webp"),
+            (b"\0\0\0\x18ftypheic\0\0", "heic"),
+            (b"\0\0\0\x14ftypqt  \0\0", "mov"),
+            (b"\0\0\0\x20ftypM4A \0\0", "m4a"),
+        ] {
+            std::fs::write(&full, head).unwrap();
+            assert_eq!(save_name(None, "7", &full), format!("LINE_7.{ext}"));
+        }
     }
 
     #[test]

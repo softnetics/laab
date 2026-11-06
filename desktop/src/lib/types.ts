@@ -39,7 +39,9 @@ export interface Reaction {
   reaction: ReactionName;
 }
 
-export type ReactionName = "NICE" | "LOVE" | "FUN" | "AMAZING" | "SAD" | "OMG" | "PAID";
+/** A paid reaction (a LINE emoji) is `PAID:<productId>:<emojiId>:<version>:<1|0 animated>`,
+ *  or plain `PAID` when its emoji is unknown. */
+export type ReactionName = "NICE" | "LOVE" | "FUN" | "AMAZING" | "SAD" | "OMG" | "PAID" | `PAID:${string}`;
 
 export interface Message {
   id: string;
@@ -129,6 +131,18 @@ export interface Sticker {
   stickerId: string;
   packageId: string;
   version: string | null;
+}
+
+/** A link's preview card (LINE's preview service). */
+export interface LinkPreview {
+  url: string;
+  title: string;
+  summary: string;
+  domain: string;
+  /** LINE's copy of the page's picture. */
+  image: string | null;
+  /** LINE refused the page: on its phishing or block list. */
+  warning: "phishing" | "blocked" | null;
 }
 
 export interface StickerPack {

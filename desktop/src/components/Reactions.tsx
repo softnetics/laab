@@ -1,9 +1,27 @@
 import { useState } from "react";
-import { REACTIONS, emojiFor, topTypes } from "../lib/reactions";
+import { mediaUrl } from "../lib/api";
+import { REACTIONS, emojiFor, paidEmoji, topTypes } from "../lib/reactions";
 import type { Reaction, ReactionName } from "../lib/types";
 import { Avatar } from "./Avatar";
 import { SmileIcon } from "./Icons";
 import { Popover } from "./Popover";
+
+/** A reaction's emoji; a paid one's LINE emoji as a picture. */
+function Glyph({ reaction, size }: { reaction: ReactionName; size: number }) {
+  const paid = paidEmoji(reaction);
+  if (!paid) return <>{emojiFor(reaction)}</>;
+  const still = mediaUrl.sticon(paid.productId, paid.emojiId, paid.version);
+  return (
+    <img
+      src={mediaUrl.sticon(paid.productId, paid.emojiId, paid.version, paid.animated)}
+      onError={(e) => e.currentTarget.src !== still && (e.currentTarget.src = still)}
+      style={{ width: size, height: size }}
+      className="object-contain"
+      draggable={false}
+      alt=""
+    />
+  );
+}
 
 /** The hover button that opens the six reactions. */
 export function ReactButton({
@@ -86,7 +104,7 @@ export function ReactionBadge({
                 key={t}
                 className={`grid h-[22px] w-[22px] place-items-center rounded-full bg-white text-[13px] ring-[1.5px] ring-chat ${i ? "-ml-1.5" : ""}`}
               >
-                {emojiFor(t)}
+                <Glyph reaction={t} size={15} />
               </span>
             ))}
           </span>
@@ -100,7 +118,9 @@ export function ReactionBadge({
           <div key={r.userId} className="flex items-center gap-2.5 px-3.5 py-[5px]">
             <Avatar id={r.userId} name={name(r.userId)} picture={picture(r.userId)} size={28} />
             <span className="flex-1 truncate text-[13px]">{r.userId === me ? "คุณ" : name(r.userId)}</span>
-            <span className="text-[16px]">{emojiFor(r.reaction)}</span>
+            <span className="text-[16px]">
+              <Glyph reaction={r.reaction} size={20} />
+            </span>
           </div>
         ))}
       </div>

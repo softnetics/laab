@@ -17,3 +17,4 @@ login=Sign-in
 update=Updates
 report=Report a problem
 stats=Usage statistics
+sticker=Stickers

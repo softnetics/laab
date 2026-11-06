@@ -7,7 +7,7 @@ import { api, errorText, mediaUrl, q, queryClient } from "../lib/api";
 import { performFlexAction } from "../lib/flexActions";
 import { callBubbleLabel, isBlank, noticeFor, readCall } from "../lib/notices";
 import { nextReaction } from "../lib/reactions";
-import { isAnimated } from "../lib/media";
+import { isAnimated, sticons } from "../lib/media";
 import { clock } from "../lib/time";
 import { setTranslateTarget, translateLanguages, translateTarget } from "../lib/translate";
 import type { MentionSpan, Message, ReactionName } from "../lib/types";
@@ -22,6 +22,7 @@ import { Popover } from "./Popover";
 import { ReactButton, ReactionBadge } from "./Reactions";
 import { ReadMark, type Reader } from "./ReadMark";
 import { RichImage } from "./RichImage";
+import { LinkCard, previewUrl } from "./LinkCard";
 import { RichText } from "./RichText";
 
 export interface RowContext {
@@ -429,6 +430,8 @@ function Content({
         </Bubble>
       );
   }
+  // LINE's app previews the first web link of a text message.
+  const link = m.contentType === "NONE" && m.unsent === 0 ? previewUrl(m.text) : null;
   if (isBlank(m)) {
     return (
       <Bubble mine={m.mine} tail={tail}>
@@ -444,6 +447,7 @@ function Content({
       <RichText
         text={m.text || (m.contentType !== "NONE" ? m.contentType.toLowerCase() : "")}
         mentions={m.mentions}
+        sticons={m.contentType === "NONE" ? sticons(m.metadata, m.text.length) : undefined}
         mine={m.mine}
         highlight={highlight}
         current={current}
@@ -455,8 +459,16 @@ function Content({
         }
       />
       {mention && <MentionCard span={mention.span} ctx={ctx} anchor={mention.el} onClose={() => setMention(null)} />}
+      {link && <LinkCard url={link} chatId={ctx.chatId} mine={m.mine} />}
     </Bubble>
   );
+}
+
+/** Whether a message can be sent on: what the backend copies. */
+function copyable(m: Message) {
+  if (["IMAGE", "VIDEO", "AUDIO", "FILE", "STICKER"].includes(m.contentType)) return true;
+  if (m.contentType === "CONTACT") return !!m.metadata.mid;
+  return m.contentType === "NONE" && !!m.text.trim();
 }
 
 /** LINE for Mac's message menu, in its order. Items LAAB cannot do (แชร์)
@@ -528,6 +540,7 @@ function rowMenu(m: Message, dev: boolean, ctx?: RowContext) {
                 .then((t) => setUi({ translations: { ...ui.state.translations, [m.id]: t } }))
                 .catch((e) => notice(errorText(e))),
             )}
+          {copyable(m) && item("ส่งต่อ…", () => setUi({ forwarding: { kind: "message", chatId: ctx.chatId, message: m } }))}
           {item("ส่งไปยัง Keep Memo", () => run(api.saveToKeep(ctx.chatId, m.id), "ส่งไปยัง Keep Memo แล้ว"))}
           {ctx.group && text && item("บันทึกที่โน้ต", () => run(api.createNote(ctx.chatId, m.text), "บันทึกที่โน้ตแล้ว"))}
           {text && (

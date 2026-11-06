@@ -271,6 +271,7 @@ pub async fn send_text(
     mentions: Vec<MentionSpan>,
     reply_to: Option<String>,
     req_seq: Option<i64>,
+    silent: Option<bool>,
 ) -> R<Message> {
     let s = state.inner().clone();
     if s.demo {
@@ -290,6 +291,8 @@ pub async fn send_text(
     if let Some(seq) = req_seq {
         input = input.req_seq(seq);
     }
+    // Without a notification on the others' devices (`NOTIFICATION_DISABLED`).
+    input = input.silent(silent.unwrap_or(false));
     let sent = l
         .client
         .send_message(&chat_id, input)
@@ -318,7 +321,7 @@ pub async fn send_text(
 }
 
 #[tauri::command]
-pub async fn send_sticker(state: S<'_>, chat_id: String, sticker: Sticker) -> R<()> {
+pub async fn send_sticker(state: S<'_>, chat_id: String, sticker: Sticker, silent: Option<bool>) -> R<()> {
     let s = state.inner().clone();
     if s.demo {
         return Err("ต้องเข้าสู่ระบบ LINE ก่อนส่งสติกเกอร์".into());
@@ -326,7 +329,7 @@ pub async fn send_sticker(state: S<'_>, chat_id: String, sticker: Sticker) -> R<
     let l = s.line().await.ok_or("not_logged_in")?;
     let version = sticker.version.clone().unwrap_or_else(|| "1".into());
     let input =
-        MessageInput::sticker(&sticker.package_id, &sticker.sticker_id, &version).e2ee(false);
+        MessageInput::sticker(&sticker.package_id, &sticker.sticker_id, &version).e2ee(false).silent(silent.unwrap_or(false));
     let sent = l.client.send_message(&chat_id, input).await.map_err(|e| {
         let owned = e.error_code() != Some(line_rs::ErrorCode::UserNotStickerOwner);
         let text = send_failed(&s, crate::usage::Action::SentSticker, e);
@@ -355,6 +358,21 @@ pub async fn stickers(state: S<'_>) -> R<Vec<StickerPack>> {
         return Err("ต้องเข้าสู่ระบบ LINE ก่อนใช้สติกเกอร์".into());
     }
     crate::stickers::list(&s).await.map_err(err)
+}
+
+/// The preview card of a link in a message, from LINE's preview service
+/// (cached); `None` when there is none to show.
+#[tauri::command]
+pub async fn link_preview(state: S<'_>, url: String) -> R<Option<crate::preview::LinkPreview>> {
+    Ok(crate::preview::get(state.inner(), &url).await)
+}
+
+/// One owned package with all its stickers, loaded when the picker opens it.
+#[tauri::command]
+pub async fn sticker_pack(id: String, name: String, version: Option<String>) -> R<StickerPack> {
+    crate::stickers::pack(&id, &name, version.as_deref().unwrap_or("1"))
+        .await
+        .map_err(err)
 }
 
 /// A file [`send_files`] couldn't send, and why, in Thai.
@@ -455,8 +473,9 @@ struct Prepared {
 }
 
 /// Read `path` and work out what LINE's app sends with it: a photo's size,
-/// a video's length and thumbnail, an audio clip's length.
-async fn prepare_file(s: &AppState, path: &str) -> Result<Prepared, String> {
+/// a photo's size and thumbnail, a video's length and thumbnail, an audio
+/// clip's length.
+async fn prepare_file(s: &AppState, path: &str, silent: bool) -> Result<Prepared, String> {
     let p = std::path::Path::new(path);
     let name = file_name(path).to_string();
     let kind = file_kind(path);
@@ -471,12 +490,17 @@ async fn prepare_file(s: &AppState, path: &str) -> Result<Prepared, String> {
         let text = send_failed(s, crate::usage::Action::SentFile, e);
         format!("เปิด {name} ไม่ได้: {text}")
     })?;
-    let mut opts = MediaOptions::new();
+    let mut opts = MediaOptions::new().silent(silent);
     match kind {
         ObjType::Gif => opts = opts.animated(true),
         ObjType::Image => {
-            if let crate::probe::Probe { width: Some(w), height: Some(h), .. } = crate::probe::image(p).await {
+            let probe = crate::probe::image(p).await;
+            if let (Some(w), Some(h)) = (probe.width, probe.height) {
                 opts = opts.size(w, h);
+            }
+            // Uploaded as the photo's `ud-preview` instead of the photo itself.
+            if let Some(jpeg) = probe.preview {
+                opts = opts.preview(jpeg);
             }
         }
         ObjType::Video => {
@@ -519,8 +543,8 @@ fn sent_result(
     }
 }
 
-async fn send_file(s: &AppState, chat: &line_rs::client::Chat, path: &str) -> Result<(), String> {
-    let f = prepare_file(s, path).await?;
+async fn send_file(s: &AppState, chat: &line_rs::client::Chat, path: &str, silent: bool) -> Result<(), String> {
+    let f = prepare_file(s, path, silent).await?;
     let res = chat.send_media_with(f.kind, f.file, f.opts).await;
     sent_result(s, &f.name, f.kind, res)
 }
@@ -530,11 +554,12 @@ async fn send_photo_group(
     s: &AppState,
     chat: &line_rs::client::Chat,
     paths: &[&String],
+    silent: bool,
 ) -> Vec<Result<(), String>> {
     let mut results: Vec<Result<(), String>> = Vec::with_capacity(paths.len());
     let mut ready = Vec::new();
     for (i, path) in paths.iter().enumerate() {
-        match prepare_file(s, path).await {
+        match prepare_file(s, path, silent).await {
             Ok(f) => {
                 ready.push((i, f));
                 results.push(Ok(()));
@@ -553,9 +578,11 @@ async fn send_photo_group(
 
 /// Sends the files, going on past one that fails, and returns the ones
 /// that failed so Retry sends only those. Two or more photos go as one
-/// photo group (see [`send_plan`]).
+/// photo group (see [`send_plan`]). `silent`: without a notification on
+/// the others' devices.
 #[tauri::command]
-pub async fn send_files(state: S<'_>, chat_id: String, paths: Vec<String>) -> R<Vec<FileFailure>> {
+pub async fn send_files(state: S<'_>, chat_id: String, paths: Vec<String>, silent: Option<bool>) -> R<Vec<FileFailure>> {
+    let silent = silent.unwrap_or(false);
     let s = state.inner().clone();
     if s.demo {
         return Err("ต้องเข้าสู่ระบบ LINE ก่อนส่งไฟล์".into());
@@ -569,7 +596,7 @@ pub async fn send_files(state: S<'_>, chat_id: String, paths: Vec<String>) -> R<
             SendStep::One(i) => {
                 done += 1;
                 s.status(format!("กำลังส่ง {} ({done}/{})", file_name(&paths[i]), paths.len()));
-                if let Err(error) = send_file(&s, &chat, &paths[i]).await {
+                if let Err(error) = send_file(&s, &chat, &paths[i], silent).await {
                     failed.push(FileFailure { path: paths[i].clone(), error });
                 }
             }
@@ -577,7 +604,7 @@ pub async fn send_files(state: S<'_>, chat_id: String, paths: Vec<String>) -> R<
                 done += group.len();
                 s.status(format!("กำลังส่งรูป {} รูป ({done}/{})", group.len(), paths.len()));
                 let group: Vec<&String> = group.iter().map(|&i| &paths[i]).collect();
-                for (path, res) in group.iter().zip(send_photo_group(&s, &chat, &group).await) {
+                for (path, res) in group.iter().zip(send_photo_group(&s, &chat, &group, silent).await) {
                     if let Err(error) = res {
                         failed.push(FileFailure { path: (*path).clone(), error });
                     }
@@ -1377,6 +1404,36 @@ pub async fn save_to_keep(state: S<'_>, chat_id: String, message_id: String) -> 
         .map_err(|e| format!("บันทึกลง Keep ไม่สำเร็จ: {e}"))
 }
 
+/// A chat a forward or a shared contact couldn't reach, and why.
+#[derive(Serialize, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct SendFailure {
+    pub chat_id: String,
+    pub error: String,
+}
+
+fn failures(failed: Vec<(String, String)>) -> Vec<SendFailure> {
+    failed.into_iter().map(|(chat_id, error)| SendFailure { chat_id, error }).collect()
+}
+
+/// Forward a message to other chats; returns the ones that failed.
+#[tauri::command]
+pub async fn forward_message(state: S<'_>, chat_id: String, message_id: String, to: Vec<String>) -> R<Vec<SendFailure>> {
+    let s = live!(state);
+    Ok(failures(crate::actions::forward(&s, &chat_id, &message_id, &to).await))
+}
+
+/// Share someone's contact card with chats; returns the ones that failed.
+#[tauri::command]
+pub async fn share_contact(state: S<'_>, mid: String, name: Option<String>, to: Vec<String>) -> R<Vec<SendFailure>> {
+    let s = live!(state);
+    let name = name
+        .filter(|n| !n.trim().is_empty())
+        .or_else(|| s.store().chat(&mid).ok().flatten().map(|c| c.name))
+        .unwrap_or_default();
+    Ok(failures(crate::actions::share_contact(&s, &mid, &name, &to).await))
+}
+
 #[tauri::command]
 pub async fn hide_chat(state: S<'_>, chat_id: String) -> R<()> {
     let s = state.inner().clone();
@@ -1749,23 +1806,7 @@ pub async fn save_attachment(
     dest: Option<String>,
 ) -> R<String> {
     let s = state.inner().clone();
-    let m = s
-        .store()
-        .message(&message_id)
-        .map_err(err)?
-        .ok_or("ไม่พบข้อความ")?;
-    let src = match m
-        .file_path
-        .clone()
-        .or(m.image_path.clone())
-        .filter(|p| std::path::Path::new(p).exists())
-    {
-        Some(p) => std::path::PathBuf::from(p),
-        None if s.demo => return Err("ไม่มีไฟล์ในโหมด demo".into()),
-        None => crate::media::download_file(&s, &chat_id, &message_id, m.file_name.clone())
-            .await
-            .map_err(err)?,
-    };
+    let (m, src) = attachment(&s, &chat_id, &message_id).await?;
     let target = match dest.filter(|d| !d.is_empty()) {
         Some(d) => std::path::PathBuf::from(d),
         None => {
@@ -1777,6 +1818,38 @@ pub async fn save_attachment(
     };
     crate::vault::export(&src, &target).map_err(err)?;
     Ok(target.to_string_lossy().into_owned())
+}
+
+/// A message's attachment in the cache, downloaded if it isn't there yet.
+async fn attachment(s: &Arc<AppState>, chat_id: &str, message_id: &str) -> R<(Message, std::path::PathBuf)> {
+    let m = s
+        .store()
+        .message(message_id)
+        .map_err(err)?
+        .ok_or("ไม่พบข้อความ")?;
+    let src = match m
+        .file_path
+        .clone()
+        .or(m.image_path.clone())
+        .filter(|p| std::path::Path::new(p).exists())
+    {
+        Some(p) => std::path::PathBuf::from(p),
+        None if s.demo => return Err("ไม่มีไฟล์ในโหมด demo".into()),
+        None => crate::media::download_file(s, chat_id, message_id, m.file_name.clone())
+            .await
+            .map_err(err)?,
+    };
+    Ok((m, src))
+}
+
+/// The name to offer when saving an attachment: its own name, else
+/// `LINE_<id>` with the extension of what the file really is (a GIF, PNG,
+/// video...), not always `.jpg`.
+#[tauri::command]
+pub async fn attachment_name(state: S<'_>, chat_id: String, message_id: String) -> R<String> {
+    let s = state.inner().clone();
+    let (m, src) = attachment(&s, &chat_id, &message_id).await?;
+    Ok(crate::media::save_name(m.file_name.as_deref(), &message_id, &src))
 }
 
 /// Open a small LAAB window, like LINE's separate albums/notes and media windows.

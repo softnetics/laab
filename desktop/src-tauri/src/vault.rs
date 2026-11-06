@@ -88,6 +88,8 @@ pub struct CacheFile {
     file: File,
     size: u64,
     sealed: Option<(&'static Aes256Gcm, [u8; 8])>,
+    /// A file still being written: its last chunk isn't there yet.
+    growing: bool,
 }
 
 impl CacheFile {
@@ -104,7 +106,28 @@ impl CacheFile {
         } else {
             None
         };
-        Ok(Self { file, size, sealed })
+        Ok(Self {
+            file,
+            size,
+            sealed,
+            growing: false,
+        })
+    }
+
+    /// The first `len` plaintext bytes of a file a [`Writer`] is still
+    /// writing, `len` being at most its [`readable`](Writer::readable).
+    pub fn open_growing(path: &Path, len: u64) -> Result<Self> {
+        let mut f = Self::open(path)?;
+        if f.sealed.is_some() {
+            if !len.is_multiple_of(CHUNK) {
+                bail!("{len} is not a whole number of chunks");
+            }
+            f.size = HEADER + len / CHUNK * (CHUNK + TAG);
+        } else {
+            f.size = len;
+        }
+        f.growing = true;
+        Ok(f)
     }
 
     pub fn is_encrypted(&self) -> bool {
@@ -113,6 +136,10 @@ impl CacheFile {
 
     fn chunks(&self) -> u64 {
         (self.size - HEADER).div_ceil(CHUNK + TAG)
+    }
+
+    fn is_last(&self, i: u64) -> bool {
+        !self.growing && i + 1 == self.chunks()
     }
 
     /// Plaintext length.
@@ -135,7 +162,7 @@ impl CacheFile {
             Nonce::from_slice(&nonce(&prefix, i)),
             Payload {
                 msg: &buf,
-                aad: &aad(i, i + 1 == self.chunks()),
+                aad: &aad(i, self.is_last(i)),
             },
         )
         .map_err(|_| anyhow!("cache file is damaged or has another key"))
@@ -258,6 +285,22 @@ impl Writer {
     /// Plain bytes written so far.
     pub fn len(&self) -> u64 {
         self.len
+    }
+
+    /// Plain bytes a reader can already get from [`tmp_path`](Self::tmp_path)
+    /// with [`CacheFile::open_growing`]: whole sealed chunks, or everything
+    /// when the file is plain.
+    pub fn readable(&self) -> u64 {
+        if self.sealer.is_some() {
+            self.index * CHUNK
+        } else {
+            self.len
+        }
+    }
+
+    /// The temp file being written.
+    pub fn tmp_path(&self) -> &Path {
+        &self.tmp
     }
 
     fn seal_chunk(&mut self, n: usize, last: bool) -> std::io::Result<()> {
@@ -482,6 +525,7 @@ mod tests {
             size: bytes.len() as u64,
             file,
             sealed: Some((Box::leak(Box::new(cache_cipher(KEY))), head[8..].try_into().unwrap())),
+            growing: false,
         }
     }
 
@@ -574,6 +618,35 @@ mod tests {
                 assert_eq!(open(dir.path(), &bytes).read_all().unwrap(), data);
             }
         }
+    }
+
+    #[test]
+    fn a_file_reads_while_it_is_written() {
+        init(Some(KEY));
+        let dir = tempfile::tempdir().unwrap();
+        let data: Vec<u8> = (0..CHUNK * 3 + 77).map(|i| (i % 251) as u8).collect();
+        let path = dir.path().join("g.full");
+        let mut w = Writer::create(&path).unwrap();
+        assert_eq!(w.readable(), 0);
+        w.write_all(&data[..CHUNK as usize * 2 + 5]).unwrap();
+        // The 5 bytes past the second chunk wait to be sealed.
+        assert_eq!(w.readable(), CHUNK * 2);
+        w.write_all(&data[CHUNK as usize * 2 + 5..]).unwrap();
+        assert_eq!(w.readable(), CHUNK * 3);
+        let mut f = CacheFile::open_growing(w.tmp_path(), w.readable()).unwrap();
+        assert_eq!(f.len(), CHUNK * 3);
+        assert_eq!(f.read_range(5, CHUNK * 2 + 9).unwrap(), data[5..=(CHUNK * 2 + 9) as usize]);
+        assert!(f.read_range(0, CHUNK * 3).is_err());
+        assert!(CacheFile::open_growing(w.tmp_path(), 5).is_err());
+        let done = w.finish().unwrap();
+        assert_eq!(read(&done).unwrap(), data);
+
+        // A plain file reads up to what was written.
+        let mut w = Writer::with_cipher(&dir.path().join("p.full"), None).unwrap();
+        w.write_all(&data[..10]).unwrap();
+        assert_eq!(w.readable(), 10);
+        let mut f = CacheFile::open_growing(w.tmp_path(), 10).unwrap();
+        assert_eq!(f.read_range(2, 9).unwrap(), data[2..10]);
     }
 
     #[test]

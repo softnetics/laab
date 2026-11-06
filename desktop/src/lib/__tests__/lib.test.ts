@@ -3,11 +3,11 @@ import { compareIds, later, placement, readersOf } from "../reads";
 import { backspaceMention, composingQuery, fromSpans, insertMention, matching, present, targets, ALL_MEMBER } from "../mentions";
 import { callBubbleLabel, chatEventText, noticeFor, readCall, readChatEvent, isBlank } from "../notices";
 import { buildRows } from "../timeline";
-import { isAnimated } from "../media";
+import { isAnimated, sticons } from "../media";
 import { findHits, ranges } from "../inChatSearch";
-import { linkify, liffId } from "../links";
+import { linkify, liffId, previewUrl } from "../links";
 import { adjacentChat, filterChats, folderName, groupRows, listPreview } from "../chatList";
-import { nextReaction, topTypes } from "../reactions";
+import { nextReaction, paidEmoji, topTypes } from "../reactions";
 import { dayHeader, fullStamp, listLabel } from "../time";
 import { joinPicker, outOfRange, pickerNow, splitPicker } from "../datetimePicker";
 import type { ChatList, Message } from "../types";
@@ -193,7 +193,36 @@ describe("in-chat search", () => {
   });
 });
 
+describe("sticons", () => {
+  it("reads REPLACE resources in order and drops bad ones", () => {
+    const replace = JSON.stringify({
+      sticon: {
+        resources: [
+          { S: 6, E: 12, productId: "5ac1bfd5040ab15980c9b435", sticonId: "002", version: 3, resourceType: "ANIMATION" },
+          { S: 0, E: 5, productId: "5ac1bfd5040ab15980c9b435", sticonId: "001", version: 1, resourceType: "STATIC" },
+          { S: 4, E: 7, productId: "p", sticonId: "overlaps" },
+          { S: 10, E: 99, productId: "p", sticonId: "past-the-end" },
+          { S: 0, E: 1, productId: "../x", sticonId: "1" },
+        ],
+      },
+    });
+    const got = sticons({ REPLACE: replace }, 12);
+    expect(got.map((s) => [s.start, s.end, s.sticonId, s.animated])).toEqual([
+      [0, 5, "001", false],
+      [6, 12, "002", true],
+    ]);
+    expect(got[1].version).toBe(3);
+    expect(sticons({}, 5)).toEqual([]);
+    expect(sticons({ REPLACE: "not json" }, 5)).toEqual([]);
+  });
+});
+
 describe("links", () => {
+  it("previews the first web link only", () => {
+    expect(previewUrl("hi line://app/1 then www.a.com and https://b.com")).toBe("https://www.a.com");
+    expect(previewUrl("only line://nv/chat")).toBeNull();
+    expect(previewUrl("no links")).toBeNull();
+  });
   it("splits urls out of text and spots LIFF links", () => {
     expect(linkify("see https://a.com/x. ok").map((s) => s.url ?? null)).toEqual([null, "https://a.com/x", null]);
     expect(liffId("https://liff.line.me/1234567-AbCdEf12/x")).toBe("1234567-AbCdEf12");
@@ -264,6 +293,14 @@ describe("chat list", () => {
     expect(adjacentChat(["a", "b"], null, 1)).toBe("a");
     expect(adjacentChat(["a", "b"], null, -1)).toBe("b");
     expect(adjacentChat(["a", "b"], "b", 1)).toBeNull();
+  });
+});
+
+describe("paid reactions", () => {
+  it("reads the LINE emoji of a paid reaction", () => {
+    expect(paidEmoji("PAID:5ac1:007:3:1")).toEqual({ productId: "5ac1", emojiId: "007", version: 3, animated: true });
+    expect(paidEmoji("PAID")).toBeNull();
+    expect(paidEmoji("LOVE")).toBeNull();
   });
 });
 

@@ -69,7 +69,9 @@ pub struct MentionSpan {
 #[serde(rename_all = "camelCase")]
 pub struct Reaction {
     pub user_id: String,
-    /// `NICE`, `LOVE`, `FUN`, `AMAZING`, `SAD`, `OMG`, or `PAID` for paid ones.
+    /// `NICE`, `LOVE`, `FUN`, `AMAZING`, `SAD`, `OMG`, or for a paid one
+    /// (a LINE emoji) `PAID:<productId>:<emojiId>:<version>:<1|0 animated>`,
+    /// plain `PAID` when its emoji is unknown.
     pub reaction: String,
 }
 
