@@ -666,6 +666,9 @@ async fn handle_event(state: &Arc<AppState>, line: &Arc<Line>, ev: LineEvent) {
                     )
                 };
                 apply_reaction(state, &r.message_id, &user, name.as_deref());
+                if !removed {
+                    crate::notify::maybe_notify_reaction(state, &r.message_id, &user, &line.me);
+                }
             }
             // Settings changed, maybe on the phone: read the notification
             // ones again when they are among them.

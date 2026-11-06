@@ -133,6 +133,80 @@ pub fn maybe_notify(state: &Arc<AppState>, chat: &Chat, msg: &Message) {
     post(app, title, subtitle, text, chat_id);
 }
 
+/// A banner for someone's reaction to one of our messages, when the
+/// account has reaction notifications on (LINE's `notificationReaction`).
+/// Not in a muted chat or the chat being looked at, and not in the first
+/// 30 s after launch, when the events missed while LAAB was closed arrive.
+pub fn should_notify_reaction(
+    chat: &Chat,
+    message_mine: bool,
+    by_me: bool,
+    focus: &Focus,
+    already: bool,
+    settings: &NotificationSettings,
+    launched_ms: f64,
+    now_ms: f64,
+) -> bool {
+    message_mine
+        && !by_me
+        && !already
+        && !chat.muted
+        && now_ms - launched_ms > 30_000.0
+        && !(focus.active && focus.chat.as_deref() == Some(chat.id.as_str()))
+        && account_allows(settings, now_ms)
+        && NotificationSettings::on(settings.reaction)
+}
+
+pub fn maybe_notify_reaction(state: &Arc<AppState>, message_id: &str, reactor: &str, me: &str) {
+    if state.demo {
+        return;
+    }
+    let (chat, message, name) = {
+        let store = state.store();
+        let Some(message) = store.message(message_id).ok().flatten() else {
+            return;
+        };
+        let Some(chat) = store.chat(&message.chat_id).ok().flatten() else {
+            return;
+        };
+        let name = store.people().ok().and_then(|p| p.get(reactor).map(|p| p.0.clone()));
+        (chat, message, name)
+    };
+    let focus = state.focus.lock().unwrap().clone();
+    let already = !state
+        .notified
+        .lock()
+        .unwrap()
+        .insert(format!("reaction:{message_id}:{reactor}"));
+    let settings = settings();
+    let now = crate::state::now_ms();
+    if !should_notify_reaction(
+        &chat,
+        message.mine,
+        reactor == me,
+        &focus,
+        already,
+        &settings,
+        state.launched_ms,
+        now,
+    ) {
+        return;
+    }
+    let title = if chat.name.is_empty() || chat.name == chat.id {
+        "รีแอคชันใหม่".to_string()
+    } else {
+        chat.name.clone()
+    };
+    let who = name.unwrap_or_else(|| "มีคน".into());
+    post(
+        state.app.clone(),
+        title,
+        None,
+        format!("{who} รีแอคข้อความของคุณ"),
+        chat.id,
+    );
+}
+
 #[cfg(target_os = "macos")]
 fn post(
     app: tauri::AppHandle,
@@ -282,6 +356,37 @@ mod tests {
             assert_eq!(ok(&mention, &muted, settings), *muted_mention, "row {i}, mention");
         }
         assert!(!ok(&msg(), &muted, &NotificationSettings::default()));
+    }
+
+    #[test]
+    fn reactions_notify_only_when_asked() {
+        let chat = Chat {
+            id: "c1".into(),
+            ..Default::default()
+        };
+        let away = Focus {
+            chat: Some("c2".into()),
+            active: true,
+        };
+        let on = NotificationSettings::default();
+        let off = NotificationSettings {
+            reaction: Some(false),
+            ..Default::default()
+        };
+        let (launched, now) = (1_000_000.0, 1_100_000.0);
+        let r = |c: &Chat, mine, by_me, s: &NotificationSettings, now| {
+            should_notify_reaction(c, mine, by_me, &away, false, s, launched, now)
+        };
+        assert!(r(&chat, true, false, &on, now));
+        assert!(!r(&chat, true, false, &off, now));
+        assert!(!r(&chat, false, false, &on, now));
+        assert!(!r(&chat, true, true, &on, now));
+        assert!(!r(&chat, true, false, &on, launched + 5_000.0));
+        let muted = Chat {
+            muted: true,
+            ..chat.clone()
+        };
+        assert!(!r(&muted, true, false, &on, now));
     }
 
     #[test]
