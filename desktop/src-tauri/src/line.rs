@@ -805,6 +805,12 @@ async fn handle_event(state: &Arc<AppState>, line: &Arc<Line>, ev: LineEvent) {
                     clear_history(state, &id);
                 }
             }
+            // A chat moved into or out of the message request box (accepted
+            // or deleted on another device, or a new request).
+            TalkEvent::MessageRequestBox { chat_mid, in_box, .. } => {
+                logged("marking a message request", state.store().set_request(&chat_mid, in_box));
+                state.chats_changed();
+            }
             // Keys changed: messages that could not be decrypted may open now.
             TalkEvent::E2eeKeysChanged { .. } => {
                 let (s, l) = (state.clone(), line.clone());

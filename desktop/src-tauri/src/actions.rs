@@ -592,6 +592,17 @@ pub async fn accept_message_request(state: &Arc<AppState>, chat_id: &str) -> Res
     Ok(())
 }
 
+/// Delete a chat from LINE's message request box, as the app's
+/// `deleteMainChat` does (`v61/e.java`): its history goes
+/// (`sendChatRemoved`) and it leaves the box until a new message arrives.
+/// Unverified: whether LINE also drops it from the box server-side.
+pub async fn delete_message_request(state: &Arc<AppState>, chat_id: &str) -> Result<()> {
+    delete_history(state, chat_id).await?;
+    state.store().hide_chat(chat_id)?;
+    state.chats_changed();
+    Ok(())
+}
+
 // -- groups -----------------------------------------------------------------
 
 /// Reload a group's row and members after we changed it.

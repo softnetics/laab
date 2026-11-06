@@ -6,7 +6,7 @@ import { buildRows } from "../timeline";
 import { isAnimated } from "../media";
 import { findHits, ranges } from "../inChatSearch";
 import { linkify, liffId } from "../links";
-import { adjacentChat, filterChats, folderName, groupRows, listPreview } from "../chatList";
+import { adjacentChat, filterChats, folderName, groupRows, listPreview, requestBox } from "../chatList";
 import { nextReaction, topTypes } from "../reactions";
 import { dayHeader, fullStamp, listLabel } from "../time";
 import type { ChatList, Message } from "../types";
@@ -249,6 +249,17 @@ describe("chat list", () => {
     expect(filterChats(list, "all", "unread", "").map((c) => c.id)).toEqual(["u2", "c1", "u1"]);
     expect(filterChats(list, "groups", "recent", "").map((c) => c.id)).toEqual(["c1"]);
     expect(listPreview("เขา: hi")).toBe("hi");
+  });
+  it("keeps message requests in their own box", () => {
+    const withRequest: ChatList = {
+      ...list,
+      chats: [...list.chats, { ...list.chats[0], id: "u9", name: "Stranger", request: true, unread: 2 }],
+    };
+    expect(filterChats(withRequest, "all", "recent", "").map((c) => c.id)).not.toContain("u9");
+    expect(filterChats(withRequest, "friends", "recent", "").map((c) => c.id)).not.toContain("u9");
+    expect(filterChats(withRequest, "requests", "recent", "").map((c) => c.id)).toEqual(["u9"]);
+    expect(requestBox(withRequest)).toEqual({ count: 1, unread: true });
+    expect(requestBox(list)).toEqual({ count: 0, unread: false });
   });
   it("groups a folder's chats under it, where its newest chat would be", () => {
     const foldered: ChatList = { ...list, workspaces: [{ id: "f", name: "", position: 1 }], pins: { main: [], f: ["c1", "u2"] } };

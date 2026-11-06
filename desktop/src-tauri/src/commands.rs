@@ -1586,6 +1586,14 @@ pub async fn accept_message_request(state: S<'_>, chat_id: String) -> R<()> {
 }
 
 #[tauri::command]
+pub async fn delete_message_request(state: S<'_>, chat_id: String) -> R<()> {
+    let s = live!(state);
+    crate::actions::delete_message_request(&s, &chat_id)
+        .await
+        .map_err(|e| format!("ลบคำขอข้อความไม่สำเร็จ: {e}"))
+}
+
+#[tauri::command]
 pub async fn accept_invitation(state: S<'_>, chat_id: String) -> R<()> {
     let s = live!(state);
     crate::actions::accept_invitation(&s, &chat_id)
