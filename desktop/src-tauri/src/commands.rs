@@ -371,6 +371,14 @@ fn media_kind(ext: &str) -> ObjType {
     }
 }
 
+/// What to tell the user when LINE won't take a file this big.
+fn too_large(kind: ObjType) -> String {
+    match kind {
+        ObjType::Video => "วิดีโอใหญ่เกิน 200MB ส่งเป็นวิดีโอไม่ได้".into(),
+        _ => "ไฟล์ใหญ่เกิน 1GB ส่งไม่ได้".into(),
+    }
+}
+
 /// An audio clip's length, from macOS's `afinfo`. LINE shows a clip sent
 /// without one as 0:00.
 async fn audio_duration_ms(path: &std::path::Path) -> Option<u64> {
@@ -404,6 +412,13 @@ async fn send_file(s: &AppState, chat: &line_rs::client::Chat, path: &str) -> Re
         .unwrap_or("")
         .to_ascii_lowercase();
     let kind = media_kind(&ext);
+    // Checked before reading, so a huge file isn't loaded only to be refused.
+    if let Ok(meta) = tokio::fs::metadata(p).await
+        && line_rs::obs::check_media_size(kind, meta.len() as usize).is_err()
+    {
+        crate::analytics::failed(s, crate::analytics::Failure::Send(crate::usage::Action::SentFile), "too large");
+        return Err(format!("{name}: {}", too_large(kind)));
+    }
     let data = tokio::fs::read(p).await.map_err(|e| {
         let text = send_failed(s, crate::usage::Action::SentFile, e);
         format!("เปิด {name} ไม่ได้: {text}")
@@ -425,8 +440,9 @@ async fn send_file(s: &AppState, chat: &line_rs::client::Chat, path: &str) -> Re
             Ok(())
         }
         Err(e) => {
+            let large = matches!(&e, line_rs::Error::Internal { kind, .. } if kind == "MediaTooLarge");
             let text = send_failed(s, crate::usage::Action::SentFile, e);
-            Err(format!("ส่ง {name} ไม่สำเร็จ: {text}"))
+            Err(if large { format!("{name}: {}", too_large(kind)) } else { format!("ส่ง {name} ไม่สำเร็จ: {text}") })
         }
     }
 }
