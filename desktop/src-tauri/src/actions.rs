@@ -613,6 +613,7 @@ pub async fn create_note(
         post.contents.media.push(PostMedia {
             object_id,
             kind: if video { "VIDEO" } else { "PHOTO" }.into(),
+            ..Default::default()
         });
     }
     let reply = timeline.create_post(post).await?;
@@ -679,7 +680,7 @@ pub async fn add_comment(
         .client
         .base
         .timeline()
-        .create_comment(post_id, text, chat_id, None, Vec::new())
+        .create_comment(post_id, chat_id, text, chat_id, None, Vec::new())
         .await?;
     check_timeline(reply.code, &reply.message)
 }
