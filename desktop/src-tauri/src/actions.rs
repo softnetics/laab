@@ -224,15 +224,7 @@ pub async fn announce(
     text: &str,
 ) -> Result<()> {
     let l = line(state).await?;
-    l.client
-        .base
-        .talk()
-        .call(
-            "createChatRoomAnnouncement",
-            tv!({"chatRoomMid": chat_id, "type": "MESSAGE",
-                "contents": {"text": text, "link": format!("line://nv/chatMsg?chatId={chat_id}&messageId={message_id}")}}),
-        )
-        .await?;
+    l.chat(chat_id).announce(message_id, text).await?;
     Ok(())
 }
 
