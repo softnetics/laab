@@ -257,12 +257,27 @@ export interface ContactProfile {
 }
 
 /** An official account's rich menu, in canvas pixels. */
+/** What a rich-menu area does: `web` opens `uri`, `postback` sends `data`, `sendMessage` sends `text`,
+ *  `transition` shows `scene`, `clipboard` copies `clipboardText`. */
+export interface RichMenuAction {
+  type: string;
+  label: string | null;
+  uri: string | null;
+  data: string | null;
+  text: string | null;
+  scene: string | null;
+  clipboardText: string | null;
+}
+export interface RichMenuScene {
+  images: { url: string; x: number; y: number; w: number; h: number }[];
+  areas: { x: number; y: number; w: number; h: number; action: RichMenuAction }[];
+}
 export interface RichMenu {
   label: string;
   width: number;
   height: number;
-  images: { url: string; x: number; y: number; w: number; h: number }[];
-  areas: { x: number; y: number; w: number; h: number; action: { type: string; label: string | null; uri: string | null } }[];
+  initialScene: string;
+  scenes: Record<string, RichMenuScene>;
 }
 
 /** A LIFF window as LIFF DevTools sees it. */

@@ -125,7 +125,7 @@ fn defs() -> Vec<Def> {
         d("translate", Read, "Translate", "Translate text with LINE's translator.", json!({
             "text": s("Text to translate."), "target": s("Language code, e.g. `en`, `th`, `ja`."),
         }), &["text", "target"], true, false),
-        d("get_rich_menu", Read, "Get a bot's menu", "The rich menu of an official account chat, with each area's action.", json!({ "chat_id": s(CHAT) }), &["chat_id"], true, false),
+        d("get_rich_menu", Read, "Get a bot's menu", "The rich menu of an official account chat: its scenes, each with images and tap areas. An area's action is `web` (uri), `postback` (data, send it with tap_postback without message_id), `sendMessage` (text, send it with send_message), `transition` (another scene) or `clipboard`.", json!({ "chat_id": s(CHAT) }), &["chat_id"], true, false),
         d("write_draft", Read, "Write a draft", "Put text in a chat's message box in LAAB for the user to check and send themselves. Nothing is sent.", json!({
             "chat_id": s(CHAT),
             "text": s("The draft. Write @Name for each mention."),
@@ -154,9 +154,9 @@ fn defs() -> Vec<Def> {
             "reaction": { "type": ["string", "null"], "enum": ["NICE", "LOVE", "FUN", "AMAZING", "SAD", "OMG", null], "description": "The reaction, or null to remove it." },
         }), &["message_id", "reaction"], false, false),
         d("mark_as_read", Send, "Mark as read", "Mark a chat as read; the others see it as read.", json!({ "chat_id": s(CHAT) }), &["chat_id"], false, false),
-        d("tap_postback", Send, "Tap a bot button", "Answer a bot's flex or rich menu postback button.", json!({
-            "chat_id": s(CHAT), "message_id": s("The message holding the button."), "data": s("The button's postback data."), "display_text": s("The button's displayText, if any. LINE posts it in the chat as the user's message."),
-        }), &["chat_id", "message_id", "data"], false, false),
+        d("tap_postback", Send, "Tap a bot button", "Answer a bot's postback button: a flex message's (pass message_id and the button's data) or a rich menu area's (omit message_id; data is the area's `data` from get_rich_menu, a linepostback:// URL).", json!({
+            "chat_id": s(CHAT), "message_id": s("The message holding the button; omit for a rich menu area."), "data": s("The button's postback data, or a rich menu area's linepostback:// URL."), "display_text": s("The button's displayText, if any. LINE posts it in the chat as the user's message."),
+        }), &["chat_id", "data"], false, false),
         d("create_note", Send, "Post a note", "Post to a group's notes, with photos from this Mac if given.", json!({
             "chat_id": s(CHAT), "text": s("The post."), "photo_paths": strings("Absolute paths of photos."),
         }), &["chat_id", "text"], false, false),
@@ -1155,11 +1155,11 @@ async fn run(ctx: &Ctx, name: &str, args: &Value, trace: &mut Trace) -> R<Vec<Va
         }
         "tap_postback" => {
             let chat = arg_str(args, "chat_id")?;
-            let id = arg_str(args, "message_id")?;
+            let id = opt_str(args, "message_id");
             let data = arg_str(args, "data")?;
             let display = opt_str(args, "display_text");
             gate(ctx, trace, Send, &[dir.scope(&chat)], format!("กดปุ่มของบอท {}{}", dir.quoted(&chat), display.as_ref().map(|d| format!(": “{d}”")).unwrap_or_default())).await?;
-            commands::send_postback(st(), chat, Some(id), data, display, None).await?;
+            commands::send_postback(st(), chat, id, data, display, None).await?;
             done("postback sent")
         }
         "create_note" => {
