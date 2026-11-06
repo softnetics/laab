@@ -323,7 +323,7 @@ pub async fn issue(
 
 /// Bridge commands LAAB answers; `liff.isApiAvailable` and `liff.init`
 /// read this list (`features`, as LINE for Android builds it in `rd0/e`).
-const FEATURES: &[&str] = &["closeWindow", "openWindow", "getAdvertisingId"];
+const FEATURES: &[&str] = &["closeWindow", "openWindow", "getAdvertisingId", "scanCode"];
 
 /// The `window._liff` bridge, with the app's granted `scopes`. A command
 /// LAAB can't do answers `CLIENT_UNSUPPORTED_OPERATION`, the code LINE for
@@ -342,6 +342,8 @@ const BRIDGE: &str = r#"(function(){
     window.dispatchEvent(new CustomEvent('liffEvent', {detail: detail}));
   }
   var features = __FEATURES__;
+  // For answers that come back from LAAB later (scanCode).
+  window.__laabLiffReply = reply;
   window._liff = {
     // LIFF SDK 2.x in a LINE app 9.5.0 or newer waits for this list, or for
     // a "ready" event, before liff.init() goes on.
@@ -361,6 +363,11 @@ const BRIDGE: &str = r#"(function(){
         location.href = 'laab-open://open?url=' + encodeURIComponent(params.url || '');
         return;
       }
+      // An image or a part of the screen instead of the camera.
+      if (type === 'scanCode') {
+        location.href = 'laab-scan://scan?cb=' + encodeURIComponent(callbackId || '');
+        return;
+      }
       // A Mac has no advertising id.
       if (type === 'getAdvertisingId') { reply(type, callbackId, {success: true, advertisingId: null, tracking: false}); return; }
       reply(type, callbackId, null, {code: 'CLIENT_UNSUPPORTED_OPERATION', description: 'Unsupported Operation: "' + type + '"', message: 'LAAB ยังไม่รองรับ ' + type});
@@ -368,6 +375,16 @@ const BRIDGE: &str = r#"(function(){
   };
   reply('ready');
 })();"#;
+
+/// The bridge's answer to `scanCode`: `{value}`, null when nothing was read,
+/// as LINE for Android answers (`sd0/t.java`).
+fn scan_reply(callback_id: &str, value: Option<&str>) -> String {
+    format!(
+        "window.__laabLiffReply && window.__laabLiffReply('scanCode', {}, {})",
+        Json::from(callback_id),
+        serde_json::json!({ "value": value })
+    )
+}
 
 pub fn user_agent(client: bool) -> String {
     if client {
@@ -411,6 +428,23 @@ pub fn open_window(state: &Arc<AppState>, view: &LiffView, chat: Option<String>)
             match u.scheme() {
                 "laab-devtools" => {
                     let _ = crate::liff_devtools::open(&nav_app2, Some(&nav_label2));
+                    false
+                }
+                "laab-scan" => {
+                    let cb = u
+                        .query_pairs()
+                        .find(|(k, _)| k == "cb")
+                        .map(|(_, v)| v.to_string())
+                        .unwrap_or_default();
+                    log("info", "liff.scanCode()".into());
+                    let (app, label) = (nav_app2.clone(), nav_label2.clone());
+                    tauri::async_runtime::spawn(async move {
+                        let window = app.get_webview_window(&label);
+                        let value = crate::scan::scan(&app, window.as_ref()).await;
+                        if let Some(w) = window {
+                            let _ = w.eval(scan_reply(&cb, value.as_deref()));
+                        }
+                    });
                     false
                 }
                 "liff" if u.host_str() == Some("close") => {
@@ -676,11 +710,20 @@ mod tests {
     #[test]
     fn the_bridge_lists_what_laab_answers() {
         let js = bridge(&serde_json::json!(["profile", "chat_message.write"]));
-        assert!(js.contains(r#"var features = ["closeWindow","openWindow","getAdvertisingId"];"#));
+        assert!(js.contains(r#"var features = ["closeWindow","openWindow","getAdvertisingId","scanCode"];"#));
         assert!(js.contains(r#"scopes: ["profile","chat_message.write"],"#));
         assert!(js.contains("CLIENT_UNSUPPORTED_OPERATION"));
         assert!(!js.contains("__FEATURES__") && !js.contains("__SCOPES__"));
         assert!(bridge(&Json::Null).contains("scopes: [],"));
+    }
+
+    #[test]
+    fn scan_answers_with_the_value_or_null() {
+        assert_eq!(
+            scan_reply("cb'1", Some("https://example.com")),
+            r#"window.__laabLiffReply && window.__laabLiffReply('scanCode', "cb'1", {"value":"https://example.com"})"#
+        );
+        assert!(scan_reply("2", None).ends_with(r#"{"value":null})"#));
     }
 
     #[test]

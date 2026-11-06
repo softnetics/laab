@@ -24,6 +24,7 @@ mod probe;
 mod reads;
 mod report;
 mod richmenu;
+mod scan;
 mod session;
 mod state;
 mod stickers;
