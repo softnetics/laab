@@ -309,22 +309,39 @@ pub async fn issue(
     })
 }
 
+/// Bridge commands LAAB answers; `liff.isApiAvailable` and `liff.init`
+/// read this list (`features`, as LINE for Android builds it in `rd0/e`).
+const FEATURES: &[&str] = &["closeWindow", "openWindow", "getAdvertisingId"];
+
+/// The `window._liff` bridge, with the app's granted `scopes`. A command
+/// LAAB can't do answers `CLIENT_UNSUPPORTED_OPERATION`, the code LINE for
+/// Android uses (`cd0/a`), so the app can tell "not here" from "refused".
+fn bridge(scopes: &Json) -> String {
+    let scopes = if scopes.is_array() { scopes.clone() } else { Json::Array(vec![]) };
+    BRIDGE
+        .replace("__FEATURES__", &serde_json::to_string(FEATURES).unwrap_or_default())
+        .replace("__SCOPES__", &scopes.to_string())
+}
+
 const BRIDGE: &str = r#"(function(){
   if (window._liff) return;
   function reply(type, callbackId, data, error) {
     var detail = error ? {type: type, callbackId: callbackId, error: error} : {type: type, callbackId: callbackId, data: data || {}};
     window.dispatchEvent(new CustomEvent('liffEvent', {detail: detail}));
   }
+  var features = __FEATURES__;
   window._liff = {
     // LIFF SDK 2.x in a LINE app 9.5.0 or newer waits for this list, or for
     // a "ready" event, before liff.init() goes on.
-    features: ['closeWindow', 'openWindow'],
+    features: features,
+    scopes: __SCOPES__,
     postMessage: function(type, featureToken, callbackId, params) {
       try { params = typeof params === 'string' ? JSON.parse(params) : (params || {}); } catch (e) { params = {}; }
+      var known = features.indexOf(type) >= 0;
       if (window.__laabDev) {
         var shown; try { shown = JSON.stringify(params); } catch (e) { shown = '?'; }
-        window.__laabDev.push('bridge', type === 'closeWindow' || type === 'openWindow' ? 'info' : 'warn',
-          type + ' ' + shown + (type === 'closeWindow' || type === 'openWindow' ? '' : ' → FORBIDDEN (LAAB ยังไม่รองรับ)'));
+        window.__laabDev.push('bridge', known ? 'info' : 'warn',
+          type + ' ' + shown + (known ? '' : ' → CLIENT_UNSUPPORTED_OPERATION (LAAB ยังไม่รองรับ)'));
       }
       if (type === 'closeWindow') { location.href = 'liff://close'; return; }
       if (type === 'openWindow') {
@@ -332,7 +349,9 @@ const BRIDGE: &str = r#"(function(){
         location.href = 'laab-open://open?url=' + encodeURIComponent(params.url || '');
         return;
       }
-      reply(type, callbackId, null, {code: 'FORBIDDEN', message: 'LAAB ยังไม่รองรับ ' + type});
+      // A Mac has no advertising id.
+      if (type === 'getAdvertisingId') { reply(type, callbackId, {success: true, advertisingId: null, tracking: false}); return; }
+      reply(type, callbackId, null, {code: 'CLIENT_UNSUPPORTED_OPERATION', description: 'Unsupported Operation: "' + type + '"', message: 'LAAB ยังไม่รองรับ ' + type});
     }
   };
   reply('ready');
@@ -456,7 +475,7 @@ pub fn open_window(state: &Arc<AppState>, view: &LiffView, chat: Option<String>)
         });
     builder = builder.initialization_script(crate::liff_devtools::CAPTURE);
     if client {
-        builder = builder.initialization_script(BRIDGE);
+        builder = builder.initialization_script(bridge(&view.info["scopes"]));
     }
     builder.build()?;
     crate::liff_devtools::opened(&app, &label, view, chat_for_log);
@@ -607,6 +626,16 @@ mod tests {
         set_account_locale(Some("en-US".into()));
         assert_eq!(lang(), "en_US");
         set_account_locale(None);
+    }
+
+    #[test]
+    fn the_bridge_lists_what_laab_answers() {
+        let js = bridge(&serde_json::json!(["profile", "chat_message.write"]));
+        assert!(js.contains(r#"var features = ["closeWindow","openWindow","getAdvertisingId"];"#));
+        assert!(js.contains(r#"scopes: ["profile","chat_message.write"],"#));
+        assert!(js.contains("CLIENT_UNSUPPORTED_OPERATION"));
+        assert!(!js.contains("__FEATURES__") && !js.contains("__SCOPES__"));
+        assert!(bridge(&Json::Null).contains("scopes: [],"));
     }
 
     #[test]
