@@ -261,7 +261,18 @@ export interface AllCalendars {
 export type CalendarEventInput = Pick<
   CalendarEvent,
   "title" | "start" | "end" | "allDay" | "timezone" | "location" | "url" | "description" | "reminders"
->;
+> & {
+  /** Left out, an edit keeps the event's rule as it is. */
+  repeat?: RepeatInput;
+};
+
+/** A repeat rule from the event form. `until` is epoch ms. */
+export interface RepeatInput {
+  frequency: "none" | "daily" | "weekly" | "monthly" | "yearly";
+  interval: number;
+  until: number | null;
+  byDay: string[];
+}
 
 export interface Album {
   id: string;

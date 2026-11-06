@@ -17,12 +17,16 @@ import {
   longDayLabel,
   minutesBetween,
   monthGrid,
+  monthlyChoices,
   newForm,
   occurrenceAt,
   occurrenceKey,
   recurrenceLabel,
   reminderLabel,
   reminderOptions,
+  type RepeatForm,
+  repeatFormOf,
+  repeatOf,
   shortMonths,
   thaiMonths,
   timeLabel,
@@ -579,6 +583,14 @@ function Editor({
   // event (its first occurrence's times): an edit changes every occurrence.
   const [f, setF] = useState<EventForm>(() => (event ? formOf(event) : newForm(day)));
   const [reminders, setReminders] = useState<number[]>(() => event?.reminders ?? []);
+  // Null for a rule LAAB can't edit: the edit leaves it as it is.
+  const [repeat, setRepeat] = useState<RepeatForm | null>(() => repeatFormOf(event, event ? formOf(event).startDate : day));
+  const [repeatChanged, setRepeatChanged] = useState(false);
+  const changeRepeat = (patch: Partial<RepeatForm>) => {
+    setProblem(null);
+    setRepeatChanged(true);
+    setRepeat((r) => r && { ...r, ...patch });
+  };
   // LINE posts a card in the chat for a new event; edits stay quiet unless asked.
   const [notify, setNotify] = useState(!event);
   const [target, setTarget] = useState(() => event?.chatId ?? (targets ? lastTarget(targets) : windowChat));
@@ -610,6 +622,11 @@ function Editor({
     const input = inputOf(f, event?.timezone || localZone(), reminders);
     if ("error" in input) return setProblem(input.error);
     if (!chatId) return setProblem("เลือกปฏิทินก่อน");
+    if (repeat && (repeatChanged || (!event && repeat.frequency !== "none"))) {
+      if (repeat.frequency === "weekly" && !repeat.weekdays.length) return setProblem("เลือกวันที่จะซ้ำก่อน");
+      if (repeat.frequency !== "none" && repeat.until && repeat.until < f.startDate) return setProblem("วันสุดท้ายที่ซ้ำต้องไม่ก่อนวันเริ่ม");
+      input.repeat = repeatOf(repeat, f.startDate);
+    }
     if (targets) remember(chatId);
     setBusy(true);
     const call = event
@@ -763,9 +780,11 @@ function Editor({
           </div>
         </Group>
 
+        <Repeat form={repeat} startDate={f.startDate} onChange={changeRepeat} />
+
         {event?.recurrence && (
           <p className="px-1 text-[11.5px] text-secondary">
-            นัดนี้ซ้ำ{recurrenceLabel(event) ? ` (${recurrenceLabel(event)})` : ""} การแก้ไขจะเปลี่ยนนัดทุกครั้ง
+            นัดนี้ซ้ำ{recurrenceLabel(event) ? ` (${recurrenceLabel(event)})` : ""} การแก้ไขจะเปลี่ยนนัดทุกครั้ง เหมือนในแอป LINE
           </p>
         )}
 
@@ -790,6 +809,105 @@ function Editor({
         )}
       </div>
     </form>
+  );
+}
+
+const repeatUnits: Record<RepeatForm["frequency"], string> = { none: "", daily: "วัน", weekly: "สัปดาห์", monthly: "เดือน", yearly: "ปี" };
+const repeatChoices: { value: RepeatForm["frequency"]; label: string }[] = [
+  { value: "none", label: "ไม่ซ้ำ" },
+  { value: "daily", label: "ทุกวัน" },
+  { value: "weekly", label: "ทุกสัปดาห์" },
+  { value: "monthly", label: "ทุกเดือน" },
+  { value: "yearly", label: "ทุกปี" },
+];
+const WEEKDAYS = ["SU", "MO", "TU", "WE", "TH", "FR", "SA"];
+const selectClass =
+  "h-7 max-w-[60%] min-w-0 truncate rounded-[7px] bg-chat/60 px-2 text-[13px] outline-none focus-visible:ring-2 focus-visible:ring-line-green/50";
+
+/** How the event repeats: how often, every how many, on which days, until when. */
+function Repeat({ form: r, startDate, onChange }: { form: RepeatForm | null; startDate: string; onChange: (patch: Partial<RepeatForm>) => void }) {
+  if (!r) {
+    return <p className="px-1 text-[11.5px] text-secondary">LAAB แก้การซ้ำแบบนี้ไม่ได้ จะคงไว้ตามเดิม</p>;
+  }
+  const repeats = r.frequency !== "none";
+  return (
+    <Group>
+      <label className={rowClass}>
+        <RepeatIcon size={15} className="shrink-0 text-secondary" />
+        <span className="flex-1 text-[13px]">ซ้ำ</span>
+        <select
+          aria-label="ซ้ำ"
+          value={r.frequency}
+          onChange={(e) => onChange({ frequency: e.target.value as RepeatForm["frequency"] })}
+          className={selectClass}
+        >
+          {repeatChoices.map((c) => (
+            <option key={c.value} value={c.value}>
+              {c.label}
+            </option>
+          ))}
+        </select>
+      </label>
+      {repeats && (
+        <label className={rowClass}>
+          <span className="flex-1 text-[13px]">ทุก</span>
+          <input
+            type="number"
+            min={1}
+            max={99}
+            aria-label="ซ้ำทุก"
+            value={r.interval}
+            onChange={(e) => onChange({ interval: Math.min(99, Math.max(1, Number(e.target.value) || 1)) })}
+            className="selectable h-7 w-14 rounded-[7px] bg-chat/60 px-2 text-right text-[13px] tabular-nums outline-none focus-visible:ring-2 focus-visible:ring-line-green/50"
+          />
+          <span className="w-12 text-[13px]">{repeatUnits[r.frequency]}</span>
+        </label>
+      )}
+      {r.frequency === "weekly" && (
+        <div className="flex justify-between px-3 py-2" role="group" aria-label="วันที่ซ้ำ">
+          {WEEKDAYS.map((d, i) => {
+            const on = r.weekdays.includes(d);
+            return (
+              <button
+                key={d}
+                type="button"
+                aria-pressed={on}
+                onClick={() => onChange({ weekdays: on ? r.weekdays.filter((x) => x !== d) : [...r.weekdays, d] })}
+                className={`grid h-7 w-7 place-items-center rounded-full text-[11.5px] font-medium transition-colors ${
+                  on ? "bg-line-green text-white" : "bg-chat/60 text-secondary hover:text-primary"
+                }`}
+              >
+                {weekdayLetters[i]}
+              </button>
+            );
+          })}
+        </div>
+      )}
+      {r.frequency === "monthly" && (
+        <label className={rowClass}>
+          <span className="flex-1 text-[13px]">ในวัน</span>
+          <select
+            aria-label="ซ้ำในวัน"
+            value={r.monthly}
+            onChange={(e) => onChange({ monthly: e.target.value as RepeatForm["monthly"] })}
+            className={selectClass}
+          >
+            {monthlyChoices(startDate).map((c) => (
+              <option key={c.value} value={c.value}>
+                {c.label}
+              </option>
+            ))}
+          </select>
+        </label>
+      )}
+      {repeats && (
+        <div className={rowClass}>
+          <span className="flex-1 text-[13px]">สิ้นสุดการซ้ำ</span>
+          {r.until && <DatePicker label="วันสุดท้ายที่ซ้ำ" value={r.until} onChange={(v) => onChange({ until: v })} />}
+          <Switch label="สิ้นสุดการซ้ำ" checked={!!r.until} onChange={(v) => onChange({ until: v ? startDate : null })} />
+        </div>
+      )}
+    </Group>
   );
 }
 

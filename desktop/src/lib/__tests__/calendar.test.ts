@@ -19,6 +19,10 @@ import {
   monthGrid,
   newForm,
   timeLabel,
+  monthlyChoices,
+  repeatFormOf,
+  repeatOf,
+  weekdayOf,
 } from "../calendar";
 import type { CalendarEvent } from "../types";
 
@@ -243,5 +247,35 @@ describe("linkDay", () => {
       expect(recurrenceLabel(ev({}))).toBe("");
       expect(reminderLabel(2)).toBe("12.00 น. วันก่อนหน้า");
     });
+  });
+});
+
+describe("repeat editor", () => {
+  // Fri 27 Nov 2026: the fourth and last Friday of the month.
+  const start = "2026-11-27";
+  it("knows the start's weekday and week", () => {
+    expect(weekdayOf(start)).toEqual({ dow: "FR", nth: 4, last: true });
+    expect(weekdayOf("2026-11-06")).toEqual({ dow: "FR", nth: 1, last: false });
+    expect(monthlyChoices(start).map((c) => c.label)).toEqual(["วันที่ 27", "วันศุกร์ที่ 4", "วันศุกร์สุดท้าย"]);
+  });
+  it("reads an event's rule into the form", () => {
+    expect(repeatFormOf(null, start)).toEqual({ frequency: "none", interval: 1, weekdays: ["FR"], monthly: "date", until: null });
+    const weekly = ev({ recurrence: { frequency: "weekly", interval: 2, until: null, byDay: ["MO", "WE"], exceptIds: [] } });
+    expect(repeatFormOf(weekly, start)).toMatchObject({ frequency: "weekly", interval: 2, weekdays: ["MO", "WE"] });
+    const last = ev({ recurrence: { frequency: "monthly", interval: 1, until: null, byDay: ["-1FR"], exceptIds: [] } });
+    expect(repeatFormOf(last, start)?.monthly).toBe("last");
+    // A rule the form can't show is left alone.
+    expect(repeatFormOf(ev({ recurrence: { frequency: "other", interval: 1, until: null, byDay: [], exceptIds: [] } }), start)).toBeNull();
+    expect(repeatFormOf(ev({ recurrence: { frequency: "monthly", interval: 1, until: null, byDay: ["1MO", "3MO"], exceptIds: [] } }), start)).toBeNull();
+  });
+  it("sends the rule, ending at 23:59:59 on the last day", () => {
+    const base = { frequency: "monthly" as const, interval: 1, weekdays: ["FR"], monthly: "last" as const, until: "2027-03-31" };
+    const r = repeatOf(base, start);
+    expect(r.byDay).toEqual(["-1FR"]);
+    expect(r.until).toBe(new Date(2027, 2, 31, 23, 59, 59).getTime());
+    expect(repeatOf({ ...base, monthly: "nth" }, start).byDay).toEqual(["4FR"]);
+    expect(repeatOf({ ...base, frequency: "weekly", weekdays: ["FR", "MO"] }, start).byDay).toEqual(["MO", "FR"]);
+    expect(repeatOf({ ...base, frequency: "yearly", interval: 0 }, start)).toMatchObject({ byDay: [], interval: 1 });
+    expect(repeatOf({ ...base, frequency: "none" }, start).until).toBeNull();
   });
 });

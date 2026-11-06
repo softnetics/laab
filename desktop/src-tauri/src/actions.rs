@@ -1226,6 +1226,50 @@ pub struct CalendarEventInput {
     /// LINE `Reminder` values; None leaves an edited event's as they were.
     #[serde(default)]
     pub reminders: Option<Vec<i32>>,
+    /// How it repeats; None leaves an edited event's rule as it was.
+    #[serde(default)]
+    pub repeat: Option<RepeatInput>,
+}
+
+/// The repeat rule the form sets. LINE for Android's editor offers these
+/// (`fw0/t`): daily, weekly on chosen days, monthly on the date or on an
+/// nth weekday ("2TU", "-1FR"), yearly; every `interval`; until a day.
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RepeatInput {
+    /// `none`, `daily`, `weekly`, `monthly` or `yearly`.
+    pub frequency: String,
+    #[serde(default)]
+    pub interval: u32,
+    /// Epoch ms; the app sends the chosen last day at 23:59:59.
+    pub until: Option<i64>,
+    #[serde(default)]
+    pub by_day: Vec<String>,
+}
+
+impl RepeatInput {
+    /// The rule to send, None for no repeat. The rule's exceptions stay
+    /// as `previous` had them.
+    fn to_line(&self, previous: Option<&cal::Recurrence>) -> Option<cal::Recurrence> {
+        let frequency = match self.frequency.as_str() {
+            "daily" => Frequency::Daily,
+            "weekly" => Frequency::Weekly,
+            "monthly" => Frequency::Monthly,
+            "yearly" => Frequency::Yearly,
+            _ => return None,
+        };
+        Some(cal::Recurrence {
+            frequency,
+            interval: self.interval.max(1),
+            until: self.until.map(|u| u / MS_PER_S),
+            by_day: if matches!(frequency, Frequency::Weekly | Frequency::Monthly) {
+                self.by_day.clone()
+            } else {
+                Vec::new()
+            },
+            except_ids: previous.map(|p| p.except_ids.clone()).unwrap_or_default(),
+        })
+    }
 }
 
 impl CalendarEventInput {
@@ -1245,6 +1289,9 @@ impl CalendarEventInput {
         out.description = self.description.trim_end().to_string();
         if let Some(r) = &self.reminders {
             out.reminders = r.iter().map(|v| Reminder::from_raw(*v)).collect();
+        }
+        if let Some(r) = &self.repeat {
+            out.recurrence = r.to_line(out.recurrence.as_ref());
         }
         out
     }
@@ -1849,6 +1896,7 @@ mod tests {
             url: String::new(),
             description: String::new(),
             reminders: None,
+            repeat: None,
         };
         let out = input.to_line(None);
         assert_eq!((out.start_time, out.end_time), (1_793_703_600, 1_793_707_200));
@@ -1886,6 +1934,7 @@ mod tests {
             url: String::new(),
             description: String::new(),
             reminders: None,
+            repeat: None,
         };
         let out = input.to_line(Some(&fetched));
         assert_eq!(out.title, "new");
@@ -1903,6 +1952,53 @@ mod tests {
         }
         .to_line(Some(&fetched));
         assert_eq!(out.reminders, [Reminder::OneHourBefore, Reminder::TwoHoursBefore]);
+    }
+
+    #[test]
+    fn the_form_sets_changes_or_removes_the_repeat_rule() {
+        let fetched = cal::Event {
+            recurrence: Some(cal::Recurrence {
+                frequency: Frequency::Weekly,
+                interval: 1,
+                by_day: vec!["MO".into()],
+                except_ids: vec![500],
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let input = |repeat: RepeatInput| CalendarEventInput {
+            title: "x".into(),
+            start: 0,
+            end: 0,
+            all_day: false,
+            timezone: "Asia/Bangkok".into(),
+            location: String::new(),
+            url: String::new(),
+            description: String::new(),
+            reminders: None,
+            repeat: Some(repeat),
+        };
+        let rule = |frequency: &str, interval, until, by_day: &[&str]| RepeatInput {
+            frequency: frequency.into(),
+            interval,
+            until,
+            by_day: by_day.iter().map(|d| d.to_string()).collect(),
+        };
+        let out = input(rule("monthly", 2, Some(1_800_000_000_999), &["-1FR"])).to_line(Some(&fetched));
+        assert_eq!(
+            out.recurrence,
+            Some(cal::Recurrence {
+                frequency: Frequency::Monthly,
+                interval: 2,
+                until: Some(1_800_000_000),
+                by_day: vec!["-1FR".into()],
+                except_ids: vec![500],
+            })
+        );
+        let out = input(rule("daily", 0, None, &["MO"])).to_line(None);
+        let r = out.recurrence.unwrap();
+        assert_eq!((r.frequency, r.interval, r.by_day.len()), (Frequency::Daily, 1, 0));
+        assert_eq!(input(rule("none", 1, None, &[])).to_line(Some(&fetched)).recurrence, None);
     }
 
     #[test]
