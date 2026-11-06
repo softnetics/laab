@@ -1,29 +1,58 @@
 //! macOS banners for new messages, and the Dock badge.
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
+use line_rs::client::settings::NotificationSettings;
 use tauri::{Emitter, Manager};
 
 use crate::model::{Chat, Message};
 use crate::state::{AppState, Focus};
 
+/// The account's notification settings as LINE last sent them (LINE's
+/// ตั้งค่า > การแจ้งเตือน, shared by every device). Empty until read: every
+/// switch then counts as on.
+static SETTINGS: Mutex<Option<NotificationSettings>> = Mutex::new(None);
+
+pub fn set_settings(settings: Option<NotificationSettings>) {
+    *SETTINGS.lock().unwrap() = settings;
+}
+
+fn settings() -> NotificationSettings {
+    SETTINGS.lock().unwrap().clone().unwrap_or_default()
+}
+
+/// The account lets banners through: notifications on, not paused.
+fn account_allows(s: &NotificationSettings, now_ms: f64) -> bool {
+    NotificationSettings::on(s.enabled) && !s.paused_at(now_ms as i64)
+}
+
+fn flag(msg: &Message, key: &str) -> bool {
+    msg.metadata.get(key).map(String::as_str) == Some("true")
+}
+
 /// A banner is posted when the message is not ours, arrived after launch (30 s
 /// grace), was not already shown, is not in the chat the user is looking at,
-/// is not a group event (someone joined or left) or one LINE marks as silent,
-/// and the chat is not muted unless it mentions us.
+/// is not a group event (someone joined or left) or one sent silently, the
+/// account has notifications on and not paused, and the chat is not muted
+/// unless it mentions us and mentions are on.
 pub fn should_notify(
     msg: &Message,
     chat: &Chat,
     launched_ms: f64,
     focus: &Focus,
     already: bool,
+    settings: &NotificationSettings,
+    now_ms: f64,
 ) -> bool {
     if msg.mine || already || msg.unsent > 0 {
         return false;
     }
-    // LINE's apps don't post banners for these either.
+    // LINE's apps don't post banners for these either. PREMIUM_MUTE_MESSAGE
+    // is LINE Premium's "send without a sound" (the sender's app sets
+    // NOTIFICATION_DISABLED with it).
     if msg.content_type == "CHATEVENT"
-        || msg.metadata.get("NOTIFICATION_DISABLED").map(String::as_str) == Some("true")
+        || flag(msg, "NOTIFICATION_DISABLED")
+        || flag(msg, "PREMIUM_MUTE_MESSAGE")
     {
         return false;
     }
@@ -33,17 +62,35 @@ pub fn should_notify(
     if focus.active && focus.chat.as_deref() == Some(chat.id.as_str()) {
         return false;
     }
-    !chat.muted || msg.mentions_me
+    if !account_allows(settings, now_ms) || !NotificationSettings::on(settings.new_message) {
+        return false;
+    }
+    !chat.muted || (msg.mentions_me && NotificationSettings::on(settings.mention))
 }
 
-pub fn body(msg: &Message) -> String {
+/// What a banner says when it can't or mustn't show the message.
+const NEW_MESSAGE: &str = "ส่งข้อความถึงคุณ";
+
+/// The banner's text. `show_message` off (LINE's "แสดงข้อความ") hides what
+/// the message says, as LINE does; a message LAAB couldn't decrypt says
+/// there is one rather than nothing.
+pub fn body(msg: &Message, show_message: bool) -> String {
+    if !show_message {
+        return if msg.mentions_me {
+            "กล่าวถึงคุณ".into()
+        } else {
+            NEW_MESSAGE.into()
+        };
+    }
     let base = match msg.content_type.as_str() {
         "CALL" => crate::convert::call_text(msg, "เขา"),
         "IMAGE" | "VIDEO" | "STICKER" | "AUDIO" | "FILE" | "CHATEVENT" | "FLEX" | "RICH"
         | "POSTNOTIFICATION" | "CONTACT" => crate::convert::preview_body(msg),
         _ => {
             let chars: Vec<char> = msg.text.chars().collect();
-            if chars.len() > 140 {
+            if chars.is_empty() {
+                NEW_MESSAGE.into()
+            } else if chars.len() > 140 {
                 format!("{}…", chars[..139].iter().collect::<String>())
             } else {
                 msg.text.clone()
@@ -63,7 +110,9 @@ pub fn maybe_notify(state: &Arc<AppState>, chat: &Chat, msg: &Message) {
     }
     let focus = state.focus.lock().unwrap().clone();
     let already = !state.notified.lock().unwrap().insert(msg.id.clone());
-    if !should_notify(msg, chat, state.launched_ms, &focus, already) {
+    let settings = settings();
+    let now = crate::state::now_ms();
+    if !should_notify(msg, chat, state.launched_ms, &focus, already, &settings, now) {
         return;
     }
     let title = if chat.name.is_empty() || chat.name == chat.id {
@@ -78,7 +127,7 @@ pub fn maybe_notify(state: &Arc<AppState>, chat: &Chat, msg: &Message) {
     } else {
         None
     };
-    let text = body(msg);
+    let text = body(msg, NotificationSettings::on(settings.show_message));
     let chat_id = chat.id.clone();
     let app = state.app.clone();
     post(app, title, subtitle, text, chat_id);
@@ -180,10 +229,59 @@ mod tests {
             content_type: "CHATEVENT".into(),
             ..msg()
         };
-        assert!(!should_notify(&left, &chat, 10_000_000.0, &away, false));
+        let on = NotificationSettings::default();
+        assert!(!should_notify(&left, &chat, 10_000_000.0, &away, false, &on, 0.0));
         let mut silent = msg();
         silent.metadata.insert("NOTIFICATION_DISABLED".into(), "true".into());
-        assert!(!should_notify(&silent, &chat, 10_000_000.0, &away, false));
+        assert!(!should_notify(&silent, &chat, 10_000_000.0, &away, false, &on, 0.0));
+        let mut premium = msg();
+        premium.metadata.insert("PREMIUM_MUTE_MESSAGE".into(), "true".into());
+        assert!(!should_notify(&premium, &chat, 10_000_000.0, &away, false, &on, 0.0));
+    }
+
+    /// The account's settings, over a message that would otherwise notify.
+    #[test]
+    fn follows_the_account_settings() {
+        let chat = Chat {
+            id: "c1".into(),
+            ..Default::default()
+        };
+        let muted = Chat {
+            muted: true,
+            ..chat.clone()
+        };
+        let away = Focus {
+            chat: Some("c2".into()),
+            active: true,
+        };
+        let now = 1_800_000_000_000.0;
+        let mention = Message {
+            mentions_me: true,
+            ..msg()
+        };
+        let s = |f: fn(&mut NotificationSettings)| {
+            let mut s = NotificationSettings::default();
+            f(&mut s);
+            s
+        };
+        let ok = |m: &Message, c: &Chat, s: &NotificationSettings| {
+            should_notify(m, c, 10_000_000.0, &away, false, s, now)
+        };
+        // (setting, plain message, mention in a muted chat)
+        let table: [(NotificationSettings, bool, bool); 7] = [
+            (s(|_| {}), true, true),
+            (s(|s| s.enabled = Some(true)), true, true),
+            (s(|s| s.enabled = Some(false)), false, false),
+            (s(|s| s.mute_expiration = 1_800_000_060_000), false, false),
+            (s(|s| s.mute_expiration = 1_700_000_000_000), true, true),
+            (s(|s| s.new_message = Some(false)), false, false),
+            (s(|s| s.mention = Some(false)), true, false),
+        ];
+        for (i, (settings, plain, muted_mention)) in table.iter().enumerate() {
+            assert_eq!(ok(&msg(), &chat, settings), *plain, "row {i}, plain");
+            assert_eq!(ok(&mention, &muted, settings), *muted_mention, "row {i}, mention");
+        }
+        assert!(!ok(&msg(), &muted, &NotificationSettings::default()));
     }
 
     #[test]
@@ -196,13 +294,14 @@ mod tests {
             chat: Some("c2".into()),
             active: true,
         };
-        assert!(should_notify(&msg(), &chat, 10_000_000.0, &away, false));
-        assert!(!should_notify(&msg(), &chat, 10_000_000.0, &away, true));
+        let on = NotificationSettings::default();
+        assert!(should_notify(&msg(), &chat, 10_000_000.0, &away, false, &on, 0.0));
+        assert!(!should_notify(&msg(), &chat, 10_000_000.0, &away, true, &on, 0.0));
         let here = Focus {
             chat: Some("c1".into()),
             active: true,
         };
-        assert!(!should_notify(&msg(), &chat, 10_000_000.0, &here, false));
+        assert!(!should_notify(&msg(), &chat, 10_000_000.0, &here, false, &on, 0.0));
         let background = Focus {
             chat: Some("c1".into()),
             active: false,
@@ -212,13 +311,15 @@ mod tests {
             &chat,
             10_000_000.0,
             &background,
-            false
+            false,
+            &on,
+            0.0
         ));
         let muted = Chat {
             muted: true,
             ..chat.clone()
         };
-        assert!(!should_notify(&msg(), &muted, 10_000_000.0, &away, false));
+        assert!(!should_notify(&msg(), &muted, 10_000_000.0, &away, false, &on, 0.0));
         assert!(should_notify(
             &Message {
                 mentions_me: true,
@@ -227,14 +328,18 @@ mod tests {
             &muted,
             10_000_000.0,
             &away,
-            false
+            false,
+            &on,
+            0.0
         ));
         assert!(!should_notify(
             &msg(),
             &chat,
             10_000_000.0 + 31_000.0,
             &away,
-            false
+            false,
+            &on,
+            0.0
         ));
     }
 
@@ -245,6 +350,14 @@ mod tests {
             mentions_me: true,
             ..msg()
         };
-        assert_eq!(body(&m), "กล่าวถึงคุณ: รูปภาพ");
+        assert_eq!(body(&m, true), "กล่าวถึงคุณ: รูปภาพ");
+        assert_eq!(body(&m, false), "กล่าวถึงคุณ");
+        assert_eq!(body(&msg(), false), "ส่งข้อความถึงคุณ");
+        // A Letter Sealing message LAAB couldn't decrypt.
+        let sealed = Message {
+            text: String::new(),
+            ..msg()
+        };
+        assert_eq!(body(&sealed, true), "ส่งข้อความถึงคุณ");
     }
 }

@@ -401,6 +401,7 @@ async fn connected(state: Arc<AppState>, client: Client, device: Device) {
     });
 
     spawn_forwarders(&state, &line);
+    tokio::spawn(load_notification_settings(client.clone()));
     {
         let (s, c) = (state.clone(), client.clone());
         tokio::spawn(async move {
@@ -435,6 +436,16 @@ async fn connected(state: Arc<AppState>, client: Client, device: Device) {
         name_stored_files(&s).await;
         crate::actions::prefetch_calendars(&s, None).await;
     });
+}
+
+/// Read the account's notification settings (LINE's, shared by every
+/// device) for the banner rules. On failure the rules treat every switch as
+/// on, as before.
+async fn load_notification_settings(client: Client) {
+    match client.notification_settings().await {
+        Ok(s) => crate::notify::set_settings(Some(s)),
+        Err(e) => tracing::warn!("notification settings: {}", e.full_message()),
+    }
 }
 
 /// Give names to E2EE files synced before LAAB read them from the payload,
@@ -655,6 +666,14 @@ async fn handle_event(state: &Arc<AppState>, line: &Arc<Line>, ev: LineEvent) {
                     )
                 };
                 apply_reaction(state, &r.message_id, &user, name.as_deref());
+            }
+            // Settings changed, maybe on the phone: read the notification
+            // ones again when they are among them.
+            TalkEvent::SettingsUpdated { attributes } => {
+                use line_rs::client::settings::NOTIFICATION_ATTRIBUTES;
+                if attributes.is_empty() || attributes.iter().any(|a| NOTIFICATION_ATTRIBUTES.contains(a)) {
+                    tokio::spawn(load_notification_settings(line.client.clone()));
+                }
             }
             TalkEvent::Unsend { message_id, .. } => apply_unsend(state, &message_id),
             TalkEvent::Invite { chat_mid, .. }
