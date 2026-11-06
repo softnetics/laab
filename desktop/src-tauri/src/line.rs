@@ -1606,7 +1606,10 @@ pub async fn raw_message(state: &Arc<AppState>, chat_id: &str, message_id: &str)
     Err(anyhow!("not_in_recent_100"))
 }
 
-/// Make sure the raw media message is known, refetching recent history.
+/// Make sure the raw media message is known: from memory, then from the
+/// message stored in the database, then from the latest 100 in the chat.
+/// `message_not_found` when none has it. Whether the file itself is gone
+/// is only known from the download (`file_expired`).
 pub async fn ensure_media_message(
     state: &Arc<AppState>,
     line: &Line,
@@ -1616,6 +1619,13 @@ pub async fn ensure_media_message(
     if line.has_media(message_id) {
         return Ok(());
     }
+    if let Some(raw) = stored_raw(state, message_id) {
+        let ct = TalkMessage::new(line.client.clone(), raw.clone()).content_type();
+        line.remember_media(&raw, &ct);
+        if line.has_media(message_id) {
+            return Ok(());
+        }
+    }
     for raw in recent_raw(line, chat_id, 100).await? {
         if raw["id"].as_str() == Some(message_id) {
             let (raw, _) = decrypt(line, raw).await;
@@ -1624,13 +1634,38 @@ pub async fn ensure_media_message(
             return Ok(());
         }
     }
-    let _ = state;
-    Err(anyhow!("file_expired"))
+    Err(anyhow!("message_not_found"))
+}
+
+/// The error to show for a failed media download: `file_expired` only when
+/// LINE's storage says the file is gone (HTTP 403, 404 or 410), as LINE
+/// shows "deleted or expired" only then.
+pub fn media_error(e: line_rs::Error) -> anyhow::Error {
+    if e.is_media_expired() {
+        anyhow!("file_expired")
+    } else {
+        anyhow!("download_failed: {}", e.full_message())
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_a_gone_file_is_expired() {
+        let obs = |status: u16| {
+            line_rs::Error::internal("ObsError", format!("Object download failed: HTTP {status}"))
+        };
+        for status in [403, 404, 410] {
+            assert_eq!(media_error(obs(status)).to_string(), "file_expired");
+        }
+        let failed = |e| media_error(e).to_string().starts_with("download_failed");
+        for status in [401, 500, 503] {
+            assert!(failed(obs(status)));
+        }
+        assert!(failed(line_rs::Error::internal("TimeoutError", "stalled")));
+    }
 
     #[test]
     fn stored_chunks_come_back_as_bytes() {

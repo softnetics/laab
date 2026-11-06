@@ -609,12 +609,10 @@ pub async fn download(
     crate::media::download_file(&s, &chat_id, &message_id, file_name)
         .await
         .map(|p| p.to_string_lossy().into_owned())
-        .map_err(|e| {
-            if e.to_string().contains("file_expired") {
-                "ไฟล์นี้หมดอายุแล้ว ดาวน์โหลดไม่ได้".into()
-            } else {
-                e.to_string()
-            }
+        .map_err(|e| match e.to_string().as_str() {
+            "file_expired" => "ไฟล์นี้หมดอายุแล้ว ดาวน์โหลดไม่ได้".into(),
+            "message_not_found" => "ไม่พบข้อความนี้ ลองเปิดแชตนี้ใหม่แล้วดาวน์โหลดอีกครั้ง".into(),
+            other => other.to_string(),
         })
 }
 
@@ -1558,10 +1556,7 @@ pub async fn save_attachment(
     let target = match dest.filter(|d| !d.is_empty()) {
         Some(d) => std::path::PathBuf::from(d),
         None => {
-            let name = m.file_name.clone().unwrap_or_else(|| {
-                let ext = src.extension().and_then(|e| e.to_str()).unwrap_or("jpg");
-                format!("LINE_{}.{ext}", message_id)
-            });
+            let name = crate::media::save_name(m.file_name.as_deref(), &message_id, &src);
             dirs::download_dir()
                 .ok_or("ไม่พบโฟลเดอร์ดาวน์โหลด")?
                 .join(name)

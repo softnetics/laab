@@ -253,11 +253,12 @@ export const mediaUrl = {
   pack: (id: string) => `${MEDIA}/pack/${encodeURIComponent(id)}`,
   /** A profile cover photo (OBS `myhome/c`). */
   cover: (oid: string) => `${MEDIA}/cover/${encodeURIComponent(oid)}`,
-  /** An album photo; the backend downloads it on first request. */
-  album: (chatId: string, albumId: string, oid: string) =>
-    `${MEDIA}/album/${encodeURIComponent(chatId)}/${encodeURIComponent(albumId)}/${encodeURIComponent(oid)}`,
+  /** An album photo, or with `video` the video itself (a photo is its still); the backend downloads it on first request. */
+  album: (chatId: string, albumId: string, oid: string, video = false) =>
+    `${MEDIA}/album/${encodeURIComponent(chatId)}/${encodeURIComponent(albumId)}/${encodeURIComponent(oid)}${video ? "?video=1" : ""}`,
   /** A note photo (`h`) or comment image (`cmt`). */
-  note: (svc: "h" | "cmt", id: string) => `${MEDIA}/note/${svc}/${encodeURIComponent(id)}`,
+  /** A note photo or comment image at its OBS path, `service/namespace/objectId`. */
+  note: (obs: string) => `${MEDIA}/note/${obs.split("/").map(encodeURIComponent).join("/")}`,
 };
 
 /** Backend error codes that reach the UI as they are. */

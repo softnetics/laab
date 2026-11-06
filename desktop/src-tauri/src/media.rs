@@ -8,8 +8,9 @@
 //!   /message/<chatId>/<messageId>?preview=1
 //!   /sticker/<stickerId>?anim=1
 //!   /pack/<packageId>
-//!   /album/<chatId>/<albumId>/<oid>
-//!   /cover/<oid>
+//!   /album/<chatId>/<albumId>/<oid>?video=1
+//!   /cover/<service/namespace/oid, as one segment>
+//!   /note/<service>/<namespace>/<oid>
 //!   /local?path=<absolute path inside the data folder>
 
 use std::path::{Path, PathBuf};
@@ -21,6 +22,8 @@ use tauri::http::{Request, Response, StatusCode, header};
 use crate::state::AppState;
 
 const STICKER_CDN: &str = "https://stickershop.line-scdn.net/stickershop/v1";
+/// `CDN_PROFILE` (`ia0/k`): profile and group pictures.
+const PROFILE_CDN: &str = "https://profile.line-scdn.net";
 
 fn query(req: &Request<Vec<u8>>, key: &str) -> Option<String> {
     let q = req.uri().query()?;
@@ -183,9 +186,15 @@ pub async fn handle(state: Arc<AppState>, req: Request<Vec<u8>>) -> Response<Vec
         }
         ["sticker", id] => sticker(&state, id, query(&req, "anim").is_some()).await,
         ["pack", id] => pack_icon(&state, id).await,
-        ["album", chat, album, oid] => crate::actions::album_photo_file(&state, chat, album, oid).await,
+        ["album", chat, album, oid] => {
+            let video = query(&req, "video").is_some();
+            crate::actions::album_photo_file(&state, chat, album, oid, video).await
+        }
         ["cover", oid] => crate::actions::cover_file(&state, oid).await,
-        ["note", svc, id] => note_media(&state, svc, id).await,
+        ["note", svc @ ("h" | "cmt"), id] => note_media(&state, &format!("myhome/{svc}"), id).await,
+        ["note", service, namespace, id] => {
+            note_media(&state, &format!("{service}/{namespace}"), id).await
+        }
         ["local"] => {
             let p = PathBuf::from(query(&req, "path").unwrap_or_default());
             if p.starts_with(&state.paths.root) {
@@ -230,6 +239,48 @@ fn save_plain(path: &Path, data: &[u8]) -> Result<PathBuf> {
     Ok(path.to_path_buf())
 }
 
+/// The extension for a file that starts with `head`.
+pub fn extension_of(head: &[u8]) -> &'static str {
+    match sniff_mime(head, Path::new("")) {
+        "image/png" => "png",
+        "image/jpeg" => "jpg",
+        "image/gif" => "gif",
+        "image/webp" => "webp",
+        "video/mp4" => "mp4",
+        _ if head.starts_with(b"%PDF") => "pdf",
+        _ if head.starts_with(b"PK") => "zip",
+        _ => "bin",
+    }
+}
+
+/// A file name as the user sees it, safe to save under: only `/` and `:`
+/// (the path separators of macOS) become `_`, so the extension stays.
+pub fn clean_file_name(name: &str) -> String {
+    let clean: String = name
+        .chars()
+        .map(|c| if matches!(c, '/' | ':' | '\0') { '_' } else { c })
+        .collect();
+    match clean.trim() {
+        "" | "." | ".." => "file".into(),
+        _ => clean,
+    }
+}
+
+/// The name to save a message's attachment under: its own file name, or
+/// `LINE_<id>.<ext>` with the extension of the cached file's content
+/// (never the cache's own `.full`).
+pub fn save_name(file_name: Option<&str>, message_id: &str, cached: &Path) -> String {
+    match file_name.filter(|n| !n.trim().is_empty() && !n.starts_with('[')) {
+        Some(n) => clean_file_name(n),
+        None => {
+            let head = crate::vault::CacheFile::open(cached)
+                .and_then(|mut f| f.head(16))
+                .unwrap_or_default();
+            format!("LINE_{}.{}", safe_name(message_id), extension_of(&head))
+        }
+    }
+}
+
 pub fn safe_name(s: &str) -> String {
     s.chars()
         .map(|c| {
@@ -242,39 +293,93 @@ pub fn safe_name(s: &str) -> String {
         .collect()
 }
 
+/// The cache file of `mid`'s picture at `picture` (its `picturePath`).
+/// The name carries a hash of the path, so a new picture gets a new file
+/// and is downloaded, as LINE caches pictures by URL (`mp8/b.k`).
+fn avatar_file(dir: &Path, mid: &str, picture: &str) -> PathBuf {
+    use sha2::{Digest, Sha256};
+    let hash = hex::encode(&Sha256::digest(picture.as_bytes())[..6]);
+    dir.join(format!("{}-{hash}.jpg", safe_name(mid)))
+}
+
+/// `mid`'s other cached pictures: older pictures and the unhashed
+/// `<mid>.jpg` of earlier builds.
+fn stale_avatars(dir: &Path, mid: &str, keep: &Path) -> Vec<PathBuf> {
+    let id = safe_name(mid);
+    let (hashed, legacy) = (format!("{id}-"), format!("{id}.jpg"));
+    std::fs::read_dir(dir)
+        .into_iter()
+        .flatten()
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .filter(|p| p != keep && !crate::vault::is_temp(p))
+        .filter(|p| {
+            let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
+            name == legacy
+                || name
+                    .strip_prefix(&hashed)
+                    .is_some_and(|rest| rest.len() == 16 && rest.ends_with(".jpg"))
+        })
+        .collect()
+}
+
 async fn avatar(state: &AppState, mid: &str, picture: Option<String>) -> Result<PathBuf> {
-    let path = state
-        .paths
-        .avatars()
-        .join(format!("{}.jpg", safe_name(mid)));
-    if path.exists() {
-        return Ok(path);
-    }
+    let dir = state.paths.avatars();
+    // Demo pictures.
     for ext in ["png", "svg"] {
-        let other = path.with_extension(ext);
+        let other = dir.join(format!("{}.{ext}", safe_name(mid)));
         if other.exists() {
             return Ok(other);
         }
     }
+    let picture = picture.unwrap_or_default();
+    let path = avatar_file(&dir, mid, &picture);
+    if path.exists() {
+        return Ok(path);
+    }
     if state.demo {
         return Err(anyhow!("demo"));
     }
-    let picture = picture
-        .filter(|p| !p.is_empty())
-        .ok_or_else(|| anyhow!("no picture"))?;
-    let p = if picture.starts_with('/') {
-        picture
+    let data = if !picture.is_empty() {
+        let p = if picture.starts_with('/') {
+            picture
+        } else {
+            format!("/{picture}")
+        };
+        fetch_preview(&format!("{PROFILE_CDN}{p}")).await?
+    } else if mid.starts_with('c') {
+        // A group without a picture path: OBS `r/talk/g/{gid}` (`mp8/b.o`).
+        let line = state.line().await.ok_or_else(|| anyhow!("not_logged_in"))?;
+        let obs = line.client.base.obs();
+        match obs
+            .download_object_for_service("talk/g", &format!("{mid}/preview"), vec![])
+            .await
+        {
+            Ok(d) if !d.is_empty() => d.to_vec(),
+            _ => obs
+                .download_object_for_service("talk/g", mid, vec![])
+                .await
+                .map_err(|e| anyhow!("{e}"))?
+                .to_vec(),
+        }
     } else {
-        format!("/{picture}")
-    };
-    let base = format!("https://profile.line-scdn.net{p}");
-    let data = match fetch(&format!("{base}/preview")).await {
-        Ok(d) => d,
-        Err(_) => fetch(&base).await?,
+        // A user without a picture path: `r/talk/p/{mid}` on the profile
+        // CDN (`mp8/b.k`).
+        fetch_preview(&format!("{PROFILE_CDN}/r/talk/p/{}", safe_name(mid))).await?
     };
     let saved = save(&path, &data)?;
+    for old in stale_avatars(&dir, mid, &saved) {
+        let _ = std::fs::remove_file(old);
+    }
     let _ = state.store().set_avatar(mid, &saved.to_string_lossy());
     Ok(saved)
+}
+
+/// `{base}/preview`, else `base` itself.
+async fn fetch_preview(base: &str) -> Result<Vec<u8>> {
+    match fetch(&format!("{base}/preview")).await {
+        Ok(d) => Ok(d),
+        Err(_) => fetch(base).await,
+    }
 }
 
 /// Whether a cached file is a video. A preview must be a picture.
@@ -308,61 +413,6 @@ fn cached_media(dir: &Path, id: &str, preview: bool) -> Option<PathBuf> {
         .or_else(|| full.filter(|p| !is_video(p)))
 }
 
-/// `X-Talk-Meta` for downloading the object of message `id` (line-rs keeps
-/// its copy crate-private).
-fn talk_meta(message_id: &str) -> Result<String> {
-    use base64::Engine;
-    use line_rs::thrift::{Protocol, TType, TValue, write_struct};
-    let b64 = base64::engine::general_purpose::STANDARD;
-    let s = write_struct(
-        &[
-            (4, TValue::Binary(message_id.as_bytes().to_vec())),
-            (27, TValue::List(TType::Struct, Vec::new())),
-        ],
-        Protocol::Binary,
-    )
-    .map_err(|e| anyhow!("{e}"))?;
-    let json = serde_json::json!({ "message": b64.encode(s) }).to_string();
-    Ok(b64.encode(json))
-}
-
-/// The thumbnail of an E2EE photo or video. LINE stores it beside the media
-/// as `<oid>__ud-preview`, encrypted with the same key; line-rs only fetches
-/// the full object, which for a video is the whole file. `None` when the
-/// message is not E2EE.
-async fn e2ee_preview(
-    line: &crate::line::Line,
-    raw: &line_rs::thrift::Value,
-) -> Result<Option<Vec<u8>>> {
-    if raw["chunks"].as_list().is_none_or(|c| c.is_empty()) {
-        return Ok(None);
-    }
-    let base = &line.client.base;
-    let payload = base
-        .decrypt_e2ee_data_message(raw)
-        .await
-        .map_err(|e| anyhow!("{e}"))?;
-    let key = payload["keyMaterial"]
-        .as_str()
-        .ok_or_else(|| anyhow!("no keyMaterial"))?;
-    let meta = &raw["contentMetadata"];
-    let oid = meta["OID"].as_str().unwrap_or_default();
-    let sid = meta["SID"].as_str().unwrap_or_default();
-    let id = raw["id"].as_str().unwrap_or_default();
-    let data = base
-        .obs()
-        .download_object_for_service(
-            &format!("talk/{sid}"),
-            &format!("{oid}__ud-preview"),
-            vec![("X-Talk-Meta".into(), talk_meta(id)?)],
-        )
-        .await
-        .map_err(|e| anyhow!("{e}"))?;
-    let plain = line_rs::e2ee::crypto::decrypt_by_key_material_b64(&data, key)
-        .map_err(|e| anyhow!("{e}"))?;
-    Ok(Some(plain))
-}
-
 async fn message_media(
     state: &Arc<AppState>,
     chat: &str,
@@ -375,31 +425,26 @@ async fn message_media(
     }
     let line = state.line().await.ok_or_else(|| anyhow!("not_logged_in"))?;
     crate::line::ensure_media_message(state, &line, chat, id).await?;
-    let message = line.talk_message(id);
-    let e2ee = if preview {
-        e2ee_preview(&line, &message.raw).await.unwrap_or_else(|e| {
-            tracing::warn!("e2ee preview {id}: {e}");
-            None
-        })
-    } else {
-        None
-    };
-    let data = match e2ee {
-        Some(d) => d,
-        None => message.data(preview).await.map_err(|e| anyhow!("{e}"))?,
-    };
-    // A "preview" that is the whole video is kept as the full file instead.
-    let full = !preview || sniff_mime(&data, Path::new("")) == "video/mp4";
-    let name = if full {
-        format!("{}.full", safe_name(id))
-    } else {
-        format!("{}.preview", safe_name(id))
-    };
-    let saved = save(&dir.join(name), &data)?;
-    crate::cache::schedule_trim(state);
-    if preview && full {
+    let ext = if preview { "preview" } else { "full" };
+    let target = dir.join(format!("{}.{ext}", safe_name(id)));
+    // Streamed to disk: a video never sits in memory whole. An E2EE
+    // thumbnail is the `ud-preview` the sender uploaded; line-rs never
+    // downloads a whole video for it.
+    let mut file = crate::vault::Writer::create(&target)?;
+    line.talk_message(id)
+        .download_to(preview, &mut file)
+        .await
+        .map_err(crate::line::media_error)?;
+    let video = sniff_mime(file.head(), Path::new("")) == "video/mp4";
+    if preview && video {
+        // Not a thumbnail: keep it as the full file.
+        let full = dir.join(format!("{}.full", safe_name(id)));
+        file.finish_as(&full)?;
+        crate::cache::schedule_trim(state);
         return Err(anyhow!("no thumbnail for {id}"));
     }
+    let saved = file.finish()?;
+    crate::cache::schedule_trim(state);
     if !preview {
         let _ = state
             .store()
@@ -465,29 +510,79 @@ async fn pack_icon(state: &AppState, id: &str) -> Result<PathBuf> {
     save_plain(&path, &data)
 }
 
-/// A note photo (`h`) or comment image (`cmt`) from OBS `myhome/<svc>`.
-async fn note_media(state: &Arc<AppState>, svc: &str, oid: &str) -> Result<PathBuf> {
-    if !matches!(svc, "h" | "cmt") {
-        return Err(anyhow!("unknown note media"));
-    }
+/// A note photo or comment image: OBS `base/oid`, where `base` is the
+/// `service/namespace` the post names (`myhome/h` and `myhome/cmt` by
+/// default).
+async fn note_media(state: &Arc<AppState>, base: &str, oid: &str) -> Result<PathBuf> {
     let path = state
         .paths
         .media()
-        .join(format!("note-{svc}-{}", safe_name(oid)));
+        .join(format!("note-{}-{}", safe_name(base), safe_name(oid)));
     if path.exists() {
         return Ok(path);
     }
-    let line = state.line().await.ok_or_else(|| anyhow!("not_logged_in"))?;
-    let data = line
-        .client
-        .base
-        .obs()
-        .download_object_for_service(&format!("myhome/{svc}"), oid, vec![])
-        .await
-        .map_err(|e| anyhow!("{e}"))?;
-    let saved = save(&path, &data)?;
+    let saved = home_obs_file(state, base, oid, &path).await?;
     crate::cache::schedule_trim(state);
     Ok(saved)
+}
+
+/// The MyHome channel token, issued once per session.
+static HOME_TOKEN: std::sync::Mutex<Option<(String, String)>> = std::sync::Mutex::new(None);
+
+async fn home_channel_token(line: &crate::line::Line) -> Option<String> {
+    let session = line.client.base.auth_token()?;
+    if let Some((s, token)) = HOME_TOKEN.lock().unwrap().as_ref()
+        && *s == session
+    {
+        return Some(token.clone());
+    }
+    match line
+        .client
+        .base
+        .rest()
+        .channel_token(line_rs::rest::channels::MYHOME)
+        .await
+    {
+        Ok(token) => {
+            *HOME_TOKEN.lock().unwrap() = Some((session, token.clone()));
+            Some(token)
+        }
+        Err(e) => {
+            tracing::warn!("home channel token: {e}");
+            None
+        }
+    }
+}
+
+/// Stream note, comment or cover media from OBS `base/oid` (`base` is
+/// `service/namespace`) into `dest`, with `X-Line-ChannelToken` as LINE
+/// sends with home images (`e80/m.java`).
+pub async fn home_obs_file(
+    state: &Arc<AppState>,
+    base: &str,
+    oid: &str,
+    dest: &Path,
+) -> Result<PathBuf> {
+    let parts: Vec<&str> = base.split('/').collect();
+    if parts.len() != 2
+        || parts.iter().any(|p| p.is_empty() || safe_name(p) != *p)
+        || oid.is_empty()
+    {
+        return Err(anyhow!("unknown note media"));
+    }
+    let line = state.line().await.ok_or_else(|| anyhow!("not_logged_in"))?;
+    let headers = match home_channel_token(&line).await {
+        Some(token) => vec![("X-Line-ChannelToken".to_string(), token)],
+        None => Vec::new(),
+    };
+    let mut file = crate::vault::Writer::create(dest)?;
+    line.client
+        .base
+        .obs()
+        .download_object_to(base, oid, headers, &mut file)
+        .await
+        .map_err(crate::line::media_error)?;
+    file.finish()
 }
 
 /// Download an attachment to `cache/media/<id>.<filename>` and record it.
@@ -504,37 +599,20 @@ pub async fn download_file(
     }
     let line = state.line().await.ok_or_else(|| anyhow!("not_logged_in"))?;
     crate::line::ensure_media_message(state, &line, chat, id).await?;
-    let data = line
-        .talk_message(id)
-        .data(false)
+    let dir = state.paths.media();
+    let mut file = crate::vault::Writer::create(&dir.join(format!("{}.download", safe_name(id))))?;
+    line.talk_message(id)
+        .download_to(false, &mut file)
         .await
-        .map_err(|e| anyhow!("download_failed: {e}"))?;
-    if data.is_empty() {
-        return Err(anyhow!("file_expired"));
+        .map_err(crate::line::media_error)?;
+    if file.len() == 0 {
+        return Err(anyhow!("download_failed: empty file"));
     }
     let name = file_name
         .filter(|n| !n.is_empty() && !n.starts_with('['))
-        .unwrap_or_else(|| {
-            let ext = match sniff_mime(&data, Path::new("")) {
-                "image/png" => "png",
-                "image/jpeg" => "jpg",
-                "image/gif" => "gif",
-                "video/mp4" => "mp4",
-                _ if data.starts_with(b"%PDF") => "pdf",
-                _ if data.starts_with(b"PK") => "zip",
-                _ => "bin",
-            };
-            format!("file.{ext}")
-        });
-    let clean: String = name
-        .chars()
-        .map(|c| if c == '/' || c == ':' { '_' } else { c })
-        .collect();
-    let path = state
-        .paths
-        .media()
-        .join(format!("{}.{clean}", safe_name(id)));
-    save(&path, &data)?;
+        .unwrap_or_else(|| format!("file.{}", extension_of(file.head())));
+    let clean = clean_file_name(&name);
+    let path = file.finish_as(&dir.join(format!("{}.{clean}", safe_name(id))))?;
     crate::cache::schedule_trim(state);
     state
         .store()
@@ -553,6 +631,42 @@ mod tests {
             url_query("p=%2Fa&x=1"),
             vec![("p".into(), "/a".into()), ("x".into(), "1".into())]
         );
+    }
+
+    #[test]
+    fn saved_names_keep_their_extension() {
+        assert_eq!(clean_file_name("report v2.pdf"), "report v2.pdf");
+        assert_eq!(clean_file_name("a/b:c.tar.gz"), "a_b_c.tar.gz");
+        assert_eq!(clean_file_name(".."), "file");
+        let dir = tempfile::tempdir().unwrap();
+        let full = dir.path().join("7.full");
+        std::fs::write(&full, b"\x89PNG\r\n\x1a\nrest").unwrap();
+        assert_eq!(save_name(None, "7", &full), "LINE_7.png");
+        assert_eq!(save_name(Some("[Photo]"), "7", &full), "LINE_7.png");
+        assert_eq!(save_name(Some("notes.txt"), "7", &full), "notes.txt");
+        std::fs::write(&full, b"\0\0\0\x18ftypmp42").unwrap();
+        assert_eq!(save_name(None, "7", &full), "LINE_7.mp4");
+    }
+
+    #[test]
+    fn a_new_picture_gets_a_new_avatar_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = avatar_file(dir.path(), "u1", "/0hAAA");
+        let b = avatar_file(dir.path(), "u1", "/0hBBB");
+        assert_ne!(a, b);
+        assert_eq!(a, avatar_file(dir.path(), "u1", "/0hAAA"));
+        assert_ne!(avatar_file(dir.path(), "u1", ""), a);
+        for p in [&a, &b] {
+            std::fs::write(p, b"x").unwrap();
+        }
+        for name in ["u1.jpg", "u10-0123456789ab.jpg", "u1.png", "cover-u1.jpg"] {
+            std::fs::write(dir.path().join(name), b"x").unwrap();
+        }
+        let mut stale = stale_avatars(dir.path(), "u1", &b);
+        stale.sort();
+        let mut want = vec![a, dir.path().join("u1.jpg")];
+        want.sort();
+        assert_eq!(stale, want);
     }
 
     #[test]

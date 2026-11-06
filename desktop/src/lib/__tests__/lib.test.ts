@@ -3,6 +3,7 @@ import { compareIds, later, placement, readersOf } from "../reads";
 import { backspaceMention, composingQuery, fromSpans, insertMention, matching, present, targets, ALL_MEMBER } from "../mentions";
 import { callBubbleLabel, chatEventText, noticeFor, readCall, readChatEvent, isBlank } from "../notices";
 import { buildRows } from "../timeline";
+import { isAnimated } from "../media";
 import { findHits, ranges } from "../inChatSearch";
 import { linkify, liffId } from "../links";
 import { adjacentChat, filterChats, folderName, groupRows, listPreview } from "../chatList";
@@ -274,5 +275,19 @@ describe("reactions and time", () => {
     expect(dayHeader(new Date(2026, 9, 19).getTime(), now)).toBe("19 ต.ค.");
     expect(dayHeader(new Date(2025, 9, 19).getTime(), now)).toBe("19 ต.ค. 2025");
     expect(fullStamp(new Date(2026, 9, 29, 7, 40).getTime())).toBe("29 ต.ค. 2026 7.40 น.");
+  });
+});
+
+describe("animated photos", () => {
+  const photo = (info?: string) => msg({ contentType: "IMAGE", metadata: info ? { MEDIA_CONTENT_INFO: info } : {} });
+  it("plays a GIF that LINE marks animated", () => {
+    expect(isAnimated(photo('{"category":"original","extension":"gif","animated":true}'))).toBe(true);
+    expect(isAnimated(photo('{"extension":"GIF"}'))).toBe(true);
+  });
+  it("keeps other photos still", () => {
+    expect(isAnimated(photo('{"category":"original","extension":"jpg"}'))).toBe(false);
+    expect(isAnimated(photo("not json"))).toBe(false);
+    expect(isAnimated(photo())).toBe(false);
+    expect(isAnimated(msg({ contentType: "VIDEO", metadata: { MEDIA_CONTENT_INFO: '{"animated":true}' } }))).toBe(false);
   });
 });

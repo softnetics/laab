@@ -415,17 +415,17 @@ pub async fn contact_profile(state: &Arc<AppState>, mid: &str) -> Result<Contact
     })
 }
 
-/// The cover's object id in a home profile response. The shape is not
-/// documented, so look for `coverObsInfo.objectId` (or `coverObjectId`)
-/// anywhere in it.
+/// The cover's OBS path (see [`obs_path`]) in a home profile response.
+/// The shape is not documented, so look for `coverObsInfo` (or
+/// `coverObjectId`) anywhere in it.
 fn cover_object_id(json: &Json) -> Option<String> {
     match json {
         Json::Object(o) => {
-            if let Some(id) = o.get("coverObsInfo").and_then(|c| c.get("objectId")).and_then(str_of) {
-                return Some(id);
+            if let Some(path) = o.get("coverObsInfo").and_then(|c| obs_path(c, "myhome/c")) {
+                return Some(path);
             }
             if let Some(id) = o.get("coverObjectId").and_then(str_of) {
-                return Some(id);
+                return Some(format!("myhome/c/{id}"));
             }
             o.values().find_map(cover_object_id)
         }
@@ -434,25 +434,22 @@ fn cover_object_id(json: &Json) -> Option<String> {
     }
 }
 
-/// A profile cover, downloaded into the avatar cache on first use.
-pub async fn cover_file(state: &Arc<AppState>, oid: &str) -> Result<std::path::PathBuf> {
+/// A profile cover, downloaded into the avatar cache on first use. `path`
+/// is the OBS path from [`cover_object_id`]; a bare object id (from
+/// earlier builds) lies in `myhome/c`.
+pub async fn cover_file(state: &Arc<AppState>, path: &str) -> Result<std::path::PathBuf> {
     let dest = state
         .paths
         .avatars()
-        .join(format!("cover-{}.jpg", crate::media::safe_name(oid)));
+        .join(format!("cover-{}.jpg", crate::media::safe_name(path)));
     if dest.exists() {
         return Ok(dest);
     }
-    let l = line(state).await?;
-    let bytes = l
-        .client
-        .base
-        .obs()
-        .download_object_for_service("myhome/c", oid, vec![])
-        .await
-        .map_err(|e| anyhow!("{e}"))?;
-    crate::vault::write(&dest, &bytes)?;
-    Ok(dest)
+    let (base, oid) = match path.rsplit_once('/') {
+        Some((base, oid)) => (base.to_string(), oid),
+        None => ("myhome/c".to_string(), path),
+    };
+    crate::media::home_obs_file(state, &base, oid, &dest).await
 }
 
 pub async fn add_friend(state: &Arc<AppState>, mid: &str) -> Result<()> {
@@ -506,6 +503,8 @@ pub struct NotePost {
 #[serde(rename_all = "camelCase")]
 pub struct NoteMedia {
     pub object_id: String,
+    /// Its OBS path, `service/namespace/objectId` (see [`obs_path`]).
+    pub obs: String,
     pub video: bool,
 }
 
@@ -518,7 +517,8 @@ pub struct NoteComment {
     pub author_picture: Option<String>,
     pub text: String,
     pub created_time: f64,
-    /// Image object ids in `myhome/cmt`.
+    /// OBS paths of its images (see [`obs_path`]; `myhome/cmt/...` unless
+    /// the comment names another place).
     pub images: Vec<String>,
 }
 
@@ -536,6 +536,23 @@ fn picture_path(url: &Json) -> Option<String> {
     (!path.is_empty()).then(|| path.to_string())
 }
 
+/// The OBS path, `service/namespace/objectId`, of a media object in post
+/// or profile data. LINE describes one as `{objectId, serviceName,
+/// obsNamespace, ...}` (`wi6/b0.java`); without the two names it lies under
+/// `default` (`myhome/h` for note photos, `myhome/cmt` for comment images,
+/// `myhome/c` for covers).
+pub fn obs_path(o: &Json, default: &str) -> Option<String> {
+    let oid = str_of(&o["objectId"]).or_else(|| str_of(&o["oid"]))?;
+    let name = |k: &str| {
+        o[k].as_str()
+            .filter(|s| !s.is_empty() && crate::media::safe_name(s) == *s)
+    };
+    Some(match (name("serviceName"), name("obsNamespace")) {
+        (Some(svc), Some(ns)) => format!("{svc}/{ns}/{oid}"),
+        _ => format!("{default}/{oid}"),
+    })
+}
+
 fn parse_post(post: &Json) -> Option<NotePost> {
     let info = &post["postInfo"];
     let user = &post["userInfo"];
@@ -546,6 +563,7 @@ fn parse_post(post: &Json) -> Option<NotePost> {
         .filter_map(|m| {
             Some(NoteMedia {
                 object_id: str_of(&m["objectId"]).or_else(|| str_of(&m["oid"]))?,
+                obs: obs_path(m, "myhome/h")?,
                 video: m["type"]
                     .as_str()
                     .is_some_and(|t| t.eq_ignore_ascii_case("VIDEO")),
@@ -578,8 +596,10 @@ pub fn parse_comments(result: &Json) -> Vec<NoteComment> {
     fn object_ids(v: &Json, out: &mut Vec<String>) {
         match v {
             Json::Object(o) => {
-                if let Some(id) = o.get("objectId").and_then(str_of) {
-                    out.push(id);
+                if o.contains_key("objectId")
+                    && let Some(path) = obs_path(v, "myhome/cmt")
+                {
+                    out.push(path);
                 }
                 o.values().for_each(|x| object_ids(x, out));
             }
@@ -1065,22 +1085,17 @@ pub struct AlbumPhoto {
     pub video: bool,
 }
 
-/// Albums of one chat. LINE lists every album, so filter by chat.
+/// Albums of one chat. LINE lists every album, page by page, so read
+/// every page and filter by chat.
 pub async fn list_albums(state: &Arc<AppState>, chat_id: &str) -> Result<Vec<Album>> {
     let l = line(state).await?;
-    let reply = l
+    let albums = l
         .client
         .base
         .moa()
-        .get_albums(GetAlbumsOptions::default())
+        .get_all_albums(GetAlbumsOptions::default())
         .await?;
-    if let Some(code) = reply.code.filter(|c| *c != 0) {
-        bail!("album {code}: {}", reply.message.unwrap_or_default());
-    }
-    Ok(reply
-        .result
-        .map(|r| r.albums)
-        .unwrap_or_default()
+    Ok(albums
         .into_iter()
         .filter(|a| a.chat_id == chat_id)
         .filter_map(|a| {
@@ -1135,7 +1150,9 @@ pub async fn album_photos(
                 .resource_type
                 .as_deref()
                 .is_some_and(|t| t.eq_ignore_ascii_case("VIDEO"));
-            let path = album_photo_path(state, &oid).to_string_lossy().into_owned();
+            let path = album_photo_path(state, &oid, video)
+                .to_string_lossy()
+                .into_owned();
             out.push(AlbumPhoto {
                 id,
                 oid,
@@ -1152,39 +1169,47 @@ pub async fn album_photos(
     Ok(out)
 }
 
-fn album_photo_path(state: &AppState, oid: &str) -> std::path::PathBuf {
+/// Where an album photo, or the video itself, is cached.
+fn album_photo_path(state: &AppState, oid: &str, video: bool) -> std::path::PathBuf {
+    let ext = if video { "mp4" } else { "jpg" };
     state
         .paths
         .media()
-        .join(format!("album-{}.jpg", crate::media::safe_name(oid)))
+        .join(format!("album-{}.{ext}", crate::media::safe_name(oid)))
 }
 
-/// One album photo, downloaded into the media cache on first use.
+/// One album photo, or with `video` the video itself (`album/v`; a
+/// video's photo is its still), streamed into the media cache on first
+/// use.
 pub async fn album_photo_file(
     state: &Arc<AppState>,
     chat_id: &str,
     album_id: &str,
     oid: &str,
+    video: bool,
 ) -> Result<std::path::PathBuf> {
-    let dest = album_photo_path(state, oid);
+    let dest = album_photo_path(state, oid, video);
     if dest.exists() {
         return Ok(dest);
     }
     let l = line(state).await?;
-    let bytes = l
-        .client
+    let mut file = crate::vault::Writer::create(&dest)?;
+    l.client
         .base
         .moa()
-        .download_photo(DownloadPhotoOptions {
-            chat_id: chat_id.into(),
-            album_id: album_id.into(),
-            oid: oid.into(),
-            prefix: None,
-        })
+        .download_photo_to(
+            DownloadPhotoOptions {
+                chat_id: chat_id.into(),
+                album_id: album_id.into(),
+                oid: oid.into(),
+                prefix: Some(if video { "album/v" } else { "album/a" }.into()),
+            },
+            &mut file,
+        )
         .await?;
-    crate::vault::write(&dest, &bytes)?;
+    let saved = file.finish()?;
     crate::cache::schedule_trim(state);
-    Ok(dest)
+    Ok(saved)
 }
 
 pub async fn create_album(state: &Arc<AppState>, chat_id: &str, title: &str) -> Result<()> {
@@ -1289,6 +1314,16 @@ mod tests {
             (1, 2, 1)
         );
         assert_eq!(notes[0].media[0].object_id, "a");
+        assert_eq!(notes[0].media[0].obs, "myhome/h/a");
+    }
+
+    #[test]
+    fn media_lies_where_the_post_says() {
+        let m = json!({"objectId": "o1", "serviceName": "myhome", "obsNamespace": "hm"});
+        assert_eq!(obs_path(&m, "myhome/h").as_deref(), Some("myhome/hm/o1"));
+        let odd = json!({"objectId": "o1", "serviceName": "../x", "obsNamespace": "h"});
+        assert_eq!(obs_path(&odd, "myhome/h").as_deref(), Some("myhome/h/o1"));
+        assert_eq!(obs_path(&json!({}), "myhome/h"), None);
     }
 
     #[test]
@@ -1304,15 +1339,15 @@ mod tests {
             ("O", "สวย")
         );
         assert_eq!(c[0].author_picture.as_deref(), Some("/0hAbc"));
-        assert_eq!(c[0].images, vec!["img1"]);
+        assert_eq!(c[0].images, vec!["myhome/cmt/img1"]);
     }
 
     #[test]
     fn finds_the_cover_anywhere_in_a_home_profile() {
-        let nested = serde_json::json!({"result": {"homeInfo": {"coverObsInfo": {"objectId": "abc", "serviceName": "myhome"}}}});
-        assert_eq!(cover_object_id(&nested).as_deref(), Some("abc"));
+        let nested = serde_json::json!({"result": {"homeInfo": {"coverObsInfo": {"objectId": "abc", "serviceName": "myhome", "obsNamespace": "c"}}}});
+        assert_eq!(cover_object_id(&nested).as_deref(), Some("myhome/c/abc"));
         let flat = serde_json::json!({"result": [{"coverObjectId": "xyz"}]});
-        assert_eq!(cover_object_id(&flat).as_deref(), Some("xyz"));
+        assert_eq!(cover_object_id(&flat).as_deref(), Some("myhome/c/xyz"));
         assert_eq!(cover_object_id(&serde_json::json!({"result": {}})), None);
     }
 
