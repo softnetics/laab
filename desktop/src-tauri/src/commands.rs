@@ -1524,7 +1524,10 @@ pub async fn add_comment(state: S<'_>, chat_id: String, post_id: String, text: S
 #[tauri::command]
 pub async fn message_bytes(state: S<'_>, chat_id: String, message_id: String) -> R<tauri::ipc::Response> {
     let path = download(state, chat_id, message_id, None).await?;
-    let data = tokio::fs::read(path).await.map_err(err)?;
+    let data = tokio::task::spawn_blocking(move || crate::vault::read(std::path::Path::new(&path)))
+        .await
+        .map_err(err)?
+        .map_err(err)?;
     Ok(tauri::ipc::Response::new(data))
 }
 

@@ -14,8 +14,7 @@ const toPng = (canvas: HTMLCanvasElement) =>
   );
 
 export async function readClipboardPng(): Promise<Uint8Array | null> {
-  let image: Image;
-  try { image = await readImage(); } catch { return null; }
+  const image = await readImage();
   const { width, height } = await image.size();
   if (!width || !height) return null;
   const rgba = await image.rgba();
