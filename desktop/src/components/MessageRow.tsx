@@ -5,6 +5,7 @@ import { open as openDialog, save } from "@tauri-apps/plugin-dialog";
 import { memo, useState } from "react";
 import { api, errorText, mediaUrl, q, queryClient } from "../lib/api";
 import { copyImage } from "../lib/clipboardImage";
+import { sticons } from "../lib/media";
 import { performFlexAction } from "../lib/flexActions";
 import { callBubbleLabel, isBlank, noticeFor, readCall } from "../lib/notices";
 import { nextReaction } from "../lib/reactions";
@@ -439,7 +440,7 @@ function Content({
         highlight={highlight}
         current={current}
         chatId={ctx.chatId}
-        metadata={m.metadata}
+        sticons={m.contentType === "NONE" ? sticons(m.metadata, m.text.length) : undefined}
         onMention={(span, el) =>
           span.mid && !span.all
             ? setUi({ profile: { mid: span.mid, name: ctx.name(span.mid), picture: ctx.picture(span.mid) } })
