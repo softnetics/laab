@@ -65,7 +65,7 @@ fn defs() -> Vec<Def> {
     vec![
         // ------------------------------------------------------------ read
         d("get_status", Read, "LAAB status", "Whether LAAB is signed in to LINE, who the user is, sync progress, and what the user allows by default.", json!({}), &[], true, false),
-        d("list_chats", Read, "List chats", "Chats, most recent first, with unread counts and the last message. Filter by name, kind, folder or unread.", json!({
+        d("list_chats", Read, "List chats", "Chats, most recent first, with unread counts and the last message. Filter by name, kind, folder or unread. invited marks a group invitation, messageRequest a chat from someone who is not a friend that the user has not accepted.", json!({
             "query": s("Only chats whose name contains this (case-insensitive)."),
             "kind": { "type": "string", "enum": ["dm", "group", "bot"], "description": "Only this kind of chat." },
             "folder_id": s("Only chats in this folder (from list_folders)."),
@@ -90,7 +90,7 @@ fn defs() -> Vec<Def> {
             "kinds": { "type": "array", "items": { "type": "string", "enum": ["chat", "message", "file"] }, "description": "What to search (default all)." },
             "limit": n("At most this many (default 50)."),
         }), &["query"], true, false),
-        d("list_members", Read, "List members", "Members of a group or room, with their mids.", json!({
+        d("list_members", Read, "List members", "Members of a group or room, with their mids; people invited but not joined have invited: true.", json!({
             "chat_id": s(CHAT),
             "refresh": b("Reload from LINE."),
         }), &["chat_id"], true, false),
@@ -125,7 +125,7 @@ fn defs() -> Vec<Def> {
         d("translate", Read, "Translate", "Translate text with LINE's translator.", json!({
             "text": s("Text to translate."), "target": s("Language code, e.g. `en`, `th`, `ja`."),
         }), &["text", "target"], true, false),
-        d("get_rich_menu", Read, "Get a bot's menu", "The rich menu of an official account chat, with each area's action.", json!({ "chat_id": s(CHAT) }), &["chat_id"], true, false),
+        d("get_rich_menu", Read, "Get a bot's menu", "The rich menu of an official account chat: its scenes, each with images and tap areas. An area's action is `web` (uri), `postback` (data, send it with tap_postback without message_id), `sendMessage` (text, send it with send_message), `transition` (another scene) or `clipboard`.", json!({ "chat_id": s(CHAT) }), &["chat_id"], true, false),
         d("write_draft", Read, "Write a draft", "Put text in a chat's message box in LAAB for the user to check and send themselves. Nothing is sent.", json!({
             "chat_id": s(CHAT),
             "text": s("The draft. Write @Name for each mention."),
@@ -142,21 +142,30 @@ fn defs() -> Vec<Def> {
             "text": s("The message."),
             "reply_to_message_id": s("Reply to this message."),
             "mention_ids": strings("Mids (or `all`) mentioned in the text as @Name (their name as list_members shows it)."),
+            "silent": b("Send without a notification on the others' devices."),
         }), &["chat_id", "text"], false, false),
         d("send_sticker", Send, "Send a sticker", "Send a sticker the user owns (from list_stickers).", json!({
             "chat_id": s(CHAT), "package_id": s("Package id."), "sticker_id": s("Sticker id."), "version": s("Package version, if listed."),
+            "silent": b("Send without a notification on the others' devices."),
         }), &["chat_id", "package_id", "sticker_id"], false, false),
         d("send_files", Send, "Send files", "Send files from this Mac. Photos and videos are sent as such, anything else as a file.", json!({
             "chat_id": s(CHAT), "paths": strings("Absolute paths of the files."),
+            "silent": b("Send without a notification on the others' devices."),
         }), &["chat_id", "paths"], false, false),
+        d("forward_message", Send, "Forward a message", "Send a copy of a message (text, sticker, photo, video, file or contact) to another chat, as LINE's share does.", json!({
+            "message_id": s(MSG), "to_chat_id": s("The chat to send it to."),
+        }), &["message_id", "to_chat_id"], false, false),
+        d("share_contact", Send, "Share a contact", "Send someone's contact card to a chat.", json!({
+            "mid": s("The person's (or official account's) mid."), "to_chat_id": s("The chat to send it to."),
+        }), &["mid", "to_chat_id"], false, false),
         d("react", Send, "React", "Set or remove the user's reaction on a message.", json!({
             "message_id": s(MSG),
             "reaction": { "type": ["string", "null"], "enum": ["NICE", "LOVE", "FUN", "AMAZING", "SAD", "OMG", null], "description": "The reaction, or null to remove it." },
         }), &["message_id", "reaction"], false, false),
         d("mark_as_read", Send, "Mark as read", "Mark a chat as read; the others see it as read.", json!({ "chat_id": s(CHAT) }), &["chat_id"], false, false),
-        d("tap_postback", Send, "Tap a bot button", "Answer a bot's flex or rich menu postback button.", json!({
-            "chat_id": s(CHAT), "message_id": s("The message holding the button."), "data": s("The button's postback data."), "display_text": s("Text the button posts in the chat, if any."),
-        }), &["chat_id", "message_id", "data"], false, false),
+        d("tap_postback", Send, "Tap a bot button", "Answer a bot's postback button: a flex message's (pass message_id and the button's data) or a rich menu area's (omit message_id; data is the area's `data` from get_rich_menu, a linepostback:// URL).", json!({
+            "chat_id": s(CHAT), "message_id": s("The message holding the button; omit for a rich menu area."), "data": s("The button's postback data, or a rich menu area's linepostback:// URL."), "display_text": s("The button's displayText, if any. LINE posts it in the chat as the user's message."),
+        }), &["chat_id", "data"], false, false),
         d("create_note", Send, "Post a note", "Post to a group's notes, with photos from this Mac if given.", json!({
             "chat_id": s(CHAT), "text": s("The post."), "photo_paths": strings("Absolute paths of photos."),
         }), &["chat_id", "text"], false, false),
@@ -175,6 +184,8 @@ fn defs() -> Vec<Def> {
         }), &["chat_id"], false, false),
         d("rename_folder", Manage, "Rename a folder", "Rename a LAAB folder.", json!({ "folder_id": s("Folder id."), "name": s("New name.") }), &["folder_id", "name"], false, false),
         d("delete_folder", Manage, "Delete a folder", "Delete a LAAB folder; its chats go back to the list.", json!({ "folder_id": s("Folder id.") }), &["folder_id"], false, true),
+        d("list_message_requests", Manage, "List message requests", "Chats in LINE's message request box: from people who are not friends, kept out of the chat list until the user accepts them. Each has its id, name, kind, unread count and last activity.", json!({}), &[], true, false),
+        d("accept_message_request", Manage, "Accept a message request", "Move a chat out of the message request box into the chat list, as accepting it in LINE does.", json!({ "chat_id": s("Chat id from list_message_requests.") }), &["chat_id"], false, false),
         d("hide_chat", Manage, "Hide a chat", "Hide a chat from the list until a new message arrives.", json!({ "chat_id": s(CHAT) }), &["chat_id"], false, false),
         d("announce", Manage, "Announce a message", "Pin a message as an announcement in a group.", json!({
             "chat_id": s(CHAT), "message_id": s(MSG), "text": s("Announcement text (default: the message's text)."),
@@ -184,12 +195,18 @@ fn defs() -> Vec<Def> {
         d("create_album", Manage, "Create an album", "Create an empty album in a chat.", json!({ "chat_id": s(CHAT), "title": s("Album name.") }), &["chat_id", "title"], false, false),
         d("rename_album", Manage, "Rename an album", "Rename an album.", json!({ "chat_id": s(CHAT), "album_id": s("Album id."), "title": s("New name.") }), &["chat_id", "album_id", "title"], false, false),
         d("delete_album", Manage, "Delete an album", "Delete an album and its photos.", json!({ "chat_id": s(CHAT), "album_id": s("Album id.") }), &["chat_id", "album_id"], false, true),
+        d("rename_group", Manage, "Rename a group", "Change a group's name for everyone in it.", json!({ "chat_id": s(CHAT), "name": s("The new name.") }), &["chat_id", "name"], false, false),
+        d("invite_to_group", Manage, "Invite to a group", "Invite people (by mid, from list_contacts) into a group.", json!({ "chat_id": s(CHAT), "mids": strings("Mids of the people to invite.") }), &["chat_id", "mids"], false, false),
+        d("remove_from_group", Manage, "Remove from a group", "Remove a member from a group.", json!({ "chat_id": s(CHAT), "mid": s("The member's mid, from list_members.") }), &["chat_id", "mid"], false, true),
+        d("cancel_group_invitation", Manage, "Cancel an invitation", "Withdraw invitations to a group that were not accepted yet.", json!({ "chat_id": s(CHAT), "mids": strings("Mids of invited people, from list_members (invited: true).") }), &["chat_id", "mids"], false, false),
+        d("create_group", Manage, "Create a group", "Create a group with these people invited; returns its chat id.", json!({ "name": s("Group name."), "mids": strings("Mids of the people to invite.") }), &["name", "mids"], false, false),
         d("save_to_keep", Manage, "Save to Keep", "Save a message to the user's Keep Memo.", json!({ "chat_id": s(CHAT), "message_id": s(MSG) }), &["chat_id", "message_id"], false, false),
         // ------------------------------------------------------------ account
         d("delete_chat_history", Account, "Delete chat history", "Delete a chat's history from the user's account. It can't be brought back.", json!({ "chat_id": s(CHAT) }), &["chat_id"], false, true),
         d("leave_group", Account, "Leave a group", "Leave a group or room.", json!({ "chat_id": s(CHAT) }), &["chat_id"], false, true),
         d("set_blocked", Account, "Block someone", "Block or unblock a person.", json!({ "mid": s("Their mid (`u…`)."), "blocked": b("true to block.") }), &["mid", "blocked"], false, true),
         d("add_friend", Account, "Add a friend", "Add someone as a friend (find them with find_contact).", json!({ "mid": s("Their mid.") }), &["mid"], false, false),
+        d("respond_to_invitation", Account, "Answer a group invitation", "Join a group the user was invited to (list_chats shows it with invited: true), or decline.", json!({ "chat_id": s(CHAT), "accept": b("true to join, false to decline.") }), &["chat_id", "accept"], false, false),
         d("join_group_by_link", Account, "Join a group", "Join a group by its invite link.", json!({ "url": s("The invite link.") }), &["url"], false, false),
     ]
 }
@@ -674,6 +691,7 @@ async fn run(ctx: &Ctx, name: &str, args: &Value, trace: &mut Trace) -> R<Vec<Va
                 "me": s.profile.map(|p| json!({ "mid": p.mid, "name": p.display_name })),
                 "demo": state.demo,
                 "sync": { "done": s.sync_done, "total": s.sync_total },
+                "premium": s.premium,
                 "now": time(crate::state::now_ms()),
                 "defaults": settings.defaults,
                 "hasPerChatRules": !settings.rules.is_empty(),
@@ -720,6 +738,12 @@ async fn run(ctx: &Ctx, name: &str, args: &Value, trace: &mut Trace) -> R<Vec<Va
                 }
                 if let Some(n) = c.member_count {
                     o.insert("members".into(), json!(n));
+                }
+                if c.invited {
+                    o.insert("invited".into(), json!(true));
+                }
+                if c.request {
+                    o.insert("messageRequest".into(), json!(true));
                 }
                 if dir.pinned.contains(&c.id) {
                     o.insert("pinned".into(), json!(true));
@@ -862,11 +886,13 @@ async fn run(ctx: &Ctx, name: &str, args: &Value, trace: &mut Trace) -> R<Vec<Va
         "list_members" => {
             let chat = arg_str(args, "chat_id")?;
             gate(ctx, trace, Read, &[dir.scope(&chat)], format!("ดูสมาชิกของ {}", dir.quoted(&chat))).await?;
-            let members = commands::members(st(), chat, opt_bool(args, "refresh")).await?;
+            let members = commands::members(st(), chat.clone(), opt_bool(args, "refresh")).await?;
+            let invitees = state.store().invitees(&chat).unwrap_or_default();
             let out: Vec<Value> = members
                 .into_iter()
                 .filter(|m| !m.all)
                 .map(|m| json!({ "mid": m.mid, "name": m.name, "isMe": m.mid == me }))
+                .chain(invitees.into_iter().map(|m| json!({ "mid": m.mid, "name": m.name, "invited": true })))
                 .collect();
             Ok(text(json!({ "members": out })))
         }
@@ -977,7 +1003,7 @@ async fn run(ctx: &Ctx, name: &str, args: &Value, trace: &mut Trace) -> R<Vec<Va
             if state.demo {
                 return Err("ไม่มีรูปในโหมด demo".into());
             }
-            let path = crate::actions::album_photo_file(state, &chat, &album, &oid).await.map_err(err)?;
+            let path = crate::actions::album_photo_file(state, &chat, &album, &oid, false).await.map_err(err)?;
             let data = crate::vault::read(&path).map_err(err)?;
             image(&data, &path, format!("Album photo {oid} from {}", dir.name(&chat)))
         }
@@ -1021,27 +1047,27 @@ async fn run(ctx: &Ctx, name: &str, args: &Value, trace: &mut Trace) -> R<Vec<Va
                 None => dirs::download_dir(),
             }
             .ok_or("ไม่พบโฟลเดอร์ดาวน์โหลด")?;
-            let ext = match m.content_type.as_str() {
-                "VIDEO" => "mp4",
-                "AUDIO" => "m4a",
-                _ => "jpg",
-            };
-            let name = m.file_name.clone().unwrap_or_else(|| format!("LINE_{}.{ext}", m.id));
-            let target = unique_path(&dest, &crate::media::safe_name(&name));
+            // Download first: an unnamed photo or video is named by its content.
+            let cached = commands::download(st(), m.chat_id.clone(), m.id.clone(), m.file_name.clone()).await?;
+            let name = crate::media::save_name(m.file_name.as_deref(), &m.id, Path::new(&cached));
+            let target = unique_path(&dest, &name);
             let saved = commands::save_attachment(st(), m.chat_id.clone(), m.id.clone(), Some(target.to_string_lossy().into_owned())).await?;
             Ok(text(json!({ "path": saved })))
         }
         "list_stickers" => {
             any_read(&settings, trace, "ดูสติกเกอร์")?;
             let packs = commands::stickers(st()).await?;
-            let out: Vec<Value> = packs
-                .into_iter()
-                .take(limit(args, 20, 200))
-                .map(|p| {
-                    let ids: Vec<&String> = p.stickers.iter().map(|s| &s.sticker_id).collect();
-                    json!({ "packageId": p.id, "name": p.name, "version": p.version, "recent": p.recent, "stickerIds": ids })
-                })
-                .collect();
+            let mut out: Vec<Value> = Vec::new();
+            for mut p in packs.into_iter().take(limit(args, 20, 200)) {
+                // Packages come without their stickers; load the ones listed.
+                if p.stickers.is_empty()
+                    && let Ok(full) = commands::sticker_pack(p.id.clone(), p.name.clone(), p.version.clone()).await
+                {
+                    p.stickers = full.stickers;
+                }
+                let ids: Vec<&String> = p.stickers.iter().map(|s| &s.sticker_id).collect();
+                out.push(json!({ "packageId": p.id, "name": p.name, "version": p.version, "recent": p.recent, "stickerIds": ids }));
+            }
             Ok(text(json!({ "packs": out })))
         }
         "translate" => {
@@ -1102,7 +1128,8 @@ async fn run(ctx: &Ctx, name: &str, args: &Value, trace: &mut Trace) -> R<Vec<Va
             let mentions = mention_spans(&t, &ids, &names)?.into_iter().map(|(s, _)| s).collect();
             gate(ctx, trace, Send, &[dir.scope(&chat)], format!("ส่งข้อความถึง {}:\n\n{}", dir.quoted(&chat), t)).await?;
             trace.what = format!("ส่งข้อความถึง {}: {}", dir.quoted(&chat), clip(&t, 80));
-            let m = commands::send_text(st(), chat, t, mentions, reply).await?;
+            let silent = opt_bool(args, "silent");
+            let m = commands::send_text(st(), chat, t, mentions, reply, None, silent).await?;
             Ok(text(json!({ "ok": true, "messageId": m.id, "time": time(m.created_time) })))
         }
         "send_sticker" => {
@@ -1113,7 +1140,7 @@ async fn run(ctx: &Ctx, name: &str, args: &Value, trace: &mut Trace) -> R<Vec<Va
                 version: opt_str(args, "version"),
             };
             gate(ctx, trace, Send, &[dir.scope(&chat)], format!("ส่งสติกเกอร์ถึง {}", dir.quoted(&chat))).await?;
-            commands::send_sticker(st(), chat, sticker).await?;
+            commands::send_sticker(st(), chat, sticker, opt_bool(args, "silent")).await?;
             done("sticker sent")
         }
         "send_files" => {
@@ -1122,8 +1149,41 @@ async fn run(ctx: &Ctx, name: &str, args: &Value, trace: &mut Trace) -> R<Vec<Va
             check_files(&paths)?;
             gate(ctx, trace, Send, &[dir.scope(&chat)], format!("ส่งไฟล์ถึง {}:\n\n{}", dir.quoted(&chat), paths.join("\n"))).await?;
             trace.what = format!("ส่ง {} ถึง {}", file_names(&paths), dir.quoted(&chat));
-            commands::send_files(st(), chat, paths).await?;
+            let failed = commands::send_files(st(), chat, paths.clone(), opt_bool(args, "silent")).await?;
+            if !failed.is_empty() {
+                let errors: Vec<String> = failed.into_iter().map(|f| f.error).collect();
+                return Err(format!(
+                    "sent {} of {} files; failed:\n{}",
+                    paths.len() - errors.len(),
+                    paths.len(),
+                    errors.join("\n")
+                ));
+            }
             done("files sent")
+        }
+        "forward_message" => {
+            let id = arg_str(args, "message_id")?;
+            let to = arg_str(args, "to_chat_id")?;
+            let (m, scope) = message(state, &dir, &id)?;
+            // Forwarding reads the message: never a way out of a chat the
+            // client may not read.
+            gate(ctx, trace, Read, &[scope], format!("อ่านข้อความใน {} เพื่อส่งต่อ", dir.quoted(&m.chat_id))).await?;
+            gate(ctx, trace, Send, &[dir.scope(&to)], format!("ส่งต่อข้อความจาก {} ถึง {}", dir.quoted(&m.chat_id), dir.quoted(&to))).await?;
+            let failed = commands::forward_message(st(), m.chat_id.clone(), id, vec![to]).await?;
+            match failed.into_iter().next() {
+                Some(f) => Err(f.error),
+                None => done("forwarded"),
+            }
+        }
+        "share_contact" => {
+            let mid = arg_str(args, "mid")?;
+            let to = arg_str(args, "to_chat_id")?;
+            gate(ctx, trace, Send, &[dir.scope(&to)], format!("ส่งรายชื่อ {} ถึง {}", dir.quoted(&mid), dir.quoted(&to))).await?;
+            let failed = commands::share_contact(st(), mid, None, vec![to]).await?;
+            match failed.into_iter().next() {
+                Some(f) => Err(f.error),
+                None => done("contact shared"),
+            }
         }
         "react" => {
             let id = arg_str(args, "message_id")?;
@@ -1145,11 +1205,11 @@ async fn run(ctx: &Ctx, name: &str, args: &Value, trace: &mut Trace) -> R<Vec<Va
         }
         "tap_postback" => {
             let chat = arg_str(args, "chat_id")?;
-            let id = arg_str(args, "message_id")?;
+            let id = opt_str(args, "message_id");
             let data = arg_str(args, "data")?;
             let display = opt_str(args, "display_text");
             gate(ctx, trace, Send, &[dir.scope(&chat)], format!("กดปุ่มของบอท {}{}", dir.quoted(&chat), display.as_ref().map(|d| format!(": “{d}”")).unwrap_or_default())).await?;
-            commands::send_postback(st(), chat, id, data, display).await?;
+            commands::send_postback(st(), chat, id, data, display, None).await?;
             done("postback sent")
         }
         "create_note" => {
@@ -1168,7 +1228,7 @@ async fn run(ctx: &Ctx, name: &str, args: &Value, trace: &mut Trace) -> R<Vec<Va
             let post = arg_str(args, "post_id")?;
             let t = arg_str(args, "text")?;
             gate(ctx, trace, Send, &[dir.scope(&chat)], format!("แสดงความคิดเห็นในโน้ตของ {}:\n\n{}", dir.quoted(&chat), t)).await?;
-            commands::add_comment(st(), chat, post, t).await?;
+            commands::add_comment(st(), chat, post, t, None).await?;
             done("comment posted")
         }
         // ------------------------------------------------------------ manage
@@ -1180,7 +1240,7 @@ async fn run(ctx: &Ctx, name: &str, args: &Value, trace: &mut Trace) -> R<Vec<Va
                 return Err("only the user's own messages can be edited".into());
             }
             gate(ctx, trace, Manage, &[scope], format!("แก้ข้อความใน {}\n\nจาก: {}\nเป็น: {}", dir.quoted(&m.chat_id), clip(&m.text, 300), t)).await?;
-            commands::edit_message(st(), m.chat_id, id, t).await?;
+            commands::edit_message(st(), m.chat_id, id, t, None).await?;
             done("edited")
         }
         "unsend_message" => {
@@ -1252,6 +1312,38 @@ async fn run(ctx: &Ctx, name: &str, args: &Value, trace: &mut Trace) -> R<Vec<Va
             commands::delete_folder(st(), id)?;
             done("folder deleted")
         }
+        "list_message_requests" => {
+            let mut waiting: Vec<&Chat> = dir.chats.values().filter(|c| c.request).collect();
+            waiting.sort_by(|a, b| b.last_activity.total_cmp(&a.last_activity));
+            // One answer for the box; chats the user keeps from MCP stay out.
+            gate(ctx, trace, Manage, &[], "ดูคำขอข้อความ".into()).await?;
+            let out: Vec<Value> = waiting
+                .iter()
+                .filter(|c| {
+                    let scope = dir.scope(&c.id);
+                    readable(&settings, &scope) != Access::Off && settings.access(Manage, &scope) != Access::Off
+                })
+                .map(|c| {
+                    json!({
+                        "id": c.id,
+                        "name": c.name,
+                        "kind": c.kind,
+                        "unread": c.unread,
+                        "lastActivity": time(c.last_activity),
+                    })
+                })
+                .collect();
+            Ok(text(json!({ "requests": out })))
+        }
+        "accept_message_request" => {
+            let chat = arg_str(args, "chat_id")?;
+            if !dir.chats.get(&chat).is_some_and(|c| c.request) {
+                return Err("not a message request (see list_message_requests)".into());
+            }
+            gate(ctx, trace, Manage, &[dir.scope(&chat)], format!("ยอมรับคำขอข้อความจาก {}", dir.quoted(&chat))).await?;
+            commands::accept_message_request(st(), chat).await?;
+            done("accepted")
+        }
         "hide_chat" => {
             let chat = arg_str(args, "chat_id")?;
             gate(ctx, trace, Manage, &[dir.scope(&chat)], format!("ซ่อน {}", dir.quoted(&chat))).await?;
@@ -1303,6 +1395,54 @@ async fn run(ctx: &Ctx, name: &str, args: &Value, trace: &mut Trace) -> R<Vec<Va
             commands::delete_album(st(), chat, album).await?;
             done("album deleted")
         }
+        "rename_group" => {
+            let chat = arg_str(args, "chat_id")?;
+            let name = arg_str(args, "name")?;
+            gate(ctx, trace, Manage, &[dir.scope(&chat)], format!("เปลี่ยนชื่อกลุ่ม {} เป็น “{name}”", dir.quoted(&chat))).await?;
+            commands::rename_group(st(), chat, name).await?;
+            done("group renamed")
+        }
+        "invite_to_group" => {
+            let chat = arg_str(args, "chat_id")?;
+            let mids = str_list(args, "mids");
+            if mids.is_empty() {
+                return Err("missing `mids`".into());
+            }
+            let who: Vec<String> = mids.iter().map(|m| dir.quoted(m)).collect();
+            gate(ctx, trace, Manage, &[dir.scope(&chat)], format!("เชิญ {} เข้า {}", who.join(", "), dir.quoted(&chat))).await?;
+            commands::invite_members(st(), chat, mids).await?;
+            done("invited")
+        }
+        "remove_from_group" => {
+            let chat = arg_str(args, "chat_id")?;
+            let mid = arg_str(args, "mid")?;
+            gate(ctx, trace, Manage, &[dir.scope(&chat)], format!("ลบ {} ออกจาก {}", dir.quoted(&mid), dir.quoted(&chat))).await?;
+            commands::remove_member(st(), chat, mid).await?;
+            done("removed")
+        }
+        "cancel_group_invitation" => {
+            let chat = arg_str(args, "chat_id")?;
+            let mids = str_list(args, "mids");
+            if mids.is_empty() {
+                return Err("missing `mids`".into());
+            }
+            let who: Vec<String> = mids.iter().map(|m| dir.quoted(m)).collect();
+            gate(ctx, trace, Manage, &[dir.scope(&chat)], format!("ยกเลิกคำเชิญ {} เข้า {}", who.join(", "), dir.quoted(&chat))).await?;
+            commands::cancel_invitation(st(), chat, mids).await?;
+            done("invitation canceled")
+        }
+        "create_group" => {
+            let name = arg_str(args, "name")?;
+            let mids = str_list(args, "mids");
+            if mids.is_empty() {
+                return Err("missing `mids`".into());
+            }
+            let who: Vec<String> = mids.iter().map(|m| dir.quoted(m)).collect();
+            let scopes: Vec<Scope> = mids.iter().map(|m| dir.scope(m)).collect();
+            gate(ctx, trace, Manage, &scopes, format!("สร้างกลุ่ม “{name}” และเชิญ {}", who.join(", "))).await?;
+            let chat = commands::create_group(st(), name, mids).await?;
+            Ok(text(json!({ "ok": true, "chatId": chat })))
+        }
         "save_to_keep" => {
             let chat = arg_str(args, "chat_id")?;
             let id = arg_str(args, "message_id")?;
@@ -1338,6 +1478,18 @@ async fn run(ctx: &Ctx, name: &str, args: &Value, trace: &mut Trace) -> R<Vec<Va
             gate(ctx, trace, Account, &[dir.scope(&mid)], format!("เพิ่ม {} เป็นเพื่อน", dir.quoted(&mid))).await?;
             commands::add_friend(st(), mid).await?;
             done("friend added")
+        }
+        "respond_to_invitation" => {
+            let chat = arg_str(args, "chat_id")?;
+            let accept = arg_bool(args, "accept")?;
+            gate(ctx, trace, Account, &[dir.scope(&chat)], format!("{}คำเชิญเข้ากลุ่ม {}", if accept { "ตอบรับ" } else { "ปฏิเสธ" }, dir.quoted(&chat))).await?;
+            if accept {
+                commands::accept_invitation(st(), chat).await?;
+                done("joined")
+            } else {
+                commands::reject_invitation(st(), chat).await?;
+                done("declined")
+            }
         }
         "join_group_by_link" => {
             let url = arg_str(args, "url")?;

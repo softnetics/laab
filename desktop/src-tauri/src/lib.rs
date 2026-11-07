@@ -20,13 +20,17 @@ mod media;
 mod model;
 mod notify;
 mod paths;
+mod preview;
+mod probe;
 mod reads;
 mod report;
 mod richmenu;
+mod scan;
 mod session;
 mod state;
 mod stickers;
 mod store;
+mod stream;
 mod traffic_lights;
 mod usage;
 mod vault;
@@ -249,8 +253,10 @@ pub fn run() {
             commands::refresh,
             commands::reload_chat,
             commands::send_text,
+            commands::new_req_seq,
             commands::send_sticker,
             commands::stickers,
+            commands::sticker_pack,
             commands::send_files,
             commands::send_image_bytes,
             commands::download,
@@ -268,7 +274,22 @@ pub fn run() {
             commands::set_draft,
             commands::raw_message,
             commands::send_postback,
+            commands::send_message_button,
+            commands::datetime_picker,
+            commands::send_datetime_postback,
+            commands::friends,
+            commands::accept_invitation,
+            commands::accept_message_request,
+            commands::delete_message_request,
+            commands::reject_invitation,
+            commands::create_group,
+            commands::invite_members,
+            commands::remove_member,
+            commands::cancel_invitation,
+            commands::rename_group,
+            commands::invitees,
             commands::open_liff,
+            commands::liff_consent_info,
             commands::liff_dev_sessions,
             commands::liff_dev_action,
             commands::liff_dev_eval,
@@ -282,6 +303,7 @@ pub fn run() {
             commands::report_preview,
             commands::send_report,
             commands::report_js_error,
+            commands::log_error,
             commands::open_path,
             commands::reveal_path,
             commands::cache_size,
@@ -312,6 +334,7 @@ pub fn run() {
             commands::create_calendar_event,
             commands::update_calendar_event,
             commands::delete_calendar_event,
+            commands::respond_calendar_invitation,
             commands::album_photos,
             commands::create_album,
             commands::rename_album,
@@ -321,6 +344,10 @@ pub fn run() {
             commands::chat_media,
             commands::save_text,
             commands::save_attachment,
+            commands::attachment_name,
+            commands::link_preview,
+            commands::forward_message,
+            commands::share_contact,
             commands::open_aux_window,
             commands::open_viewer,
             commands::viewer_payload,

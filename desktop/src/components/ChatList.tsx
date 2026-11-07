@@ -3,7 +3,7 @@ import { Menu } from "@base-ui/react/menu";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api, errorText, useChatList, useSession } from "../lib/api";
 import { clickEndsDrag, isRecent, markRecent, moving, pressChat, useChatDrag } from "../lib/chatDrag";
-import { filterChats, folderName, folderOf, groupRows, isKeepMemo, type ListRow, listPreview, looksUnread } from "../lib/chatList";
+import { filterChats, folderName, folderOf, groupRows, isKeepMemo, type ListRow, listPreview, looksUnread, requestBox } from "../lib/chatList";
 import { openChat } from "../lib/nav";
 import { listLabel } from "../lib/time";
 import type { Chat, ChatList, Workspace } from "../lib/types";
@@ -140,6 +140,7 @@ export function ChatListColumn({ selected }: { selected: string | null }) {
           </Menu.Root>
         )}
       </div>
+      {list && !query.trim() && <RequestBoxEntry list={list} filter={filter} />}
       <div className="relative min-h-0 flex-1">
         <div
           ref={scroller}
@@ -220,10 +221,47 @@ export function ChatListColumn({ selected }: { selected: string | null }) {
   );
 }
 
+/** LINE's message request box: chats from people who are not friends wait
+ *  here, out of the chat list, until they are accepted. Over "ทั้งหมด" it
+ *  is an entry with a count (and a dot for unread requests); inside the
+ *  box, a way back. */
+function RequestBoxEntry({ list, filter }: { list: ChatList; filter: ChatFilter }) {
+  const box = requestBox(list);
+  if (filter === "requests") {
+    return (
+      <button
+        className="flex items-center gap-2 px-4 pb-2 text-left text-[13px] text-secondary hover:text-primary"
+        onClick={() => setUi({ filter: "all" })}
+      >
+        <ChevronIcon size={12} dir="left" />
+        <span className="font-bold text-primary">คำขอข้อความ</span>
+        <span>{box.count}</span>
+      </button>
+    );
+  }
+  if (filter !== "all" || box.count === 0) return null;
+  return (
+    <button
+      className="mx-2 mb-1 flex items-center gap-3 rounded-md px-2 py-2 text-left hover:bg-row-hover"
+      onClick={() => setUi({ filter: "requests" })}
+    >
+      <span className="relative grid h-9 w-9 shrink-0 place-items-center rounded-full bg-field text-secondary">
+        <PlusBubbleIcon size={18} />
+        {box.unread && <span className="absolute top-0 right-0 h-2 w-2 rounded-full bg-line-green" />}
+      </span>
+      <span className="flex-1 text-[13.5px] text-primary">คำขอข้อความ</span>
+      <span className="text-[12px] text-secondary">{box.count}</span>
+      <ChevronIcon size={12} dir="right" className="text-secondary" />
+    </button>
+  );
+}
+
 function Empty({ filter, query }: { filter: ChatFilter; query: string }) {
   const text = query
     ? "ไม่พบแชท… กด Return เพื่อค้นหาในข้อความ"
-    : filter.startsWith("folder:")
+    : filter === "requests"
+      ? "ไม่มีคำขอข้อความ"
+      : filter.startsWith("folder:")
       ? "คลิกขวาที่แชทแล้วเลือก “เพิ่มในโฟลเดอร์” เพื่อใส่แชทในโฟลเดอร์นี้"
       : "ไม่มีแชท";
   return <div className="px-8 pt-16 text-center text-[13px] leading-relaxed text-secondary">{text}</div>;

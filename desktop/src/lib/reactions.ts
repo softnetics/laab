@@ -1,7 +1,7 @@
 import type { Reaction, ReactionName } from "./types";
 
 // System emoji stand in for LINE's reaction art.
-export const REACTIONS: { name: Exclude<ReactionName, "PAID">; emoji: string }[] = [
+export const REACTIONS: { name: Exclude<ReactionName, "PAID" | `PAID:${string}`>; emoji: string }[] = [
   { name: "NICE", emoji: "👍" },
   { name: "LOVE", emoji: "❤️" },
   { name: "FUN", emoji: "😆" },
@@ -11,6 +11,13 @@ export const REACTIONS: { name: Exclude<ReactionName, "PAID">; emoji: string }[]
 ];
 
 export const emojiFor = (r: ReactionName) => REACTIONS.find((x) => x.name === r)?.emoji ?? "✨";
+
+/** The LINE emoji of a paid reaction, or null. */
+export function paidEmoji(r: ReactionName): { productId: string; emojiId: string; version: number; animated: boolean } | null {
+  const [kind, productId, emojiId, version, animated] = r.split(":");
+  if (kind !== "PAID" || !productId || !emojiId) return null;
+  return { productId, emojiId, version: Number(version) || 1, animated: animated === "1" };
+}
 
 /** Most-used types first, up to three, for the badge. */
 export function topTypes(list: Reaction[]): ReactionName[] {

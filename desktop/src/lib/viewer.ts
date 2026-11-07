@@ -8,7 +8,7 @@ export interface ViewerItem {
   src: string;
   /** Shown while `src` loads. */
   thumb?: string;
-  /** Plays as a video. Album and note videos only have a still. */
+  /** Plays as a video. Note videos only have a still. */
   video?: boolean;
   /** A chat attachment: save, save as and open with use it. */
   chatId?: string;

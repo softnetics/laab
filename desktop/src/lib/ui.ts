@@ -1,7 +1,9 @@
 import { createStore, useStore } from "@tanstack/react-store";
-import type { Message, Workspace } from "./types";
+import type { Forwarding } from "../components/ForwardSheet";
+import type { Message, PickerAction, PickerStart, Workspace } from "./types";
 
-export type ChatFilter = "all" | "friends" | "groups" | "official" | `folder:${string}`;
+/** `requests`: LINE's message request box, which the other lists leave out. */
+export type ChatFilter = "all" | "friends" | "groups" | "official" | "requests" | `folder:${string}`;
 export type ChatSort = "recent" | "unread";
 
 const saved = <T>(key: string, fallback: T): T => {
@@ -44,6 +46,8 @@ export interface UiState {
   renamingFolder: string | null;
   /** The composer is replying to, or editing, a message. */
   composerMode: { chatId: string; kind: "reply" | "edit"; message: Message } | null;
+  /** A message or contact card being sent on to other chats. */
+  forwarding: Forwarding | null;
   /** Translations shown under messages, by message id. */
   translations: Record<string, string>;
   /** A confirmation dialog. */
@@ -59,7 +63,14 @@ export interface UiState {
     dismissLabel?: string;
   } | null;
   /** Open sheets: add friend, notes and albums of a chat. */
-  sheet: { kind: "add-friend" } | { kind: "report"; messageId: string | null } | { kind: "mcp" } | null;
+  sheet:
+    | { kind: "add-friend" }
+    | { kind: "report"; messageId: string | null }
+    | { kind: "mcp" }
+    | { kind: "create-group" }
+    | { kind: "group-members"; chatId: string }
+    | { kind: "datetime-picker"; chatId: string; messageId: string; label: string | null; action: PickerAction; start: PickerStart }
+    | null;
   /** Someone's profile card; name and picture show while it loads. */
   profile: { mid: string; name?: string; picture?: string | null } | null;
   /** What the column next to the left bar shows: chats, friends, add friend. */
@@ -99,6 +110,7 @@ export const ui = createStore<UiState>({
   sentAt: 0,
   railPage: "chats",
   composerMode: null,
+  forwarding: null,
   translations: {},
   confirm: null,
   sheet: null,

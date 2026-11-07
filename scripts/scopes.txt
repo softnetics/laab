@@ -4,6 +4,7 @@
 calendar=Calendar
 chat=Chats
 group=Groups
+friends=Friends
 keep=Keep Memo
 album=Albums
 note=Notes
@@ -16,3 +17,4 @@ login=Sign-in
 update=Updates
 report=Report a problem
 stats=Usage statistics
+sticker=Stickers

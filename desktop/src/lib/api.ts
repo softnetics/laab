@@ -1,7 +1,8 @@
-import { invoke } from "@tauri-apps/api/core";
+import { invoke as tauriInvoke, type InvokeArgs, type InvokeOptions } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { QueryClient, queryOptions, useQuery } from "@tanstack/react-query";
 import { useEffect } from "react";
+import { translateTarget } from "./translate";
 import { setUi } from "./ui";
 import type { ViewerPayload } from "./viewer";
 import type {
@@ -18,9 +19,13 @@ import type {
   ChatMember,
   ContactProfile,
   Draft,
+  Friend,
+  LinkPreview,
   MentionSpan,
   Message,
   NoteDetail,
+  PickerAction,
+  PickerStart,
   NotePost,
   Person,
   LiffDevSession,
@@ -38,6 +43,15 @@ export const queryClient = new QueryClient({
   defaultOptions: { queries: { staleTime: Infinity, refetchOnWindowFocus: false, retry: false } },
 });
 
+/** Calls a command. A failure also goes to LAAB's log, so a problem report
+ *  can show which command failed and why. */
+function invoke<T>(command: string, args?: InvokeArgs, options?: InvokeOptions): Promise<T> {
+  return tauriInvoke<T>(command, args, options).catch((e: unknown) => {
+    tauriInvoke("log_error", { command, error: String(e) }).catch(() => {});
+    throw e;
+  });
+}
+
 /** Mark a send from this app, so the chat scrolls down to it. */
 function sent<T>(p: Promise<T>): Promise<T> {
   setUi({ sentAt: Date.now() });
@@ -50,6 +64,7 @@ export const api = {
   logout: () => invoke<void>("logout"),
   chats: () => invoke<ChatList>("chats"),
   people: () => invoke<Record<string, Person>>("people"),
+  friends: () => invoke<Friend[]>("friends"),
   messages: (chatId: string, limit: number) => invoke<Message[]>("messages", { chatId, limit }),
   /** Fetch the page of history before the oldest stored message; 0 at its start. */
   olderMessages: (chatId: string) => invoke<number>("older_messages", { chatId }),
@@ -61,11 +76,25 @@ export const api = {
   markUnread: (chatId: string) => invoke<void>("mark_unread", { chatId }),
   refresh: (full = true) => invoke<void>("refresh", { full }),
   reloadChat: (chatId: string) => invoke<void>("reload_chat", { chatId }),
-  sendText: (chatId: string, text: string, mentions: MentionSpan[], replyTo: string | null = null) =>
-    sent(invoke<Message>("send_text", { chatId, text, mentions, replyTo })),
-  sendSticker: (chatId: string, sticker: Sticker) => sent(invoke<void>("send_sticker", { chatId, sticker })),
+  /** A reqSeq for one message, sent again with each retry of it. */
+  newReqSeq: () => invoke<number>("new_req_seq"),
+  sendText: (
+    chatId: string,
+    text: string,
+    mentions: MentionSpan[],
+    replyTo: string | null = null,
+    reqSeq: number | null = null,
+    silent = false,
+  ) => sent(invoke<Message>("send_text", { chatId, text, mentions, replyTo, reqSeq, silent })),
+  /** `silent`: without a notification on the others' devices. */
+  sendSticker: (chatId: string, sticker: Sticker, silent = false) => sent(invoke<void>("send_sticker", { chatId, sticker, silent })),
+  /** The recent stickers and every owned package, without their stickers. */
   stickers: () => invoke<StickerPack[]>("stickers"),
-  sendFiles: (chatId: string, paths: string[]) => sent(invoke<void>("send_files", { chatId, paths })),
+  /** One package with all its stickers. */
+  stickerPack: (id: string, name: string, version: string | null) => invoke<StickerPack>("sticker_pack", { id, name, version }),
+  /** Sends each file, going on past failures; resolves to the ones that failed. */
+  sendFiles: (chatId: string, paths: string[], silent = false) =>
+    sent(invoke<{ path: string; error: string }[]>("send_files", { chatId, paths, silent })),
   sendImageBytes: (chatId: string, bytes: Uint8Array, fileName: string) =>
     sent(invoke<void>("send_image_bytes", bytes, { headers: { "chat-id": chatId, "file-name": encodeURIComponent(fileName) } })),
   messageBytes: (chatId: string, messageId: string) => invoke<ArrayBuffer>("message_bytes", { chatId, messageId }),
@@ -82,14 +111,26 @@ export const api = {
   draft: (chatId: string) => invoke<Draft | null>("draft", { chatId }),
   setDraft: (chatId: string, draft: Draft) => invoke<void>("set_draft", { chatId, draft }),
   rawMessage: (chatId: string, messageId: string) => invoke<string>("raw_message", { chatId, messageId }),
-  sendPostback: (chatId: string, messageId: string, data: string, displayText: string | null) =>
-    invoke<void>("send_postback", { chatId, messageId, data, displayText }),
+  /** A bot's postback button. `messageId` is null for rich-menu areas, whose `data` is the whole linepostback URL. */
+  sendPostback: (chatId: string, messageId: string | null, data: string, displayText: string | null, text: string | null = null) =>
+    invoke<void>("send_postback", { chatId, messageId, data, displayText, text }),
+  /** A flex or template "message" button: LINE posts `text` for the user through the bot. */
+  sendMessageButton: (chatId: string, messageId: string, text: string) =>
+    sent(invoke<void>("send_message_button", { chatId, messageId, text })),
+  /** Whether LINE shows a picker for a datetime picker button, and where it starts. `now` is in the mode's format. */
+  datetimePicker: (action: PickerAction, now: string) => invoke<PickerStart>("datetime_picker", { action, now }),
+  /** The value picked, or null to send the button's own postback. */
+  sendDatetimePostback: (chatId: string, messageId: string, action: PickerAction, value: string | null) =>
+    invoke<void>("send_datetime_postback", { chatId, messageId, action, value }),
   openLiff: (req: { url: string; chatId?: string | null; consent?: boolean; web?: boolean }) => invoke<void>("open_liff", { req }),
   liffDevSessions: () => invoke<LiffDevSession[]>("liff_dev_sessions"),
   liffDevAction: (label: string, action: "reload" | "inspect" | "close" | "reopen" | "web") =>
     invoke<void>("liff_dev_action", { label, action }),
   liffDevEval: (label: string, code: string) => invoke<void>("liff_dev_eval", { label, code }),
   openLiffDevtools: (focus: string | null = null) => invoke<void>("open_liff_devtools", { focus }),
+  /** What LINE's consent page for a LIFF link asks for; grants nothing. */
+  liffConsentInfo: (url: string, chatId: string | null) =>
+    invoke<{ permissions: { code: string; label: string }[]; consentUrl: string }>("liff_consent_info", { url, chatId }),
   liffShare: (window: string, liffId: string, ott: string, chatIds: string[], messages: unknown) =>
     invoke<{ sent: number; failed: string[] }>("liff_share", { window, liffId, ott, chatIds, messages }),
   openChatWindow: (chatId: string, title: string) => invoke<void>("open_chat_window", { chatId, title }),
@@ -104,8 +145,9 @@ export const api = {
   richMenu: (chatId: string) => invoke<RichMenu | null>("rich_menu", { chatId }),
   loginPassword: (identifier: string, password: string) => invoke<void>("login_password", { identifier, password }),
   unsend: (messageId: string) => invoke<void>("unsend", { messageId }),
-  editMessage: (chatId: string, messageId: string, text: string) => invoke<void>("edit_message", { chatId, messageId, text }),
-  translate: (text: string, target = "th") => invoke<string>("translate", { text, target }),
+  editMessage: (chatId: string, messageId: string, text: string, mentions: MentionSpan[] = []) =>
+    invoke<void>("edit_message", { chatId, messageId, text, mentions }),
+  translate: (text: string, target = translateTarget()) => invoke<string>("translate", { text, target }),
   saveToKeep: (chatId: string, messageId: string) => invoke<void>("save_to_keep", { chatId, messageId }),
   hideChat: (chatId: string) => invoke<void>("hide_chat", { chatId }),
   deleteHistory: (chatId: string) => invoke<void>("delete_history", { chatId }),
@@ -119,7 +161,8 @@ export const api = {
   listNotes: (chatId: string) => invoke<NotePost[]>("list_notes", { chatId }),
   createNote: (chatId: string, text: string, photos: string[] = []) => invoke<void>("create_note", { chatId, text, photos }),
   noteDetail: (chatId: string, postId: string) => invoke<NoteDetail>("note_detail", { chatId, postId }),
-  addComment: (chatId: string, postId: string, text: string) => invoke<void>("add_comment", { chatId, postId, text }),
+  addComment: (chatId: string, postId: string, text: string, authorMid: string | null = null) =>
+    invoke<void>("add_comment", { chatId, postId, text, authorMid }),
   deleteNote: (chatId: string, postId: string) => invoke<void>("delete_note", { chatId, postId }),
   calendarEvents: (chatId: string) => invoke<CalendarEvent[]>("calendar_events", { chatId }),
   allCalendarEvents: () => invoke<AllCalendars>("all_calendar_events"),
@@ -129,6 +172,8 @@ export const api = {
     invoke<void>("create_calendar_event", { chatId, event, notify }),
   updateCalendarEvent: (chatId: string, eventId: string, updatedAt: number, event: CalendarEventInput, notify: boolean) =>
     invoke<void>("update_calendar_event", { chatId, eventId, updatedAt, event, notify }),
+  respondCalendarInvitation: (chatId: string, eventId: string, recurId: number | null, accept: boolean, updatedAt: number) =>
+    invoke<void>("respond_calendar_invitation", { chatId, eventId, recurId, accept, updatedAt }),
   deleteCalendarEvent: (chatId: string, eventId: string, updatedAt: number, notify: boolean) =>
     invoke<void>("delete_calendar_event", { chatId, eventId, updatedAt, notify }),
   listAlbums: (chatId: string) => invoke<Album[]>("list_albums", { chatId }),
@@ -139,8 +184,28 @@ export const api = {
   deleteAlbum: (chatId: string, albumId: string) => invoke<void>("delete_album", { chatId, albumId }),
   deleteMessage: (messageId: string) => invoke<void>("delete_message", { messageId }),
   leaveGroup: (chatId: string) => invoke<void>("leave_group", { chatId }),
+  acceptInvitation: (chatId: string) => invoke<void>("accept_invitation", { chatId }),
+  acceptMessageRequest: (chatId: string) => invoke<void>("accept_message_request", { chatId }),
+  deleteMessageRequest: (chatId: string) => invoke<void>("delete_message_request", { chatId }),
+  rejectInvitation: (chatId: string) => invoke<void>("reject_invitation", { chatId }),
+  createGroup: (name: string, mids: string[]) => invoke<string>("create_group", { name, mids }),
+  inviteMembers: (chatId: string, mids: string[]) => invoke<void>("invite_members", { chatId, mids }),
+  removeMember: (chatId: string, mid: string) => invoke<void>("remove_member", { chatId, mid }),
+  cancelInvitation: (chatId: string, mids: string[]) => invoke<void>("cancel_invitation", { chatId, mids }),
+  renameGroup: (chatId: string, name: string) => invoke<void>("rename_group", { chatId, name }),
+  invitees: (chatId: string) => invoke<ChatMember[]>("invitees", { chatId }),
   chatMedia: (chatId: string, kind: "media" | "files" | "links") => invoke<Message[]>("chat_media", { chatId, kind }),
   saveText: (path: string, text: string) => invoke<void>("save_text", { path, text }),
+  /** Send a copy of a message to chats; resolves to the ones that failed. */
+  forwardMessage: (chatId: string, messageId: string, to: string[]) =>
+    sent(invoke<{ chatId: string; error: string }[]>("forward_message", { chatId, messageId, to })),
+  /** Send someone's contact card to chats; resolves to the ones that failed. */
+  shareContact: (mid: string, name: string | null, to: string[]) =>
+    sent(invoke<{ chatId: string; error: string }[]>("share_contact", { mid, name, to })),
+  /** A link's preview card from LINE's preview service, or null. */
+  linkPreview: (url: string) => invoke<LinkPreview | null>("link_preview", { url }),
+  /** The name to offer when saving an attachment, with the extension of what it really is. */
+  attachmentName: (chatId: string, messageId: string) => invoke<string>("attachment_name", { chatId, messageId }),
   saveAttachment: (chatId: string, messageId: string, dest: string | null = null) =>
     invoke<string>("save_attachment", { chatId, messageId, dest }),
   /** LINE-style separate windows: `albums` (tab albums/notes), `media`
@@ -173,6 +238,7 @@ export const q = {
   session: queryOptions({ queryKey: ["session"], queryFn: () => api.session().then(track) }),
   chats: queryOptions({ queryKey: ["chats"], queryFn: api.chats }),
   people: queryOptions({ queryKey: ["people"], queryFn: api.people }),
+  friends: queryOptions({ queryKey: ["friends"], queryFn: api.friends }),
   messages: (chatId: string) =>
     queryOptions({ queryKey: ["messages", chatId], queryFn: () => api.messages(chatId, messageLimit(chatId)) }),
   reads: (chatId: string) => queryOptions({ queryKey: ["reads", chatId], queryFn: () => api.reads(chatId) }),
@@ -210,6 +276,7 @@ export function useBackendEvents() {
       listen("chats-changed", () => {
         queryClient.invalidateQueries({ queryKey: ["chats"] });
         queryClient.invalidateQueries({ queryKey: ["people"] });
+        queryClient.invalidateQueries({ queryKey: ["friends"] });
       }),
       listen<{ chatId: string }>("messages-changed", (e) => queryClient.invalidateQueries({ queryKey: ["messages", e.payload.chatId] })),
       listen("mcp-changed", () => {
@@ -223,6 +290,7 @@ export function useBackendEvents() {
       listen<{ chatId: string }>("reads-changed", (e) => queryClient.invalidateQueries({ queryKey: ["reads", e.payload.chatId] })),
       listen<{ chatId: string }>("members-changed", (e) => {
         queryClient.invalidateQueries({ queryKey: ["members", e.payload.chatId] });
+        queryClient.invalidateQueries({ queryKey: ["invitees", e.payload.chatId] });
         queryClient.invalidateQueries({ queryKey: ["people"] });
       }),
     ];
@@ -247,11 +315,12 @@ export const mediaUrl = {
   pack: (id: string) => `${MEDIA}/pack/${encodeURIComponent(id)}`,
   /** A profile cover photo (OBS `myhome/c`). */
   cover: (oid: string) => `${MEDIA}/cover/${encodeURIComponent(oid)}`,
-  /** An album photo; the backend downloads it on first request. */
-  album: (chatId: string, albumId: string, oid: string) =>
-    `${MEDIA}/album/${encodeURIComponent(chatId)}/${encodeURIComponent(albumId)}/${encodeURIComponent(oid)}`,
+  /** An album photo, or with `video` the video itself (a photo is its still); the backend downloads it on first request. */
+  album: (chatId: string, albumId: string, oid: string, video = false) =>
+    `${MEDIA}/album/${encodeURIComponent(chatId)}/${encodeURIComponent(albumId)}/${encodeURIComponent(oid)}${video ? "?video=1" : ""}`,
   /** A note photo (`h`) or comment image (`cmt`). */
-  note: (svc: "h" | "cmt", id: string) => `${MEDIA}/note/${svc}/${encodeURIComponent(id)}`,
+  /** A note photo or comment image at its OBS path, `service/namespace/objectId`. */
+  note: (obs: string) => `${MEDIA}/note/${obs.split("/").map(encodeURIComponent).join("/")}`,
 };
 
 /** Backend error codes that reach the UI as they are. */

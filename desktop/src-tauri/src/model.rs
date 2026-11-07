@@ -25,6 +25,24 @@ pub struct Chat {
     /// never sent, leaves `unread` alone, and clears when the chat is opened.
     #[serde(default)]
     pub marked_unread: bool,
+    /// A group we are invited to and have not joined.
+    #[serde(default)]
+    pub invited: bool,
+    /// In LINE's message request box: started by someone who is not a
+    /// friend, and not accepted yet.
+    #[serde(default)]
+    pub request: bool,
+}
+
+/// A friend or an official account the user added.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct Friend {
+    pub mid: String,
+    pub name: String,
+    pub picture: Option<String>,
+    /// `dm` or `bot`.
+    pub kind: String,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
@@ -35,6 +53,9 @@ pub struct ChatMember {
     #[serde(default)]
     pub all: bool,
     pub picture: Option<String>,
+    /// Invited, not joined yet.
+    #[serde(default)]
+    pub invited: bool,
 }
 
 /// UTF-16 offsets into the message text, as LINE's `MENTION` metadata uses.
@@ -52,7 +73,9 @@ pub struct MentionSpan {
 #[serde(rename_all = "camelCase")]
 pub struct Reaction {
     pub user_id: String,
-    /// `NICE`, `LOVE`, `FUN`, `AMAZING`, `SAD`, `OMG`, or `PAID` for paid ones.
+    /// `NICE`, `LOVE`, `FUN`, `AMAZING`, `SAD`, `OMG`, or for a paid one
+    /// (a LINE emoji) `PAID:<productId>:<emojiId>:<version>:<1|0 animated>`,
+    /// plain `PAID` when its emoji is unknown.
     pub reaction: String,
 }
 
@@ -87,6 +110,10 @@ pub struct Message {
     /// with message lists.
     #[serde(skip)]
     pub raw: Option<String>,
+    /// A Letter Sealing (E2EE) text or location LAAB could not decrypt yet;
+    /// its raw message is kept to try again when keys change.
+    #[serde(skip)]
+    pub undecrypted: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -154,4 +181,7 @@ pub struct Session {
     pub profile: Option<Profile>,
     pub sync_done: usize,
     pub sync_total: usize,
+    /// Whether the account has LINE Premium; `None` until LINE says.
+    /// Editing a message needs it.
+    pub premium: Option<bool>,
 }

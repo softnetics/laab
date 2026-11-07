@@ -9,12 +9,24 @@ import {
   byDay,
   eventDays,
   type EventForm,
+  expand,
   formOf,
+  gridRange,
   inputOf,
+  localZone,
   longDayLabel,
   minutesBetween,
   monthGrid,
+  monthlyChoices,
   newForm,
+  occurrenceAt,
+  occurrenceKey,
+  recurrenceLabel,
+  reminderLabel,
+  reminderOptions,
+  type RepeatForm,
+  repeatFormOf,
+  repeatOf,
   shortMonths,
   thaiMonths,
   timeLabel,
@@ -26,7 +38,19 @@ import { openUrl } from "../lib/open";
 import type { CalendarEvent } from "../lib/types";
 import { notice, setUi } from "../lib/ui";
 import { ConfirmDialog } from "./Dialogs";
-import { BubbleIcon, CalendarIcon, ChevronIcon, ClockIcon, LinkIcon, PersonIcon, PlaceIcon, TextIcon } from "./Icons";
+import {
+  BellIcon,
+  BubbleIcon,
+  CalendarIcon,
+  ChevronIcon,
+  ClockIcon,
+  GroupIcon,
+  LinkIcon,
+  PersonIcon,
+  PlaceIcon,
+  RepeatIcon,
+  TextIcon,
+} from "./Icons";
 import { DatePicker, TimeField } from "./DateTimePicker";
 import { Spinner, Switch } from "./kit";
 
@@ -35,7 +59,9 @@ import { Spinner, Switch } from "./kit";
 // from the rail with ALL_CALENDARS, it shows every calendar at once, as
 // LINE's Calendar tab does, and names each event's chat.
 
-type View = { kind: "month" } | { kind: "event"; id: string } | { kind: "edit"; event: CalendarEvent | null };
+/** `recurId` picks one occurrence of a recurring event. An edit always
+ *  edits the whole event (every occurrence). */
+type View = { kind: "month" } | { kind: "event"; id: string; recurId?: number } | { kind: "edit"; event: CalendarEvent | null };
 
 /** A calendar the window can add to. */
 type Target = { chatId: string; name: string };
@@ -95,7 +121,8 @@ export function CalendarWindow({ chatId, day: openOn, at }: { chatId: string; da
     setView({ kind: "month" });
   }, [at, openOn]);
 
-  const viewing = view.kind === "event" ? data?.find((e) => e.id === view.id) : undefined;
+  const series = view.kind === "event" ? data?.find((e) => e.id === view.id) : undefined;
+  const viewing = series && view.kind === "event" ? occurrenceAt(series, view.recurId) : undefined;
   const pane = view.kind === "edit" ? `edit-${view.event?.id ?? "new"}` : viewing ? `event-${viewing.id}` : "month";
   return (
     <div className="flex h-full flex-col bg-chat">
@@ -115,7 +142,7 @@ export function CalendarWindow({ chatId, day: openOn, at }: { chatId: string; da
             day={day}
             onDone={(saved) => {
               if (saved) setDay(saved);
-              setView(view.event ? { kind: "event", id: view.event.id } : { kind: "month" });
+              setView(view.event ? { kind: "event", id: view.event.id, recurId: view.event.recurId } : { kind: "month" });
             }}
           />
         ) : viewing ? (
@@ -123,7 +150,7 @@ export function CalendarWindow({ chatId, day: openOn, at }: { chatId: string; da
             source={all ? nameOf(viewing.chatId) : null}
             event={viewing}
             onBack={() => setView({ kind: "month" })}
-            onEdit={() => setView({ kind: "edit", event: viewing })}
+            onEdit={() => setView({ kind: "edit", event: series ? { ...series, recurId: viewing.recurId } : viewing })}
           />
         ) : (
           <Month
@@ -133,7 +160,7 @@ export function CalendarWindow({ chatId, day: openOn, at }: { chatId: string; da
             day={day}
             onDay={setDay}
             source={all ? (e) => nameOf(e.chatId) : null}
-            onOpen={(id) => setView({ kind: "event", id })}
+            onOpen={(e) => setView({ kind: "event", id: e.id, recurId: e.recurId })}
             onAdd={() => setView({ kind: "edit", event: null })}
           />
         )}
@@ -164,14 +191,18 @@ function Month({
   onDay: (d: string) => void;
   /** The event's chat name, in the all-calendars window. */
   source: ((e: CalendarEvent) => string) | null;
-  onOpen: (id: string) => void;
+  onOpen: (e: CalendarEvent) => void;
   onAdd: () => void;
 }) {
   const [y, m] = day.split("-").map(Number);
   const [shown, setShown] = useState({ y, m: m - 1 });
   // Picking a day in the next month's spill-over moves the month with it.
   useEffect(() => setShown({ y, m: m - 1 }), [y, m]);
-  const days = useMemo(() => byDay(events ?? []), [events]);
+  // Recurring events become their occurrences in the month shown.
+  const days = useMemo(() => {
+    const [from, to] = gridRange(shown.y, shown.m);
+    return byDay(expand(events ?? [], from, to));
+  }, [events, shown.y, shown.m]);
   const today = todayKey();
   const cells = monthGrid(shown.y, shown.m);
   const step = (n: number) => {
@@ -282,8 +313,8 @@ function Month({
           const past = e.end <= now && !(e.allDay && day === today);
           return (
             <button
-              key={e.id}
-              onClick={() => onOpen(e.id)}
+              key={occurrenceKey(e)}
+              onClick={() => onOpen(e)}
               className={`flex w-full items-stretch gap-3 rounded-[10px] px-2 py-2 text-left transition-colors hover:bg-row-hover ${past ? "opacity-55" : ""}`}
             >
               <span className="flex w-[46px] shrink-0 flex-col items-end pt-px text-[12px] leading-[17px] tabular-nums">
@@ -292,7 +323,10 @@ function Month({
               </span>
               <span className={`w-[3px] shrink-0 rounded-full ${e.allDay ? "bg-line-green/45" : "bg-line-green"}`} />
               <span className="min-w-0 flex-1 py-px">
-                <span className="block truncate text-[13.5px] leading-[18px] font-medium">{e.title || "(ไม่มีชื่อ)"}</span>
+                <span className="flex items-center gap-1 text-[13.5px] leading-[18px] font-medium">
+                  <span className="truncate">{e.title || "(ไม่มีชื่อ)"}</span>
+                  {e.recurrence && <RepeatIcon size={11} className="shrink-0 text-secondary" aria-label="นัดซ้ำ" />}
+                </span>
                 {source && (
                   <span className="mt-0.5 flex items-center gap-1 text-[11.5px] text-secondary">
                     <BubbleIcon size={10} className="shrink-0" />
@@ -344,11 +378,25 @@ function Detail({
   const creator = e.creator ? (people[e.creator]?.name ?? null) : null;
   const first = eventDays(e)[0];
   const [, fm, fd] = first.split("-").map(Number);
+  const repeats = recurrenceLabel(e);
+  const invitees = e.invitees ?? [];
+  const mine = invitees.find((i) => i.me);
+  const [answering, setAnswering] = useState(false);
+  const answer = (accept: boolean) => {
+    if (!mine || answering) return;
+    setAnswering(true);
+    api
+      // One occurrence of a repeating event is answered for by its recur_id.
+      .respondCalendarInvitation(chatId, e.id, e.recurId ?? null, accept, mine.updatedAt)
+      .then(refresh)
+      .catch((err) => notice(errorText(err)))
+      .finally(() => setAnswering(false));
+  };
   const remove = () =>
     setUi({
       confirm: {
-        title: "ลบนัดหมายนี้หรือไม่",
-        body: source ? `นัดจะหายจากปฏิทินของ ${source} สำหรับทุกคน` : "นัดจะหายจากปฏิทินของแชทนี้สำหรับทุกคน",
+        title: repeats ? "ลบนัดนี้ทุกครั้งหรือไม่" : "ลบนัดหมายนี้หรือไม่",
+        body: `${repeats ? "นัดทุกครั้งในชุดนี้" : "นัด"}จะหายจากปฏิทินของ${source ? ` ${source}` : "แชทนี้"}สำหรับทุกคน`,
         action: "ลบ",
         danger: true,
         run: () =>
@@ -387,10 +435,20 @@ function Detail({
           <Info icon={<ClockIcon size={16} />}>
             <span className="tabular-nums">{timeLabel(e)}</span>
           </Info>
+          {repeats && (
+            <Info icon={<RepeatIcon size={16} />}>
+              <span>{repeats}</span>
+            </Info>
+          )}
           {source && (
             <Info icon={<BubbleIcon size={15} />}>
               <span className="text-secondary">ปฏิทินของ </span>
               {source}
+            </Info>
+          )}
+          {(e.reminders?.length ?? 0) > 0 && (
+            <Info icon={<BellIcon size={16} />}>
+              <span>เตือน {e.reminders!.map(reminderLabel).join(", ")}</span>
             </Info>
           )}
           {e.location && (
@@ -426,7 +484,43 @@ function Detail({
               {creator}
             </Info>
           )}
+          {invitees.length > 0 && (
+            <Info icon={<GroupIcon size={16} />}>
+              <ul className="space-y-0.5">
+                {invitees.map((i) => (
+                  <li key={i.mid} className="flex items-baseline gap-2">
+                    <span className="min-w-0 flex-1 truncate">{i.me ? "คุณ" : (people[i.mid]?.name ?? "สมาชิก")}</span>
+                    <span className={`shrink-0 text-[11.5px] ${i.status === "accepted" ? "text-line-green" : "text-secondary"}`}>
+                      {inviteStatus[i.status] ?? ""}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            </Info>
+          )}
         </div>
+        {mine && (
+          <div className="mt-3 flex items-center gap-2">
+            <span className="flex-1 text-[12.5px] text-secondary">{e.recurId != null ? "ไปนัดครั้งนี้ไหม" : "ไปนัดนี้ไหม"}</span>
+            {(["accepted", "declined"] as const).map((s) => (
+              <button
+                key={s}
+                disabled={answering}
+                aria-pressed={mine.status === s}
+                onClick={() => answer(s === "accepted")}
+                className={`h-7 rounded-full px-3 text-[12.5px] font-semibold transition-colors disabled:opacity-60 ${
+                  mine.status === s
+                    ? s === "accepted"
+                      ? "bg-line-green text-white"
+                      : "bg-primary text-chat"
+                    : "border border-separator hover:bg-row-hover"
+                }`}
+              >
+                {s === "accepted" ? "ไป" : "ไม่ไป"}
+              </button>
+            ))}
+          </div>
+        )}
       </div>
       {e.editable ? (
         <div className="flex gap-2 px-4 pt-2 pb-4">
@@ -449,6 +543,8 @@ function Detail({
     </div>
   );
 }
+
+const inviteStatus: Record<string, string> = { accepted: "ไป", declined: "ไม่ไป", needsAction: "ยังไม่ตอบ" };
 
 function Info({ icon, children }: { icon: ReactNode; children: ReactNode }) {
   return (
@@ -484,7 +580,18 @@ function Editor({
   day: string;
   onDone: (day?: string) => void;
 }) {
+  // An occurrence opened from a recurring event comes here as the whole
+  // event (its first occurrence's times): an edit changes every occurrence.
   const [f, setF] = useState<EventForm>(() => (event ? formOf(event) : newForm(day)));
+  const [reminders, setReminders] = useState<number[]>(() => event?.reminders ?? []);
+  // Null for a rule LAAB can't edit: the edit leaves it as it is.
+  const [repeat, setRepeat] = useState<RepeatForm | null>(() => repeatFormOf(event, event ? formOf(event).startDate : day));
+  const [repeatChanged, setRepeatChanged] = useState(false);
+  const changeRepeat = (patch: Partial<RepeatForm>) => {
+    setProblem(null);
+    setRepeatChanged(true);
+    setRepeat((r) => r && { ...r, ...patch });
+  };
   // LINE posts a card in the chat for a new event; edits stay quiet unless asked.
   const [notify, setNotify] = useState(!event);
   const [target, setTarget] = useState(() => event?.chatId ?? (targets ? lastTarget(targets) : windowChat));
@@ -512,9 +619,15 @@ function Editor({
   };
   const save = () => {
     if (busy) return;
-    const input = inputOf(f);
+    // An edit keeps the event's own zone; a new one takes the Mac's.
+    const input = inputOf(f, event?.timezone || localZone(), reminders);
     if ("error" in input) return setProblem(input.error);
     if (!chatId) return setProblem("เลือกปฏิทินก่อน");
+    if (repeat && (repeatChanged || (!event && repeat.frequency !== "none"))) {
+      if (repeat.frequency === "weekly" && !repeat.weekdays.length) return setProblem("เลือกวันที่จะซ้ำก่อน");
+      if (repeat.frequency !== "none" && repeat.until && repeat.until < f.startDate) return setProblem("วันสุดท้ายที่ซ้ำต้องไม่ก่อนวันเริ่ม");
+      input.repeat = repeatOf(repeat, f.startDate);
+    }
     if (targets) remember(chatId);
     setBusy(true);
     const call = event
@@ -638,6 +751,44 @@ function Editor({
           </label>
         </Group>
 
+        <Group>
+          <div className="px-3 py-2.5">
+            <span className="flex items-center gap-2.5 text-[13px]">
+              <BellIcon size={15} className="shrink-0 text-secondary" />
+              แจ้งเตือน
+            </span>
+            <div className="mt-2 flex flex-wrap gap-1.5" role="group" aria-label="แจ้งเตือน">
+              {reminderOptions.map((o) => {
+                const on = reminders.includes(o.value);
+                return (
+                  <button
+                    key={o.value}
+                    type="button"
+                    aria-pressed={on}
+                    onClick={() => {
+                      setProblem(null);
+                      setReminders((r) => (on ? r.filter((v) => v !== o.value) : [...r, o.value]));
+                    }}
+                    className={`h-6 rounded-full px-2.5 text-[11.5px] font-medium transition-colors ${
+                      on ? "bg-line-green text-white" : "bg-chat/60 text-secondary hover:text-primary"
+                    }`}
+                  >
+                    {o.label}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        </Group>
+
+        <Repeat form={repeat} startDate={f.startDate} onChange={changeRepeat} />
+
+        {event?.recurrence && (
+          <p className="px-1 text-[11.5px] text-secondary">
+            นัดนี้ซ้ำ{recurrenceLabel(event) ? ` (${recurrenceLabel(event)})` : ""} การแก้ไขจะเปลี่ยนนัดทุกครั้ง เหมือนในแอป LINE
+          </p>
+        )}
+
         {!ownCalendar && (
           <Group>
             <div className={`${rowClass} py-2`}>
@@ -659,6 +810,105 @@ function Editor({
         )}
       </div>
     </form>
+  );
+}
+
+const repeatUnits: Record<RepeatForm["frequency"], string> = { none: "", daily: "วัน", weekly: "สัปดาห์", monthly: "เดือน", yearly: "ปี" };
+const repeatChoices: { value: RepeatForm["frequency"]; label: string }[] = [
+  { value: "none", label: "ไม่ซ้ำ" },
+  { value: "daily", label: "ทุกวัน" },
+  { value: "weekly", label: "ทุกสัปดาห์" },
+  { value: "monthly", label: "ทุกเดือน" },
+  { value: "yearly", label: "ทุกปี" },
+];
+const WEEKDAYS = ["SU", "MO", "TU", "WE", "TH", "FR", "SA"];
+const selectClass =
+  "h-7 max-w-[60%] min-w-0 truncate rounded-[7px] bg-chat/60 px-2 text-[13px] outline-none focus-visible:ring-2 focus-visible:ring-line-green/50";
+
+/** How the event repeats: how often, every how many, on which days, until when. */
+function Repeat({ form: r, startDate, onChange }: { form: RepeatForm | null; startDate: string; onChange: (patch: Partial<RepeatForm>) => void }) {
+  if (!r) {
+    return <p className="px-1 text-[11.5px] text-secondary">LAAB แก้การซ้ำแบบนี้ไม่ได้ จะคงไว้ตามเดิม</p>;
+  }
+  const repeats = r.frequency !== "none";
+  return (
+    <Group>
+      <label className={rowClass}>
+        <RepeatIcon size={15} className="shrink-0 text-secondary" />
+        <span className="flex-1 text-[13px]">ซ้ำ</span>
+        <select
+          aria-label="ซ้ำ"
+          value={r.frequency}
+          onChange={(e) => onChange({ frequency: e.target.value as RepeatForm["frequency"] })}
+          className={selectClass}
+        >
+          {repeatChoices.map((c) => (
+            <option key={c.value} value={c.value}>
+              {c.label}
+            </option>
+          ))}
+        </select>
+      </label>
+      {repeats && (
+        <label className={rowClass}>
+          <span className="flex-1 text-[13px]">ทุก</span>
+          <input
+            type="number"
+            min={1}
+            max={99}
+            aria-label="ซ้ำทุก"
+            value={r.interval}
+            onChange={(e) => onChange({ interval: Math.min(99, Math.max(1, Number(e.target.value) || 1)) })}
+            className="selectable h-7 w-14 rounded-[7px] bg-chat/60 px-2 text-right text-[13px] tabular-nums outline-none focus-visible:ring-2 focus-visible:ring-line-green/50"
+          />
+          <span className="w-12 text-[13px]">{repeatUnits[r.frequency]}</span>
+        </label>
+      )}
+      {r.frequency === "weekly" && (
+        <div className="flex justify-between px-3 py-2" role="group" aria-label="วันที่ซ้ำ">
+          {WEEKDAYS.map((d, i) => {
+            const on = r.weekdays.includes(d);
+            return (
+              <button
+                key={d}
+                type="button"
+                aria-pressed={on}
+                onClick={() => onChange({ weekdays: on ? r.weekdays.filter((x) => x !== d) : [...r.weekdays, d] })}
+                className={`grid h-7 w-7 place-items-center rounded-full text-[11.5px] font-medium transition-colors ${
+                  on ? "bg-line-green text-white" : "bg-chat/60 text-secondary hover:text-primary"
+                }`}
+              >
+                {weekdayLetters[i]}
+              </button>
+            );
+          })}
+        </div>
+      )}
+      {r.frequency === "monthly" && (
+        <label className={rowClass}>
+          <span className="flex-1 text-[13px]">ในวัน</span>
+          <select
+            aria-label="ซ้ำในวัน"
+            value={r.monthly}
+            onChange={(e) => onChange({ monthly: e.target.value as RepeatForm["monthly"] })}
+            className={selectClass}
+          >
+            {monthlyChoices(startDate).map((c) => (
+              <option key={c.value} value={c.value}>
+                {c.label}
+              </option>
+            ))}
+          </select>
+        </label>
+      )}
+      {repeats && (
+        <div className={rowClass}>
+          <span className="flex-1 text-[13px]">สิ้นสุดการซ้ำ</span>
+          {r.until && <DatePicker label="วันสุดท้ายที่ซ้ำ" value={r.until} onChange={(v) => onChange({ until: v })} />}
+          <Switch label="สิ้นสุดการซ้ำ" checked={!!r.until} onChange={(v) => onChange({ until: v ? startDate : null })} />
+        </div>
+      )}
+    </Group>
   );
 }
 

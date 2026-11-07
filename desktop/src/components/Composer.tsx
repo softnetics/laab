@@ -7,6 +7,7 @@ import {
   ALL_MEMBER,
   backspaceMention,
   composingQuery,
+  fromSpans,
   insertMention,
   locate,
   matching,
@@ -21,11 +22,14 @@ import { CloseIcon, PaperclipIcon, SmileIcon, WarningIcon } from "./Icons";
 
 const LINE_HEIGHT = 20;
 const MAX_LINES = 6;
+const kbd = "rounded border border-separator px-1 py-px font-sans text-[10.5px] text-secondary";
 
 export interface ComposerHandle {
   focus: () => void;
   /** Close the mention picker; false if it was not open. */
   dismissPicker: () => boolean;
+  /** Send files (dropped on the chat), with Retry for those that fail. */
+  sendFiles: (paths: string[]) => Promise<void>;
 }
 
 /** The message field. A transparent textarea sits over a mirror that colours
@@ -72,7 +76,7 @@ export const Composer = forwardRef<
     if (mode?.kind === "edit") {
       savedDraft.current = { text, mentions };
       setText(mode.message.text);
-      setMentions([]);
+      setMentions(fromSpans(mode.message.text, mode.message.mentions ?? []));
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [mode?.kind, mode?.message.id]);
@@ -169,6 +173,7 @@ export const Composer = forwardRef<
       setDismissedAt(`${caret}:${query}`);
       return true;
     },
+    sendFiles: (paths) => sendFiles(paths),
   }));
   useEffect(() => (pickerOpen ? pushDismiss(() => setDismissedAt(`${caret}:${query}`)) : undefined), [pickerOpen, caret, query]);
 
@@ -188,7 +193,15 @@ export const Composer = forwardRef<
     area.current?.focus();
   };
 
-  const send = async () => {
+  // The reqSeq of the last message that failed to send. Sending the same
+  // message again reuses it, so if the first try reached LINE but its answer
+  // was lost (a timeout), LINE doesn't post it twice.
+  const unsent = useRef<{ key: string; reqSeq: number } | null>(null);
+
+  // `silent` (⌥Return): without a notification on the others' devices. It is
+  // a way of sending one message, not a mode, so it can't be mistaken for
+  // muting the chat.
+  const send = async (silent = false) => {
     if (pendingImage && !sending && !disabled) {
       const image = pendingImage;
       const caption = text.replace(/\s+$/, "");
@@ -202,14 +215,14 @@ export const Composer = forwardRef<
         setPendingImage(null);
         if (caption.trim()) {
           if (mode?.kind === "edit") await api.editMessage(chatId, mode.message.id, caption);
-          else await api.sendText(chatId, caption, captionMentions, mode?.kind === "reply" ? mode.message.id : null);
+          else await api.sendText(chatId, caption, captionMentions, mode?.kind === "reply" ? mode.message.id : null, null, silent);
         }
         if (mode) setUi({ composerMode: null });
         setFailure(null);
       } catch (e) {
         setText(caption);
         setMentions(mentions);
-        setFailure({ title: "ส่งรูปหรือข้อความไม่สำเร็จ", detail: errorText(e), retry: () => sendLatest.current() });
+        setFailure({ title: "ส่งรูปหรือข้อความไม่สำเร็จ", detail: errorText(e), retry: () => sendLatest.current(silent) });
       } finally {
         setSending(false);
       }
@@ -224,16 +237,20 @@ export const Composer = forwardRef<
     setMentions([]);
     try {
       if (current?.kind === "edit") {
-        await api.editMessage(chatId, current.message.id, body);
+        await api.editMessage(chatId, current.message.id, body, spans);
         savedDraft.current = null;
       } else {
-        await api.sendText(chatId, body, spans, current?.kind === "reply" ? current.message.id : null);
+        const replyTo = current?.kind === "reply" ? current.message.id : null;
+        const key = JSON.stringify([chatId, body, spans, replyTo, silent]);
+        if (unsent.current?.key !== key) unsent.current = { key, reqSeq: await api.newReqSeq() };
+        await api.sendText(chatId, body, spans, replyTo, unsent.current.reqSeq, silent);
+        unsent.current = null;
       }
       if (current) setUi({ composerMode: null });
       setFailure(null);
     } catch (e) {
       setText(body);
-      setFailure({ title: current?.kind === "edit" ? "แก้ไขข้อความไม่สำเร็จ" : "ยังไม่ได้ส่งข้อความนี้", detail: errorText(e), retry: () => sendLatest.current() });
+      setFailure({ title: current?.kind === "edit" ? "แก้ไขข้อความไม่สำเร็จ" : "ยังไม่ได้ส่งข้อความนี้", detail: errorText(e), retry: () => sendLatest.current(silent) });
     } finally {
       setSending(false);
     }
@@ -249,9 +266,19 @@ export const Composer = forwardRef<
     const paths = Array.isArray(files) ? files : [files];
     sendFiles(paths);
   };
+  // Files go one by one and a failure doesn't stop the rest; Retry sends
+  // only the ones that failed.
   const sendFiles = (paths: string[]) =>
     api.sendFiles(chatId, paths).then(
-      () => setFailure(null),
+      (failed) => {
+        if (!failed.length) return setFailure(null);
+        const again = failed.map((f) => f.path);
+        setFailure({
+          title: paths.length > 1 ? `ส่งแล้ว ${paths.length - failed.length} จาก ${paths.length} ไฟล์` : "ยังไม่ได้ส่งไฟล์นี้",
+          detail: failed.map((f) => f.error).join("\n"),
+          retry: () => sendFiles(again),
+        });
+      },
       (e) => setFailure({ title: paths.length > 1 ? "ยังไม่ได้ส่งไฟล์เหล่านี้" : "ยังไม่ได้ส่งไฟล์นี้", detail: errorText(e), retry: () => sendFiles(paths) }),
     );
   useEffect(() => (failure ? pushDismiss(() => setFailure(null)) : undefined), [failure]);
@@ -280,9 +307,10 @@ export const Composer = forwardRef<
   const onKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.nativeEvent.isComposing || e.keyCode === 229) return;
     const plain = !e.metaKey && !e.ctrlKey && !e.altKey && !e.shiftKey;
-    if (pendingImage && !(pickerOpen && candidates.length) && e.key === "Enter" && (plain || (e.metaKey && !e.shiftKey))) {
+    const silent = e.altKey && !e.metaKey && !e.ctrlKey && !e.shiftKey;
+    if (pendingImage && !(pickerOpen && candidates.length) && e.key === "Enter" && (plain || silent || (e.metaKey && !e.shiftKey))) {
       e.preventDefault();
-      void send();
+      void send(silent);
       return;
     }
     if (pickerOpen && candidates.length && plain) {
@@ -309,9 +337,9 @@ export const Composer = forwardRef<
       onStep(e.key === "ArrowDown" ? 1 : -1);
       return;
     }
-    if (e.key === "Enter" && (plain || (e.metaKey && !e.shiftKey))) {
+    if (e.key === "Enter" && (plain || silent || (e.metaKey && !e.shiftKey))) {
       e.preventDefault();
-      send();
+      void send(silent);
       return;
     }
     if (e.key === "Backspace" && plain) {
@@ -377,7 +405,7 @@ export const Composer = forwardRef<
           </span>
           <div className="min-w-0 flex-1 leading-snug">
             <div className="text-[13.5px] font-medium text-badge-red">{failure.title}</div>
-            <div className="selectable text-[12.5px] text-pretty text-primary/80">{failure.detail}</div>
+            <div className="selectable text-[12.5px] text-pretty whitespace-pre-line text-primary/80">{failure.detail}</div>
           </div>
           {failure.retry && (
             <button
@@ -441,7 +469,7 @@ export const Composer = forwardRef<
           >
             ลบ
           </button>
-          <button type="button" onClick={send} disabled={sending} className="rounded bg-line-green px-3 py-1 text-[12px] text-white disabled:opacity-50">
+          <button type="button" onClick={(e) => send(e.altKey)} disabled={sending} className="rounded bg-line-green px-3 py-1 text-[12px] text-white disabled:opacity-50">
             ส่งรูป
           </button>
         </div>
@@ -485,6 +513,18 @@ export const Composer = forwardRef<
           <PaperclipIcon size={21} strokeWidth={1.6} />
         </button>
         <div className="flex-1" />
+        {/* The keys to send, while there is something to send. ⌥Return has
+            no button, so this line is how people find it. */}
+        <span
+          aria-hidden
+          className={`mr-2 flex min-w-0 items-center gap-1.5 overflow-hidden text-[11px] whitespace-nowrap text-secondary transition-opacity duration-150 ${
+            (text.trim() || pendingImage) && mode?.kind !== "edit" ? "opacity-100" : "opacity-0"
+          }`}
+        >
+          <kbd className={kbd}>⏎</kbd> ส่ง
+          <span className="mx-1 text-separator">|</span>
+          <kbd className={kbd}>⌥⏎</kbd> ส่งแบบไม่มีการแจ้งเตือน
+        </span>
         <button
           title="สติกเกอร์"
           onClick={(e) => (e.stopPropagation(), onToggleStickers())}

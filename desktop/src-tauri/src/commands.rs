@@ -4,6 +4,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use line_rs::client::{MessageInput, ReactionType};
+use line_rs::obs::{MediaOptions, ObjType, ObsFile};
 use serde::{Deserialize, Serialize};
 use tauri::{Manager, State, WebviewUrl, WebviewWindowBuilder};
 
@@ -24,16 +25,19 @@ fn err(e: impl std::fmt::Display) -> String {
 }
 
 /// Reports a failed send (its kind only) and returns the error text.
-fn send_failed(state: &AppState, action: crate::usage::Action, e: impl std::fmt::Display) -> String {
-    let text = e.to_string();
-    crate::analytics::failed(state, crate::analytics::Failure::Send(action), &text);
+fn send_failed(state: &AppState, action: crate::usage::Action, e: impl Into<line_rs::Error>) -> String {
+    let e = e.into();
+    // Kept on this Mac, so a problem report the user sends can show why.
+    // `full_message` adds the causes, such as the timeout behind "error
+    // sending request".
+    tracing::warn!("{} failed: {}", action.name(), e.full_message());
+    crate::analytics::failed_with(state, crate::analytics::Failure::Send(action), &e);
     // line-rs opens each encrypted message as its recipients would before
     // sending it, and refuses one they couldn't read.
-    if text.contains("E2EE self-check failed") {
-        tracing::warn!("send refused: {text}");
+    if matches!(&e, line_rs::Error::Crypto(m) if m.contains("E2EE self-check failed")) {
         return "ผู้รับจะเปิดข้อความที่เข้ารหัสนี้ไม่ได้ จึงยังไม่ได้ส่ง ลองออกจากระบบแล้วเข้าสู่ระบบใหม่".into();
     }
-    text
+    e.to_string()
 }
 
 #[tauri::command]
@@ -90,6 +94,12 @@ pub fn people(state: S<'_>) -> R<HashMap<String, Person>> {
         .into_iter()
         .map(|(mid, (name, picture))| (mid, Person { name, picture }))
         .collect())
+}
+
+/// Friends and official accounts the user added, by name.
+#[tauri::command]
+pub fn friends(state: S<'_>) -> R<Vec<crate::model::Friend>> {
+    state.store().friends().map_err(err)
 }
 
 #[tauri::command]
@@ -161,6 +171,10 @@ pub async fn open_chat(state: S<'_>, chat_id: String) -> R<Option<String>> {
     }
     tokio::spawn(async move {
         let _ = line::fetch_history(&s, &chat_id).await;
+        // Messages that could not be decrypted get another try.
+        if let Some(l) = s.line().await {
+            line::retry_undecrypted(&s, &l, Some(&chat_id)).await;
+        }
         acknowledge(&s, &chat_id).await;
         let _ = line::read_status(&s, &chat_id).await;
         crate::actions::prefetch_calendars(&s, Some(&chat_id)).await;
@@ -216,9 +230,8 @@ pub async fn refresh(state: S<'_>, full: Option<bool>) -> R<()> {
     line::refresh_chats(&s, full.unwrap_or(true))
         .await
         .map_err(|e| {
-            let text = e.to_string();
-            crate::analytics::failed(&s, crate::analytics::Failure::Sync, &text);
-            text
+            crate::analytics::failed_with(&s, crate::analytics::Failure::Sync, e.as_ref());
+            e.to_string()
         })
 }
 
@@ -259,6 +272,19 @@ fn store_sent(state: &AppState, msg: &Message) {
     state.messages_changed(&msg.chat_id);
 }
 
+/// A new `reqSeq` for [`send_text`], from line-rs's counter. The composer
+/// takes one per message and sends it again on Retry, so LINE can tell a
+/// retry from a new message when the first try's answer was lost.
+#[tauri::command]
+pub async fn new_req_seq(state: S<'_>) -> R<i64> {
+    let s = state.inner().clone();
+    if s.demo {
+        return Ok(0);
+    }
+    let l = s.line().await.ok_or("not_logged_in")?;
+    l.client.base.get_reqseq("talk").await.map_err(err)
+}
+
 #[tauri::command]
 pub async fn send_text(
     state: S<'_>,
@@ -266,6 +292,8 @@ pub async fn send_text(
     text: String,
     mentions: Vec<MentionSpan>,
     reply_to: Option<String>,
+    req_seq: Option<i64>,
+    silent: Option<bool>,
 ) -> R<Message> {
     let s = state.inner().clone();
     if s.demo {
@@ -282,13 +310,18 @@ pub async fn send_text(
     if let Some(meta) = convert::mention_metadata(&mentions) {
         input = input.metadata("MENTION", meta);
     }
+    if let Some(seq) = req_seq {
+        input = input.req_seq(seq);
+    }
+    // Without a notification on the others' devices (`NOTIFICATION_DISABLED`).
+    input = input.silent(silent.unwrap_or(false));
     let sent = l
         .client
         .send_message(&chat_id, input)
         .await
         .map_err(|e| send_failed(&s, crate::usage::Action::SentText, e))?;
     crate::usage::hit(crate::usage::Action::SentText);
-    let mut m = convert::message_from_json(&sent.raw.to_json(), &l.me, true)
+    let mut m = convert::message_from_json(&line::message_json(&sent.raw), &l.me, true)
         .unwrap_or_else(|| local_message(&s, &chat_id, &text, mentions.clone()));
     // The send response may omit what we sent.
     m.chat_id = chat_id.clone();
@@ -310,7 +343,7 @@ pub async fn send_text(
 }
 
 #[tauri::command]
-pub async fn send_sticker(state: S<'_>, chat_id: String, sticker: Sticker) -> R<()> {
+pub async fn send_sticker(state: S<'_>, chat_id: String, sticker: Sticker, silent: Option<bool>) -> R<()> {
     let s = state.inner().clone();
     if s.demo {
         return Err("ต้องเข้าสู่ระบบ LINE ก่อนส่งสติกเกอร์".into());
@@ -318,18 +351,15 @@ pub async fn send_sticker(state: S<'_>, chat_id: String, sticker: Sticker) -> R<
     let l = s.line().await.ok_or("not_logged_in")?;
     let version = sticker.version.clone().unwrap_or_else(|| "1".into());
     let input =
-        MessageInput::sticker(&sticker.package_id, &sticker.sticker_id, &version).e2ee(false);
+        MessageInput::sticker(&sticker.package_id, &sticker.sticker_id, &version).e2ee(false).silent(silent.unwrap_or(false));
     let sent = l.client.send_message(&chat_id, input).await.map_err(|e| {
+        let owned = e.error_code() != Some(line_rs::ErrorCode::UserNotStickerOwner);
         let text = send_failed(&s, crate::usage::Action::SentSticker, e);
-        if text.contains("USER_NOT_STICKER_OWNER") {
-            "sticker_not_owned".to_string()
-        } else {
-            text
-        }
+        if owned { text } else { "sticker_not_owned".to_string() }
     })?;
     crate::usage::hit(crate::usage::Action::SentSticker);
     crate::stickers::remember(&s, &sticker);
-    if let Some(mut m) = convert::message_from_json(&sent.raw.to_json(), &l.me, true) {
+    if let Some(mut m) = convert::message_from_json(&line::message_json(&sent.raw), &l.me, true) {
         m.chat_id = chat_id;
         m.mine = true;
         m.content_type = "STICKER".into();
@@ -352,44 +382,263 @@ pub async fn stickers(state: S<'_>) -> R<Vec<StickerPack>> {
     crate::stickers::list(&s).await.map_err(err)
 }
 
+/// The preview card of a link in a message, from LINE's preview service
+/// (cached); `None` when there is none to show.
 #[tauri::command]
-pub async fn send_files(state: S<'_>, chat_id: String, paths: Vec<String>) -> R<()> {
+pub async fn link_preview(state: S<'_>, url: String) -> R<Option<crate::preview::LinkPreview>> {
+    Ok(crate::preview::get(state.inner(), &url).await)
+}
+
+/// One owned package with all its stickers, loaded when the picker opens it.
+#[tauri::command]
+pub async fn sticker_pack(id: String, name: String, version: Option<String>) -> R<StickerPack> {
+    crate::stickers::pack(&id, &name, version.as_deref().unwrap_or("1"))
+        .await
+        .map_err(err)
+}
+
+/// A file [`send_files`] couldn't send, and why, in Thai.
+#[derive(Serialize, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct FileFailure {
+    pub path: String,
+    pub error: String,
+}
+
+/// How a file goes to LINE, by its extension: photos, GIFs (animated),
+/// videos and audio clips as media, anything else as a file.
+fn media_kind(ext: &str) -> ObjType {
+    match ext {
+        "jpg" | "jpeg" | "png" | "webp" | "heic" => ObjType::Image,
+        "gif" => ObjType::Gif,
+        "mp4" | "mov" | "m4v" => ObjType::Video,
+        "m4a" | "aac" | "mp3" => ObjType::Audio,
+        _ => ObjType::File,
+    }
+}
+
+/// What to tell the user when LINE won't take a file this big.
+fn too_large(kind: ObjType) -> String {
+    match kind {
+        ObjType::Video => "วิดีโอใหญ่เกิน 200MB ส่งเป็นวิดีโอไม่ได้".into(),
+        _ => "ไฟล์ใหญ่เกิน 1GB ส่งไม่ได้".into(),
+    }
+}
+
+/// An audio clip's length, from macOS's `afinfo`. LINE shows a clip sent
+/// without one as 0:00.
+async fn audio_duration_ms(path: &std::path::Path) -> Option<u64> {
+    let out = tokio::process::Command::new("/usr/bin/afinfo")
+        .arg(path)
+        .output()
+        .await
+        .ok()?;
+    let text = String::from_utf8_lossy(&out.stdout);
+    let secs: f64 = text
+        .lines()
+        .find_map(|l| l.trim().strip_prefix("estimated duration:"))?
+        .trim()
+        .trim_end_matches("sec")
+        .trim()
+        .parse()
+        .ok()?;
+    (secs.is_finite() && secs > 0.0).then(|| (secs * 1000.0).round() as u64)
+}
+
+fn file_name(path: &str) -> &str {
+    std::path::Path::new(path)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("file")
+}
+
+fn file_kind(path: &str) -> ObjType {
+    let ext = std::path::Path::new(path)
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    media_kind(&ext)
+}
+
+/// One step of sending a pick: a file alone, or photos as one group.
+#[derive(Debug, PartialEq)]
+enum SendStep {
+    One(usize),
+    Group(Vec<usize>),
+}
+
+/// How a pick goes out: two or more photos go together as one photo group
+/// where the first of them was; everything else
+/// one by one, in order. GIFs go alone, as moving pictures.
+fn send_plan(paths: &[String]) -> Vec<SendStep> {
+    let photos: Vec<usize> = (0..paths.len())
+        .filter(|&i| file_kind(&paths[i]) == ObjType::Image)
+        .collect();
+    let mut steps = Vec::new();
+    for i in 0..paths.len() {
+        if photos.len() < 2 || !photos.contains(&i) {
+            steps.push(SendStep::One(i));
+        } else if photos[0] == i {
+            steps.push(SendStep::Group(photos.clone()));
+        }
+    }
+    steps
+}
+
+/// A file read and ready to send.
+struct Prepared {
+    name: String,
+    kind: ObjType,
+    file: ObsFile,
+    opts: MediaOptions,
+}
+
+/// Read `path` and work out what LINE expects with it: a photo's size,
+/// a photo's size and thumbnail, a video's length and thumbnail, an audio
+/// clip's length.
+async fn prepare_file(s: &AppState, path: &str, silent: bool) -> Result<Prepared, String> {
+    let p = std::path::Path::new(path);
+    let name = file_name(path).to_string();
+    let kind = file_kind(path);
+    // Checked before reading, so a huge file isn't loaded only to be refused.
+    if let Ok(meta) = tokio::fs::metadata(p).await
+        && line_rs::obs::check_media_size(kind, meta.len() as usize).is_err()
+    {
+        crate::analytics::failed(s, crate::analytics::Failure::Send(crate::usage::Action::SentFile), "too large");
+        return Err(format!("{name}: {}", too_large(kind)));
+    }
+    let data = tokio::fs::read(p).await.map_err(|e| {
+        let text = send_failed(s, crate::usage::Action::SentFile, e);
+        format!("เปิด {name} ไม่ได้: {text}")
+    })?;
+    let mut opts = MediaOptions::new().silent(silent);
+    match kind {
+        ObjType::Gif => opts = opts.animated(true),
+        ObjType::Image => {
+            let probe = crate::probe::image(p).await;
+            if let (Some(w), Some(h)) = (probe.width, probe.height) {
+                opts = opts.size(w, h);
+            }
+            // Uploaded as the photo's `ud-preview` instead of the photo itself.
+            if let Some(jpeg) = probe.preview {
+                opts = opts.preview(jpeg);
+            }
+        }
+        ObjType::Video => {
+            let probe = crate::probe::video(p).await;
+            if let Some(ms) = probe.duration_ms {
+                opts = opts.duration_ms(ms);
+            }
+            if let Some(jpeg) = probe.preview {
+                opts = opts.preview(jpeg);
+            }
+        }
+        ObjType::Audio => {
+            if let Some(ms) = audio_duration_ms(p).await {
+                opts = opts.duration_ms(ms);
+            }
+        }
+        ObjType::File => {}
+    }
+    let file = ObsFile::new(data).name(name.clone());
+    Ok(Prepared { name, kind, file, opts })
+}
+
+/// Count a sent file, or say in Thai why it wasn't sent.
+fn sent_result(
+    s: &AppState,
+    name: &str,
+    kind: ObjType,
+    res: line_rs::Result<line_rs::obs::SentMedia>,
+) -> Result<(), String> {
+    match res {
+        Ok(_) => {
+            crate::usage::hit(crate::usage::Action::SentFile);
+            Ok(())
+        }
+        Err(e) => {
+            let large = matches!(&e, line_rs::Error::Internal { kind, .. } if kind == "MediaTooLarge");
+            let text = send_failed(s, crate::usage::Action::SentFile, e);
+            Err(if large { format!("{name}: {}", too_large(kind)) } else { format!("ส่ง {name} ไม่สำเร็จ: {text}") })
+        }
+    }
+}
+
+async fn send_file(s: &AppState, chat: &line_rs::client::Chat, path: &str, silent: bool) -> Result<(), String> {
+    let f = prepare_file(s, path, silent).await?;
+    let res = chat.send_media_with(f.kind, f.file, f.opts).await;
+    sent_result(s, &f.name, f.kind, res)
+}
+
+/// Send photos as one photo group; one result per path, in order.
+async fn send_photo_group(
+    s: &AppState,
+    chat: &line_rs::client::Chat,
+    paths: &[&String],
+    silent: bool,
+) -> Vec<Result<(), String>> {
+    let mut results: Vec<Result<(), String>> = Vec::with_capacity(paths.len());
+    let mut ready = Vec::new();
+    for (i, path) in paths.iter().enumerate() {
+        match prepare_file(s, path, silent).await {
+            Ok(f) => {
+                ready.push((i, f));
+                results.push(Ok(()));
+            }
+            Err(e) => results.push(Err(e)),
+        }
+    }
+    let names: Vec<(usize, String)> = ready.iter().map(|(i, f)| (*i, f.name.clone())).collect();
+    let images = ready.into_iter().map(|(_, f)| (f.file, f.opts)).collect();
+    let sent = chat.send_image_group(images).await;
+    for ((i, name), res) in names.into_iter().zip(sent) {
+        results[i] = sent_result(s, &name, ObjType::Image, res);
+    }
+    results
+}
+
+/// Sends the files, going on past one that fails, and returns the ones
+/// that failed so Retry sends only those. Two or more photos go as one
+/// photo group (see [`send_plan`]). `silent`: without a notification on
+/// the others' devices.
+#[tauri::command]
+pub async fn send_files(state: S<'_>, chat_id: String, paths: Vec<String>, silent: Option<bool>) -> R<Vec<FileFailure>> {
+    let silent = silent.unwrap_or(false);
     let s = state.inner().clone();
     if s.demo {
         return Err("ต้องเข้าสู่ระบบ LINE ก่อนส่งไฟล์".into());
     }
     let l = s.line().await.ok_or("not_logged_in")?;
     let chat = l.chat(&chat_id);
-    for (i, path) in paths.iter().enumerate() {
-        let p = std::path::Path::new(path);
-        let name = p
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("file")
-            .to_string();
-        s.status(format!("กำลังส่ง {name} ({}/{})", i + 1, paths.len()));
-        let data = tokio::fs::read(p).await.map_err(err)?;
-        let ext = p
-            .extension()
-            .and_then(|e| e.to_str())
-            .unwrap_or("")
-            .to_ascii_lowercase();
-        let result = match ext.as_str() {
-            "jpg" | "jpeg" | "png" | "gif" | "webp" | "heic" => {
-                chat.send_image(data, Some(&name)).await
+    let mut failed = Vec::new();
+    let mut done = 0;
+    for step in send_plan(&paths) {
+        match step {
+            SendStep::One(i) => {
+                done += 1;
+                s.status(format!("กำลังส่ง {} ({done}/{})", file_name(&paths[i]), paths.len()));
+                if let Err(error) = send_file(&s, &chat, &paths[i], silent).await {
+                    failed.push(FileFailure { path: paths[i].clone(), error });
+                }
             }
-            "mp4" | "mov" | "m4v" => chat.send_video(data, Some(&name), None).await,
-            _ => chat.send_file(data, &name).await,
-        };
-        result.map_err(|e| {
-            let text = send_failed(&s, crate::usage::Action::SentFile, e);
-            format!("ส่ง {name} ไม่สำเร็จ: {text}")
-        })?;
-        crate::usage::hit(crate::usage::Action::SentFile);
+            SendStep::Group(group) => {
+                done += group.len();
+                s.status(format!("กำลังส่งรูป {} รูป ({done}/{})", group.len(), paths.len()));
+                let group: Vec<&String> = group.iter().map(|&i| &paths[i]).collect();
+                for (path, res) in group.iter().zip(send_photo_group(&s, &chat, &group, silent).await) {
+                    if let Err(error) = res {
+                        failed.push(FileFailure { path: (*path).clone(), error });
+                    }
+                }
+            }
+        }
     }
     s.status("เชื่อม LINE แล้ว");
-    let _ = line::fetch_history(&s, &chat_id).await;
-    Ok(())
+    if failed.len() < paths.len() {
+        let _ = line::fetch_history(&s, &chat_id).await;
+    }
+    Ok(failed)
 }
 
 /// Sends an image supplied as raw IPC bytes, such as a pasted clipboard image.
@@ -438,12 +687,10 @@ pub async fn download(
     crate::media::download_file(&s, &chat_id, &message_id, file_name)
         .await
         .map(|p| p.to_string_lossy().into_owned())
-        .map_err(|e| {
-            if e.to_string().contains("file_expired") {
-                "ไฟล์นี้หมดอายุแล้ว ดาวน์โหลดไม่ได้".into()
-            } else {
-                e.to_string()
-            }
+        .map_err(|e| match e.to_string().as_str() {
+            "file_expired" => "ไฟล์นี้หมดอายุแล้ว ดาวน์โหลดไม่ได้".into(),
+            "message_not_found" => "ไม่พบข้อความนี้ ลองเปิดแชตนี้ใหม่แล้วดาวน์โหลดอีกครั้ง".into(),
+            other => other.to_string(),
         })
 }
 
@@ -509,10 +756,24 @@ pub async fn set_muted(state: S<'_>, chat_id: String, muted: bool) -> R<()> {
     let Some(l) = s.line().await else {
         return Ok(());
     };
+    // 1:1 chats: updateNotificationSetting;
+    // the legacy contact setting if that fails.
     let result = if chat_id.starts_with('u') {
-        match l.client.get_user(&chat_id).await {
-            Ok(u) => u.set_notification_disabled(muted).await.map(|_| ()),
-            Err(e) => Err(e),
+        match l
+            .client
+            .base
+            .talk()
+            .update_notification_setting(&chat_id, muted)
+            .await
+        {
+            Ok(_) => Ok(()),
+            Err(e) => {
+                tracing::warn!("updateNotificationSetting: {e}");
+                match l.client.get_user(&chat_id).await {
+                    Ok(u) => u.set_notification_disabled(muted).await,
+                    Err(e) => Err(e),
+                }
+            }
         }
     } else {
         l.chat(&chat_id).set_muted(muted).await.map(|_| ())
@@ -626,52 +887,138 @@ pub async fn raw_message(state: S<'_>, chat_id: String, message_id: String) -> R
         })
 }
 
-/// Flex postback. `strict` never falls back to posting the data as text.
+/// The URL `sendPostback` carries: `data` as it is when it already is a
+/// `linepostback://` URL (a rich-menu area's), else a postback action's
+/// data with its display text and legacy `text`.
+pub fn postback_url(data: &str, display_text: Option<&str>, text: Option<&str>) -> String {
+    use line_rs::client::postback::{Postback, is_postback_url};
+    if is_postback_url(data) {
+        return data.to_string();
+    }
+    let mut p = Postback::new(data);
+    p.display_text = display_text.map(str::to_string);
+    p.text = text.map(str::to_string);
+    p.url()
+}
+
+/// Answer a bot's postback button: a flex message's (with `message_id`) or
+/// a rich menu's (without). LINE's server, not the app, posts the
+/// button's display text in the chat; it arrives like any other message.
 #[tauri::command]
 pub async fn send_postback(
     state: S<'_>,
     chat_id: String,
-    message_id: String,
+    message_id: Option<String>,
     data: String,
     display_text: Option<String>,
+    text: Option<String>,
 ) -> R<()> {
+    let url = postback_url(&data, display_text.as_deref(), text.as_deref());
+    post_back(&state, &chat_id, message_id, &url).await
+}
+
+/// A flex or template "message" button. The text isn't sent as a message:
+/// `linepostback://postback?_text=…` goes to `sendPostback`, in any chat,
+/// and LINE's server posts the text as the user's message.
+#[tauri::command]
+pub async fn send_message_button(state: S<'_>, chat_id: String, message_id: Option<String>, text: String) -> R<()> {
+    let url = line_rs::client::postback::message_url(&text);
+    post_back(&state, &chat_id, message_id, &url).await
+}
+
+/// A flex or template datetime picker action, as the message has it.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PickerAction {
+    #[serde(default)]
+    data: String,
+    #[serde(default)]
+    mode: String,
+    initial: Option<String>,
+    max: Option<String>,
+    min: Option<String>,
+}
+
+impl PickerAction {
+    fn picker(&self) -> Option<line_rs::client::postback::DateTimePicker> {
+        use line_rs::client::postback::{DateTimeMode, DateTimePicker};
+        Some(DateTimePicker {
+            data: self.data.clone(),
+            mode: DateTimeMode::parse(&self.mode)?,
+            initial: self.initial.clone(),
+            max: self.max.clone(),
+            min: self.min.clone(),
+        })
+    }
+}
+
+/// How to show a datetime picker: whether LINE would (`show`), the value
+/// it starts on, and its bounds, all in the mode's format.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct PickerStart {
+    show: bool,
+    start: String,
+    min: Option<String>,
+    max: Option<String>,
+}
+
+/// `now` is the current local time in the action's mode's format.
+#[tauri::command]
+pub fn datetime_picker(action: PickerAction, now: String) -> R<PickerStart> {
+    let p = action.picker().ok_or("ปุ่มเลือกวันเวลานี้ใช้ไม่ได้")?;
+    let read = |v: &Option<String>| v.as_deref().and_then(|v| p.mode.read(v));
+    Ok(PickerStart {
+        show: p.shows_picker(),
+        start: p.starting_value(&now),
+        min: read(&p.min),
+        max: read(&p.max),
+    })
+}
+
+/// Send what was picked (`value`), or, for an action LINE shows no picker
+/// for, the action itself.
+#[tauri::command]
+pub async fn send_datetime_postback(
+    state: S<'_>,
+    chat_id: String,
+    message_id: Option<String>,
+    action: PickerAction,
+    value: Option<String>,
+) -> R<()> {
+    let p = action.picker().ok_or("ปุ่มเลือกวันเวลานี้ใช้ไม่ได้")?;
+    let url = match value {
+        Some(v) => p.result_url(&p.mode.read(&v).ok_or("วันเวลาที่เลือกไม่ถูกต้อง")?),
+        None => p.action_url(),
+    };
+    post_back(&state, &chat_id, message_id, &url).await
+}
+
+/// `sendPostback` with `url`, from the bot that sent message `message_id`
+/// (none for a rich-menu area).
+async fn post_back(state: &S<'_>, chat_id: &str, message_id: Option<String>, url: &str) -> R<()> {
     let s = state.inner().clone();
     if s.demo {
         return Err("ต้องเข้าสู่ระบบ LINE ก่อน".into());
     }
     let l = s.line().await.ok_or("not_logged_in")?;
-    let url = format!("line://postback?data={}", urlencode(&data));
-    let msg = l.talk_message(&message_id);
-    let from = msg.raw["from"]
-        .as_str()
-        .or(msg.raw["_from"].as_str())
-        .unwrap_or(&chat_id)
-        .to_string();
+    let message_id = message_id.filter(|m| !m.is_empty());
+    // The flex message's sender is the bot the postback goes to.
+    let from = message_id.as_deref().map(|id| {
+        let msg = l.talk_message(id);
+        msg.raw["from"]
+            .as_str()
+            .or(msg.raw["_from"].as_str())
+            .unwrap_or(chat_id)
+            .to_string()
+    });
     l.client
         .base
         .talk()
-        .send_flex_postback(&message_id, &url, &chat_id, &from)
+        .send_postback_url(url, chat_id, message_id.as_deref(), from.as_deref())
         .await
         .map_err(|e| format!("ส่งคำตอบให้บอทไม่สำเร็จ: {e}"))?;
-    if let Some(text) = display_text.filter(|t| !t.is_empty()) {
-        l.client
-            .send_message(&chat_id, MessageInput::text(text))
-            .await
-            .map_err(err)?;
-        let _ = line::fetch_history(&s, &chat_id).await;
-    }
     Ok(())
-}
-
-fn urlencode(s: &str) -> String {
-    s.bytes()
-        .map(|b| match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-                (b as char).to_string()
-            }
-            _ => format!("%{b:02X}"),
-        })
-        .collect()
 }
 
 #[derive(Deserialize)]
@@ -715,6 +1062,18 @@ pub async fn open_liff(state: S<'_>, req: LiffOpen) -> R<()> {
         s.status(format!("เปิดเป็นหน้าเว็บ: {reason}"));
     }
     crate::liff::open_window(&s, &view, req.chat_id).map_err(err)
+}
+
+/// What LINE's consent page for a LIFF link asks for, to show before the
+/// user agrees.
+#[tauri::command]
+pub async fn liff_consent_info(
+    state: S<'_>,
+    url: String,
+    chat_id: Option<String>,
+) -> R<crate::liff::ConsentInfo> {
+    let s = state.inner().clone();
+    crate::liff::consent_info(&s, &url, chat_id).await.map_err(err)
 }
 
 /// Every LIFF window opened this run, with its log.
@@ -803,7 +1162,10 @@ pub async fn liff_share(
             .await
             .map_err(err)?
     };
-    let _ = crate::liff::picker_result(&liff_id, &ott, result.sent > 0).await;
+    let outcome = crate::liff::picker_outcome(chat_ids.len(), &result);
+    if let Err(e) = crate::liff::picker_result(&s, &liff_id, &ott, outcome).await {
+        tracing::warn!("share picker result: {e}");
+    }
     if let Some(w) = s.app.get_webview_window(&window) {
         let _ = w.set_focus();
     }
@@ -870,10 +1232,19 @@ pub fn send_report(state: S<'_>, report: String) -> R<()> {
 /// point into LAAB's scripts are kept; see `crash::from_js`.
 #[tauri::command]
 pub fn report_js_error(state: S<'_>, name: String, stack: String) {
+    tracing::warn!("uncaught {name}: {stack}");
     crate::analytics::send(
         &state,
         crate::analytics::Event::Exception(crate::crash::from_js(&name, &stack)),
     );
+}
+
+/// A command the UI called failed. Logged here because most commands hand
+/// their error to the UI and nothing else.
+#[tauri::command]
+pub fn log_error(command: String, error: String) {
+    let error: String = error.chars().take(500).collect();
+    tracing::warn!("{command} failed: {error}");
 }
 
 fn inside_data(state: &AppState, path: &str) -> R<std::path::PathBuf> {
@@ -1052,9 +1423,10 @@ pub async fn edit_message(
     chat_id: String,
     message_id: String,
     text: String,
+    mentions: Option<Vec<MentionSpan>>,
 ) -> R<()> {
     let s = live!(state);
-    crate::actions::edit(&s, &chat_id, &message_id, &text)
+    crate::actions::edit(&s, &chat_id, &message_id, &text, &mentions.unwrap_or_default())
         .await
         .map_err(|e| format!("แก้ไขข้อความไม่สำเร็จ: {e}"))
 }
@@ -1074,6 +1446,36 @@ pub async fn save_to_keep(state: S<'_>, chat_id: String, message_id: String) -> 
     crate::actions::save_to_keep(&s, &chat_id, &message_id)
         .await
         .map_err(|e| format!("บันทึกลง Keep ไม่สำเร็จ: {e}"))
+}
+
+/// A chat a forward or a shared contact couldn't reach, and why.
+#[derive(Serialize, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct SendFailure {
+    pub chat_id: String,
+    pub error: String,
+}
+
+fn failures(failed: Vec<(String, String)>) -> Vec<SendFailure> {
+    failed.into_iter().map(|(chat_id, error)| SendFailure { chat_id, error }).collect()
+}
+
+/// Forward a message to other chats; returns the ones that failed.
+#[tauri::command]
+pub async fn forward_message(state: S<'_>, chat_id: String, message_id: String, to: Vec<String>) -> R<Vec<SendFailure>> {
+    let s = live!(state);
+    Ok(failures(crate::actions::forward(&s, &chat_id, &message_id, &to).await))
+}
+
+/// Share someone's contact card with chats; returns the ones that failed.
+#[tauri::command]
+pub async fn share_contact(state: S<'_>, mid: String, name: Option<String>, to: Vec<String>) -> R<Vec<SendFailure>> {
+    let s = live!(state);
+    let name = name
+        .filter(|n| !n.trim().is_empty())
+        .or_else(|| s.store().chat(&mid).ok().flatten().map(|c| c.name))
+        .unwrap_or_default();
+    Ok(failures(crate::actions::share_contact(&s, &mid, &name, &to).await))
 }
 
 #[tauri::command]
@@ -1251,6 +1653,26 @@ pub async fn update_calendar_event(
         .map_err(err)
 }
 
+/// Accept or decline an invitation to a calendar event.
+#[tauri::command]
+pub async fn respond_calendar_invitation(
+    state: S<'_>,
+    chat_id: String,
+    event_id: String,
+    recur_id: Option<i64>,
+    accept: bool,
+    updated_at: i64,
+) -> R<()> {
+    if state.demo {
+        crate::demo::respond_calendar_invitation(&chat_id, &event_id, accept);
+        return Ok(());
+    }
+    let s = state.inner().clone();
+    crate::actions::respond_calendar_invitation(&s, &chat_id, &event_id, recur_id, accept, updated_at)
+        .await
+        .map_err(err)
+}
+
 #[tauri::command]
 pub async fn delete_calendar_event(
     state: S<'_>,
@@ -1336,6 +1758,85 @@ pub async fn leave_group(state: S<'_>, chat_id: String) -> R<()> {
     Ok(())
 }
 
+#[tauri::command]
+pub async fn accept_message_request(state: S<'_>, chat_id: String) -> R<()> {
+    let s = live!(state);
+    crate::actions::accept_message_request(&s, &chat_id)
+        .await
+        .map_err(|e| format!("ยอมรับข้อความไม่สำเร็จ: {e}"))
+}
+
+#[tauri::command]
+pub async fn delete_message_request(state: S<'_>, chat_id: String) -> R<()> {
+    let s = live!(state);
+    crate::actions::delete_message_request(&s, &chat_id)
+        .await
+        .map_err(|e| format!("ลบคำขอข้อความไม่สำเร็จ: {e}"))
+}
+
+#[tauri::command]
+pub async fn accept_invitation(state: S<'_>, chat_id: String) -> R<()> {
+    let s = live!(state);
+    crate::actions::accept_invitation(&s, &chat_id)
+        .await
+        .map_err(|e| format!("เข้ากลุ่มไม่สำเร็จ: {e}"))
+}
+
+#[tauri::command]
+pub async fn reject_invitation(state: S<'_>, chat_id: String) -> R<()> {
+    let s = live!(state);
+    crate::actions::reject_invitation(&s, &chat_id)
+        .await
+        .map_err(|e| format!("ปฏิเสธคำเชิญไม่สำเร็จ: {e}"))
+}
+
+#[tauri::command]
+pub async fn create_group(state: S<'_>, name: String, mids: Vec<String>) -> R<String> {
+    let s = live!(state);
+    crate::actions::create_group(&s, &name, &mids)
+        .await
+        .map_err(|e| format!("สร้างกลุ่มไม่สำเร็จ: {e}"))
+}
+
+#[tauri::command]
+pub async fn invite_members(state: S<'_>, chat_id: String, mids: Vec<String>) -> R<()> {
+    let s = live!(state);
+    crate::actions::invite_members(&s, &chat_id, &mids)
+        .await
+        .map_err(|e| format!("เชิญไม่สำเร็จ: {e}"))
+}
+
+#[tauri::command]
+pub async fn remove_member(state: S<'_>, chat_id: String, mid: String) -> R<()> {
+    let s = live!(state);
+    crate::actions::remove_member(&s, &chat_id, &mid)
+        .await
+        .map_err(|e| format!("ลบสมาชิกไม่สำเร็จ: {e}"))
+}
+
+#[tauri::command]
+pub async fn cancel_invitation(state: S<'_>, chat_id: String, mids: Vec<String>) -> R<()> {
+    let s = live!(state);
+    crate::actions::cancel_invitation(&s, &chat_id, &mids)
+        .await
+        .map_err(|e| format!("ยกเลิกคำเชิญไม่สำเร็จ: {e}"))
+}
+
+#[tauri::command]
+pub async fn rename_group(state: S<'_>, chat_id: String, name: String) -> R<()> {
+    let s = live!(state);
+    crate::actions::rename_group(&s, &chat_id, &name)
+        .await
+        .map_err(|e| format!("เปลี่ยนชื่อกลุ่มไม่สำเร็จ: {e}"))
+}
+
+/// People invited to a group who have not joined yet (load `members`
+/// first).
+#[tauri::command]
+pub fn invitees(state: S<'_>, chat_id: String) -> R<Vec<ChatMember>> {
+    state.store().invitees(&chat_id).map_err(err)
+}
+
 /// Photos & videos (`media`), files (`files`) or links (`links`) of a chat.
 #[tauri::command]
 pub fn chat_media(state: S<'_>, chat_id: String, kind: String) -> R<Vec<Message>> {
@@ -1357,9 +1858,25 @@ pub async fn save_attachment(
     dest: Option<String>,
 ) -> R<String> {
     let s = state.inner().clone();
+    let (m, src) = attachment(&s, &chat_id, &message_id).await?;
+    let target = match dest.filter(|d| !d.is_empty()) {
+        Some(d) => std::path::PathBuf::from(d),
+        None => {
+            let name = crate::media::save_name(m.file_name.as_deref(), &message_id, &src);
+            dirs::download_dir()
+                .ok_or("ไม่พบโฟลเดอร์ดาวน์โหลด")?
+                .join(name)
+        }
+    };
+    crate::vault::export(&src, &target).map_err(err)?;
+    Ok(target.to_string_lossy().into_owned())
+}
+
+/// A message's attachment in the cache, downloaded if it isn't there yet.
+async fn attachment(s: &Arc<AppState>, chat_id: &str, message_id: &str) -> R<(Message, std::path::PathBuf)> {
     let m = s
         .store()
-        .message(&message_id)
+        .message(message_id)
         .map_err(err)?
         .ok_or("ไม่พบข้อความ")?;
     let src = match m
@@ -1370,24 +1887,21 @@ pub async fn save_attachment(
     {
         Some(p) => std::path::PathBuf::from(p),
         None if s.demo => return Err("ไม่มีไฟล์ในโหมด demo".into()),
-        None => crate::media::download_file(&s, &chat_id, &message_id, m.file_name.clone())
+        None => crate::media::download_file(s, chat_id, message_id, m.file_name.clone())
             .await
             .map_err(err)?,
     };
-    let target = match dest.filter(|d| !d.is_empty()) {
-        Some(d) => std::path::PathBuf::from(d),
-        None => {
-            let name = m.file_name.clone().unwrap_or_else(|| {
-                let ext = src.extension().and_then(|e| e.to_str()).unwrap_or("jpg");
-                format!("LINE_{}.{ext}", message_id)
-            });
-            dirs::download_dir()
-                .ok_or("ไม่พบโฟลเดอร์ดาวน์โหลด")?
-                .join(name)
-        }
-    };
-    crate::vault::export(&src, &target).map_err(err)?;
-    Ok(target.to_string_lossy().into_owned())
+    Ok((m, src))
+}
+
+/// The name to offer when saving an attachment: its own name, else
+/// `LINE_<id>` with the extension of what the file really is (a GIF, PNG,
+/// video...), not always `.jpg`.
+#[tauri::command]
+pub async fn attachment_name(state: S<'_>, chat_id: String, message_id: String) -> R<String> {
+    let s = state.inner().clone();
+    let (m, src) = attachment(&s, &chat_id, &message_id).await?;
+    Ok(crate::media::save_name(m.file_name.as_deref(), &message_id, &src))
 }
 
 /// Open a small LAAB window, like LINE's separate albums/notes and media windows.
@@ -1518,9 +2032,15 @@ pub async fn note_detail(
 }
 
 #[tauri::command]
-pub async fn add_comment(state: S<'_>, chat_id: String, post_id: String, text: String) -> R<()> {
+pub async fn add_comment(
+    state: S<'_>,
+    chat_id: String,
+    post_id: String,
+    text: String,
+    author_mid: Option<String>,
+) -> R<()> {
     let s = live!(state);
-    crate::actions::add_comment(&s, &chat_id, &post_id, &text)
+    crate::actions::add_comment(&s, &chat_id, &post_id, &text, author_mid.as_deref())
         .await
         .map_err(|e| format!("แสดงความคิดเห็นไม่สำเร็จ: {e}"))
 }
@@ -1581,5 +2101,68 @@ mod tests {
             aux_route("media", "c1", None, Some(String::new()), 6),
             "/media/c1?at=6"
         );
+    }
+
+    #[test]
+    fn datetime_pickers_start_inside_their_bounds() {
+        let action = |initial: Option<&str>, min: Option<&str>| PickerAction {
+            data: "d".into(),
+            mode: "time".into(),
+            initial: initial.map(str::to_string),
+            max: Some("18:00".into()),
+            min: min.map(str::to_string),
+        };
+        let start = datetime_picker(action(None, Some("10:00")), "08:15".into()).unwrap();
+        assert_eq!(
+            start,
+            PickerStart { show: true, start: "10:00".into(), min: Some("10:00".into()), max: Some("18:00".into()) }
+        );
+        assert!(!datetime_picker(action(Some("19:00"), None), "08:15".into()).unwrap().show);
+        let mut odd = action(None, None);
+        odd.mode = "week".into();
+        assert!(datetime_picker(odd, "08:15".into()).is_err());
+    }
+
+    #[test]
+    fn postbacks_go_as_linepostback_urls() {
+        assert_eq!(
+            postback_url("a=1", Some("ซื้อ"), None),
+            "linepostback://postback?_data=a%3D1&_displayText=%E0%B8%8B%E0%B8%B7%E0%B9%89%E0%B8%AD"
+        );
+        assert_eq!(postback_url("x", None, Some("")), "linepostback://postback?_data=x");
+        // A rich-menu area's URL goes as it is.
+        let menu = "linepostback://postback?_data=menu%3D1&_displayText=Hi";
+        assert_eq!(postback_url(menu, Some("ignored"), None), menu);
+    }
+
+    #[test]
+    fn files_go_as_the_media_their_extension_says() {
+        assert_eq!(media_kind("jpg"), ObjType::Image);
+        assert_eq!(media_kind("gif"), ObjType::Gif);
+        assert_eq!(media_kind("mov"), ObjType::Video);
+        assert_eq!(media_kind("m4a"), ObjType::Audio);
+        assert_eq!(media_kind("mp3"), ObjType::Audio);
+        assert_eq!(media_kind("pdf"), ObjType::File);
+    }
+
+    #[test]
+    fn two_or_more_photos_go_as_one_group_where_the_first_was() {
+        let paths = |names: &[&str]| names.iter().map(|n| format!("/tmp/{n}")).collect::<Vec<_>>();
+        assert_eq!(
+            send_plan(&paths(&["a.pdf", "b.JPG", "c.mov", "d.png", "e.gif", "f.heic"])),
+            [SendStep::One(0), SendStep::Group(vec![1, 3, 5]), SendStep::One(2), SendStep::One(4)]
+        );
+        // One photo, or GIFs only, go one by one.
+        assert_eq!(send_plan(&paths(&["a.jpg", "b.mov"])), [SendStep::One(0), SendStep::One(1)]);
+        assert_eq!(send_plan(&paths(&["a.gif", "b.gif"])), [SendStep::One(0), SendStep::One(1)]);
+        assert_eq!(send_plan(&[]), []);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn reads_an_audio_clips_length() {
+        let ms = audio_duration_ms(std::path::Path::new("/System/Library/Sounds/Glass.aiff")).await;
+        assert!(ms.is_some_and(|ms| ms > 500 && ms < 5000), "{ms:?}");
+        assert_eq!(audio_duration_ms(std::path::Path::new("/nonexistent.m4a")).await, None);
     }
 }

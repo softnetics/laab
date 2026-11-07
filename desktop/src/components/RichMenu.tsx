@@ -1,9 +1,10 @@
 import { useQuery } from "@tanstack/react-query";
+import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import { useEffect, useRef, useState } from "react";
-import { api, useSession } from "../lib/api";
+import { api, errorText, useSession } from "../lib/api";
 import { openUrl } from "../lib/open";
-import type { RichMenu as Menu } from "../lib/types";
+import type { RichMenu as Menu, RichMenuAction } from "../lib/types";
 import { notice, pushDismiss } from "../lib/ui";
 
 // An official account's rich menu, opened on demand from a "เมนู" chip in the
@@ -76,12 +77,50 @@ export function RichMenu({ chatId }: { chatId: string }) {
 
 const pct = (v: number, of: number) => `${(v / of) * 100}%`;
 
+/** Run an area's action. Resolves to
+ *  the scene to show next, or null to close the menu. */
+async function perform(a: RichMenuAction, chatId: string): Promise<string | null> {
+  switch (a.type) {
+    case "transition":
+      return a.scene;
+    case "sendMessage":
+      if (a.text) await api.sendText(chatId, a.text, []);
+      return null;
+    case "postback":
+      if (a.data) await api.sendPostback(chatId, null, a.data, null);
+      return null;
+    case "clipboard":
+      if (a.clipboardText) {
+        await writeText(a.clipboardText);
+        notice("คัดลอกแล้ว");
+      }
+      return null;
+    default:
+      if (a.uri) await openUrl(a.uri, chatId);
+      else notice(`LAAB ยังไม่รองรับปุ่มเมนูแบบ ${a.type || "?"}`);
+      return null;
+  }
+}
+
 function Canvas({ menu, chatId, onTap }: { menu: Menu; chatId: string; onTap: () => void }) {
+  const [name, setName] = useState(menu.initialScene);
+  const scene = menu.scenes[name] ?? menu.scenes[menu.initialScene];
+  if (!scene) return null;
+  const tap = async (a: RichMenuAction) => {
+    try {
+      const next = await perform(a, chatId);
+      if (next && menu.scenes[next]) setName(next);
+      else onTap();
+    } catch (e) {
+      notice(errorText(e));
+      onTap();
+    }
+  };
   return (
     <div className="relative isolate w-full" style={{ aspectRatio: `${menu.width} / ${menu.height}` }}>
-      {menu.images.map((img, i) => (
+      {scene.images.map((img, i) => (
         <img
-          key={i}
+          key={`${name}-${i}`}
           src={img.url}
           alt=""
           draggable={false}
@@ -89,15 +128,11 @@ function Canvas({ menu, chatId, onTap }: { menu: Menu; chatId: string; onTap: ()
           style={{ left: pct(img.x, menu.width), top: pct(img.y, menu.height), width: pct(img.w, menu.width), height: pct(img.h, menu.height) }}
         />
       ))}
-      {menu.areas.map((a, i) => (
+      {scene.areas.map((a, i) => (
         <button
-          key={i}
+          key={`${name}-${i}`}
           aria-label={a.action.label ?? `ปุ่มเมนู ${i + 1}`}
-          onClick={() => {
-            if (a.action.uri) openUrl(a.action.uri, chatId);
-            else notice(`LAAB ยังไม่รองรับปุ่มเมนูแบบ ${a.action.type || "?"}`);
-            onTap();
-          }}
+          onClick={() => tap(a.action)}
           className="absolute cursor-pointer touch-manipulation transition-colors duration-150 ease-out hover:bg-white/[0.07] focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-white/70 active:bg-black/15"
           style={{ left: pct(a.x, menu.width), top: pct(a.y, menu.height), width: pct(a.w, menu.width), height: pct(a.h, menu.height) }}
         />
