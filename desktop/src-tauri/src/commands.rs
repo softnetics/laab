@@ -134,23 +134,30 @@ pub fn set_focus(state: S<'_>, chat_id: Option<String>, active: bool) {
 }
 
 /// Opening a chat: clear unread, acknowledge, then fetch fresh history,
-/// read status and members in the background.
+/// read status and members in the background. Returns the first unread
+/// message, if any, for the timeline's unread mark.
 #[tauri::command]
-pub async fn open_chat(state: S<'_>, chat_id: String) -> R<()> {
+pub async fn open_chat(state: S<'_>, chat_id: String) -> R<Option<String>> {
     crate::usage::hit(crate::usage::Action::OpenedChat);
     let s = state.inner().clone();
-    let had_unread = s
+    let unread = s
         .store()
         .chat(&chat_id)
         .ok()
         .flatten()
-        .is_some_and(|c| c.unread > 0);
+        .map_or(0, |c| c.unread);
+    let had_unread = unread > 0;
+    // Where the timeline draws "unread messages", before the count is cleared.
+    let target = s.store().first_unread(&chat_id, unread).map_err(err)?;
+    let unmarked = s.store().set_marked_unread(&chat_id, false).map_err(err)?;
     if had_unread {
         s.store().set_unread(&chat_id, 0).map_err(err)?;
+    }
+    if had_unread || unmarked {
         s.chats_changed();
     }
     if s.demo {
-        return Ok(());
+        return Ok(target);
     }
     tokio::spawn(async move {
         let _ = line::fetch_history(&s, &chat_id).await;
@@ -161,7 +168,7 @@ pub async fn open_chat(state: S<'_>, chat_id: String) -> R<()> {
             let _ = line::load_members(&s, &chat_id, false).await;
         }
     });
-    Ok(())
+    Ok(target)
 }
 
 async fn acknowledge(state: &Arc<AppState>, chat_id: &str) {
@@ -180,10 +187,21 @@ async fn acknowledge(state: &Arc<AppState>, chat_id: &str) {
 pub async fn mark_read(state: S<'_>, chat_id: String) -> R<()> {
     let s = state.inner().clone();
     let _ = s.store().set_unread(&chat_id, 0);
+    let _ = s.store().set_marked_unread(&chat_id, false);
     s.chats_changed();
     if !s.demo {
         acknowledge(&s, &chat_id).await;
         let _ = line::read_status(&s, &chat_id).await;
+    }
+    Ok(())
+}
+
+/// LAAB's "mark as unread": a dot in the chat list until the chat is opened
+/// here. LINE has no such state, so nothing is sent and the count is kept.
+#[tauri::command]
+pub fn mark_unread(state: S<'_>, chat_id: String) -> R<()> {
+    if state.store().set_marked_unread(&chat_id, true).map_err(err)? {
+        state.chats_changed();
     }
     Ok(())
 }
@@ -369,6 +387,29 @@ pub async fn send_files(state: S<'_>, chat_id: String, paths: Vec<String>) -> R<
         })?;
         crate::usage::hit(crate::usage::Action::SentFile);
     }
+    s.status("เชื่อม LINE แล้ว");
+    let _ = line::fetch_history(&s, &chat_id).await;
+    Ok(())
+}
+
+/// Sends an image supplied as raw IPC bytes, such as a pasted clipboard image.
+#[tauri::command]
+pub async fn send_image_bytes(state: S<'_>, request: tauri::ipc::Request<'_>) -> R<()> {
+    let s = state.inner().clone();
+    if s.demo { return Err("ต้องเข้าสู่ระบบ LINE ก่อนส่งรูป".into()); }
+    let tauri::ipc::InvokeBody::Raw(data) = request.body() else { return Err("ไม่พบรูปในคลิปบอร์ด".into()); };
+    let header = |key: &str| request.headers().get(key).and_then(|v| v.to_str().ok());
+    let chat_id = header("chat-id").ok_or("missing chat id")?.to_string();
+    let name = header("file-name")
+        .map(|n| url::form_urlencoded::parse(format!("n={n}").as_bytes()).next().map(|(_, v)| v.into_owned()).unwrap_or_default())
+        .filter(|n| !n.is_empty()).unwrap_or_else(|| "paste.png".to_string());
+    let l = s.line().await.ok_or("not_logged_in")?;
+    s.status(format!("กำลังส่ง {name}"));
+    let chat = l.chat(&chat_id);
+    chat.send_image(data.to_vec(), Some(&name)).await.map_err(|e| {
+        send_failed(&s, crate::usage::Action::SentFile, e)
+    })?;
+    crate::usage::hit(crate::usage::Action::SentFile);
     s.status("เชื่อม LINE แล้ว");
     let _ = line::fetch_history(&s, &chat_id).await;
     Ok(())
@@ -1482,6 +1523,17 @@ pub async fn add_comment(state: S<'_>, chat_id: String, post_id: String, text: S
     crate::actions::add_comment(&s, &chat_id, &post_id, &text)
         .await
         .map_err(|e| format!("แสดงความคิดเห็นไม่สำเร็จ: {e}"))
+}
+
+/// Returns an attachment's bytes for copying a photo to the clipboard.
+#[tauri::command]
+pub async fn message_bytes(state: S<'_>, chat_id: String, message_id: String) -> R<tauri::ipc::Response> {
+    let path = download(state, chat_id, message_id, None).await?;
+    let data = tokio::task::spawn_blocking(move || crate::vault::read(std::path::Path::new(&path)))
+        .await
+        .map_err(err)?
+        .map_err(err)?;
+    Ok(tauri::ipc::Response::new(data))
 }
 
 #[tauri::command]

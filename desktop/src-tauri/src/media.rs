@@ -8,6 +8,7 @@
 //!   /message/<chatId>/<messageId>?preview=1
 //!   /sticker/<stickerId>?anim=1
 //!   /pack/<packageId>
+//!   /sticon/<productId>/<sticonId>?v=<version>&anim=1
 //!   /album/<chatId>/<albumId>/<oid>
 //!   /cover/<oid>
 //!   /local?path=<absolute path inside the data folder>
@@ -85,6 +86,10 @@ pub fn sniff_mime(data: &[u8], path: &Path) -> &'static str {
             b'P',
             ..,
         ] => "image/webp",
+        [_, _, _, _, b'f', b't', b'y', b'p', b'h', b'e', b'i', b'c', ..]
+        | [_, _, _, _, b'f', b't', b'y', b'p', b'h', b'e', b'i', b'x', ..]
+        | [_, _, _, _, b'f', b't', b'y', b'p', b'm', b'i', b'f', b'1', ..] => "image/heic",
+        // Every other ISO media brand (isom, mp42, M4V, 3gp4, qt, dash…).
         [_, _, _, _, b'f', b't', b'y', b'p', ..] => "video/mp4",
         _ => match path
             .extension()
@@ -96,6 +101,7 @@ pub fn sniff_mime(data: &[u8], path: &Path) -> &'static str {
             Some("jpg" | "jpeg") => "image/jpeg",
             Some("gif") => "image/gif",
             Some("webp") => "image/webp",
+            Some("heic" | "heif") => "image/heic",
             Some("svg") => "image/svg+xml",
             Some("mp4" | "mov") => "video/mp4",
             Some("m4a") => "audio/mp4",
@@ -103,6 +109,48 @@ pub fn sniff_mime(data: &[u8], path: &Path) -> &'static str {
             _ => "application/octet-stream",
         },
     }
+}
+
+/// WebKit on some macOS versions cannot display HEIC from a custom protocol,
+/// so HEIC photos are served as a JPEG made once with the system decoder and
+/// kept, encrypted like the original, beside it in the cache.
+fn heic_as_jpeg(path: &Path, data: &[u8]) -> Option<Vec<u8>> {
+    let mut name = path.file_name()?.to_os_string();
+    name.push(".jpg");
+    let cached = path.with_file_name(name);
+    if let Ok(jpeg) = crate::vault::read(&cached) {
+        crate::vault::touch(&cached);
+        return Some(jpeg);
+    }
+    let jpeg = convert_heic(data)?;
+    if let Err(e) = crate::vault::write(&cached, &jpeg) {
+        tracing::warn!("heic cache: {e:#}");
+    }
+    Some(jpeg)
+}
+
+/// `sips` only works on files: the plain HEIC and JPEG live for the length of
+/// the call in a fresh private (0700) folder, removed even on an early return.
+#[cfg(target_os = "macos")]
+fn convert_heic(data: &[u8]) -> Option<Vec<u8>> {
+    let dir = tempfile::Builder::new().prefix("laab-heic-").tempdir().ok()?;
+    let input = dir.path().join("in.heic");
+    let output = dir.path().join("out.jpg");
+    std::fs::write(&input, data).ok()?;
+    std::process::Command::new("/usr/bin/sips")
+        .args(["-s", "format", "jpeg"])
+        .arg(&input)
+        .arg("--out")
+        .arg(&output)
+        .output()
+        .ok()
+        .filter(|r| r.status.success())
+        .and_then(|_| std::fs::read(&output).ok())
+}
+
+#[cfg(not(target_os = "macos"))]
+fn convert_heic(_: &[u8]) -> Option<Vec<u8>> {
+    None
 }
 
 fn respond(status: StatusCode, body: Vec<u8>, mime: &str) -> Response<Vec<u8>> {
@@ -146,6 +194,12 @@ fn file_response(path: &Path, range: Option<&str>) -> Option<Response<Vec<u8>>> 
     }
     let mime = sniff_mime(&file.head(16).ok()?, path);
     crate::vault::touch(path);
+    if mime == "image/heic" && range.is_none() {
+        let data = file.read_all().ok()?;
+        if let Some(jpeg) = heic_as_jpeg(path, &data) {
+            return Some(respond(StatusCode::OK, jpeg, "image/jpeg"));
+        }
+    }
     let Some((start, end)) = range.and_then(|r| byte_range(r, len)) else {
         let data = file.read_all().ok()?;
         let mut res = respond(StatusCode::OK, data, mime);
@@ -183,6 +237,10 @@ pub async fn handle(state: Arc<AppState>, req: Request<Vec<u8>>) -> Response<Vec
         }
         ["sticker", id] => sticker(&state, id, query(&req, "anim").is_some()).await,
         ["pack", id] => pack_icon(&state, id).await,
+        ["sticon", product, id] => {
+            let version = query(&req, "v").and_then(|v| v.parse().ok()).unwrap_or(1);
+            sticon(&state, product, id, version, query(&req, "anim").is_some()).await
+        }
         ["album", chat, album, oid] => crate::actions::album_photo_file(&state, chat, album, oid).await,
         ["cover", oid] => crate::actions::cover_file(&state, oid).await,
         ["note", svc, id] => note_media(&state, svc, id).await,
@@ -199,11 +257,18 @@ pub async fn handle(state: Arc<AppState>, req: Request<Vec<u8>>) -> Response<Vec
     let range = req
         .headers()
         .get(header::RANGE)
-        .and_then(|v| v.to_str().ok());
-    match result.ok().and_then(|p| file_response(&p, range)) {
-        Some(r) => r,
-        None => respond(StatusCode::NOT_FOUND, Vec::new(), "text/plain"),
-    }
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_owned);
+    // Decrypting, and converting HEIC, is blocking work: keep it off the
+    // runtime so one large file does not hold up every other request.
+    let response = match result {
+        Ok(p) => tokio::task::spawn_blocking(move || file_response(&p, range.as_deref()))
+            .await
+            .ok()
+            .flatten(),
+        Err(_) => None,
+    };
+    response.unwrap_or_else(|| respond(StatusCode::NOT_FOUND, Vec::new(), "text/plain"))
 }
 
 async fn fetch(url: &str) -> Result<Vec<u8>> {
@@ -449,6 +514,40 @@ async fn sticker(state: &AppState, id: &str, anim: bool) -> Result<PathBuf> {
     Err(anyhow!("sticker unavailable"))
 }
 
+/// Where a LINE emoji's picture is on the sticker CDN: LINE for Android's
+/// `sticonshop/v1/<product>/sticon/android/<id>[_animation].png?v=<version>`
+/// (`ev5/m.java`), then the order line-rs and older clients use (which of
+/// the two the CDN serves is unverified).
+fn sticon_urls(product: &str, id: &str, version: u64, anim: bool) -> [String; 2] {
+    let file = if anim { format!("{id}_animation.png") } else { format!("{id}.png") };
+    [
+        format!("https://stickershop.line-scdn.net/sticonshop/v1/{product}/sticon/android/{file}?v={version}"),
+        format!("https://stickershop.line-scdn.net/sticonshop/v1/sticon/{product}/android/{file}"),
+    ]
+}
+
+/// A LINE emoji's picture; public like stickers, so it stays plain.
+async fn sticon(state: &AppState, product: &str, id: &str, version: u64, anim: bool) -> Result<PathBuf> {
+    let (product, id) = (safe_name(product), safe_name(id));
+    let suffix = if anim { ".anim" } else { "" };
+    let path = state
+        .paths
+        .stickers()
+        .join(format!("sticon-{product}-{id}-{version}{suffix}.png"));
+    if path.exists() {
+        return Ok(path);
+    }
+    if state.demo {
+        return Err(anyhow!("demo"));
+    }
+    for url in sticon_urls(&product, &id, version, anim) {
+        if let Ok(data) = fetch(&url).await {
+            return save_plain(&path, &data);
+        }
+    }
+    Err(anyhow!("sticon unavailable"))
+}
+
 async fn pack_icon(state: &AppState, id: &str) -> Result<PathBuf> {
     let path = state
         .paths
@@ -547,12 +646,34 @@ mod tests {
     use super::*;
 
     #[test]
+    fn sniffs_heic_apart_from_other_iso_media() {
+        let head = |brand: &[u8; 4]| [&[0, 0, 0, 0x18][..], b"ftyp", brand].concat();
+        let none = Path::new("");
+        assert_eq!(sniff_mime(&head(b"heic"), none), "image/heic");
+        assert_eq!(sniff_mime(&head(b"mif1"), none), "image/heic");
+        for brand in [b"isom", b"M4V ", b"iso5", b"3gp4", b"dash"] {
+            assert_eq!(sniff_mime(&head(brand), none), "video/mp4");
+        }
+    }
+
+    #[test]
     fn decodes_queries() {
         assert_eq!(decode("%2F0hAbc%3D"), "/0hAbc=");
         assert_eq!(
             url_query("p=%2Fa&x=1"),
             vec![("p".into(), "/a".into()), ("x".into(), "1".into())]
         );
+    }
+
+    #[test]
+    fn sticon_pictures_follow_the_apps_path_first() {
+        let [app, old] = sticon_urls("5ac1", "001", 3, true);
+        assert_eq!(
+            app,
+            "https://stickershop.line-scdn.net/sticonshop/v1/5ac1/sticon/android/001_animation.png?v=3"
+        );
+        assert_eq!(old, "https://stickershop.line-scdn.net/sticonshop/v1/sticon/5ac1/android/001_animation.png");
+        assert!(sticon_urls("5ac1", "001", 1, false)[0].ends_with("/001.png?v=1"));
     }
 
     #[test]

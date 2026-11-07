@@ -3,7 +3,7 @@ import { Menu } from "@base-ui/react/menu";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api, errorText, useChatList, useSession } from "../lib/api";
 import { clickEndsDrag, isRecent, markRecent, moving, pressChat, useChatDrag } from "../lib/chatDrag";
-import { filterChats, folderName, folderOf, groupRows, isKeepMemo, type ListRow, listPreview } from "../lib/chatList";
+import { filterChats, folderName, folderOf, groupRows, isKeepMemo, type ListRow, listPreview, looksUnread } from "../lib/chatList";
 import { openChat } from "../lib/nav";
 import { listLabel } from "../lib/time";
 import type { Chat, ChatList, Workspace } from "../lib/types";
@@ -30,14 +30,17 @@ export function ChatListColumn({ selected }: { selected: string | null }) {
   const filter = useUi((s) => s.filter);
   const sort = useUi((s) => s.sort);
   const query = useUi((s) => s.listQuery);
-  const openFolders = useUi((s) => s.openFolders);
+  const collapsedFolders = useUi((s) => s.collapsedFolders);
   const chats = useMemo(() => (list ? filterChats(list, filter, sort, query) : []), [list, filter, sort, query]);
   // Folders group their chats in "ทั้งหมด"; a search or another tab lists
   // chats flat.
   const grouped = filter === "all" && !query.trim();
   const rows = useMemo<ListRow[]>(
-    () => (list && grouped ? groupRows(list, chats, new Set(openFolders)) : chats.map((chat) => ({ kind: "chat", chat, folder: null }))),
-    [list, grouped, chats, openFolders],
+    () =>
+      list && grouped
+        ? groupRows(list, chats, new Set(list.workspaces.filter((w) => !collapsedFolders.includes(w.id)).map((w) => w.id)))
+        : chats.map((chat) => ({ kind: "chat", chat, folder: null })),
+    [list, grouped, chats, collapsedFolders],
   );
   const visible = useMemo(() => rows.flatMap((r) => (r.kind === "chat" ? [r.chat] : [])), [rows]);
   const pinned = useMemo(() => new Set(list?.pins.main ?? []), [list]);
@@ -60,7 +63,7 @@ export function ChatListColumn({ selected }: { selected: string | null }) {
   // A chat opened from search or a notification shows inside its folder.
   useEffect(() => {
     const f = list && selected && grouped ? folderOf(list).get(selected) : undefined;
-    if (f && !ui.state.openFolders.includes(f)) setUi({ openFolders: [...ui.state.openFolders, f] });
+    if (f && ui.state.collapsedFolders.includes(f)) setUi({ collapsedFolders: ui.state.collapsedFolders.filter((id) => id !== f) });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selected]);
   useEffect(() => {
@@ -240,7 +243,7 @@ function Tabs() {
   ];
   const unreadIn = (id: ChatFilter) => {
     if (!list || id === "all") return false;
-    return filterChats(list, id, "recent", "").some((c) => c.unread > 0);
+    return filterChats(list, id, "recent", "").some(looksUnread);
   };
   return (
     <Ctx
@@ -323,8 +326,8 @@ function deleteFolder(id: string) {
 
 const toggleFolder = (id: string) => {
   markRecent(id);
-  const open = ui.state.openFolders;
-  setUi({ openFolders: open.includes(id) ? open.filter((f) => f !== id) : [...open, id] });
+  const collapsed = ui.state.collapsedFolders;
+  setUi({ collapsedFolders: collapsed.includes(id) ? collapsed.filter((f) => f !== id) : [...collapsed, id] });
 };
 
 /** A folder in the list, as Discord shows one: the first chats' pictures
@@ -539,6 +542,12 @@ export function ChatRow({
               <Preview text={listPreview(chat.preview)} />
             </span>
             <Badge count={chat.unread} className={chat.muted ? "bg-secondary!" : ""} />
+            {chat.markedUnread && chat.unread <= 0 && (
+              <span
+                aria-label="ทำเครื่องหมายว่ายังไม่ได้อ่าน"
+                className={`mt-1.5 h-2.5 w-2.5 shrink-0 rounded-full ${chat.muted ? "bg-secondary" : "bg-line-green"}`}
+              />
+            )}
           </div>
         </div>
       </div>

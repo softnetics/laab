@@ -5,7 +5,7 @@ export const REACTIONS: { name: Exclude<ReactionName, "PAID">; emoji: string }[]
   { name: "NICE", emoji: "👍" },
   { name: "LOVE", emoji: "❤️" },
   { name: "FUN", emoji: "😆" },
-  { name: "AMAZING", emoji: "😲" },
+  { name: "AMAZING", emoji: "😮" },
   { name: "SAD", emoji: "😢" },
   { name: "OMG", emoji: "😱" },
 ];

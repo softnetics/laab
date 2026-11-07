@@ -1,9 +1,11 @@
 import { Fragment, type ReactNode } from "react";
+import { mediaUrl } from "../lib/api";
 import { linkify } from "../lib/links";
+import { bigSticonSize, type Sticon } from "../lib/media";
 import type { MentionSpan } from "../lib/types";
 import { openUrl } from "../lib/open";
 
-type Piece = { start: number; end: number; mention?: MentionSpan };
+type Piece = { start: number; end: number; mention?: MentionSpan; sticon?: Sticon };
 
 /** Text with mentions, links and in-chat search highlights. */
 export function RichText({
@@ -14,6 +16,7 @@ export function RichText({
   current,
   onMention,
   chatId,
+  sticons = [],
 }: {
   text: string;
   mentions: MentionSpan[];
@@ -22,16 +25,23 @@ export function RichText({
   current?: boolean;
   onMention?: (m: MentionSpan, el: HTMLElement) => void;
   chatId: string;
+  /** LINE emoji drawn over the text they replace. */
+  sticons?: Sticon[];
 }) {
-  const spans = mentions.filter((m) => m.start >= 0 && m.end <= text.length).sort((a, b) => a.start - b.start);
+  const spans: Piece[] = [
+    ...mentions.filter((m) => m.start >= 0 && m.end <= text.length).map((m) => ({ start: m.start, end: m.end, mention: m })),
+    ...sticons.filter((s) => s.end <= text.length).map((s) => ({ start: s.start, end: s.end, sticon: s })),
+  ].sort((a, b) => a.start - b.start);
   const pieces: Piece[] = [];
   let at = 0;
-  for (const m of spans) {
-    if (m.start < at) continue;
-    if (m.start > at) pieces.push({ start: at, end: m.start });
-    pieces.push({ start: m.start, end: m.end, mention: m });
-    at = m.end;
+  for (const p of spans) {
+    if (p.start < at) continue;
+    if (p.start > at) pieces.push({ start: at, end: p.start });
+    pieces.push(p);
+    at = p.end;
   }
+  // A message of emoji alone shows them big, as LINE does.
+  const size = bigSticonSize(text, sticons) ?? 20;
   if (at < text.length) pieces.push({ start: at, end: text.length });
 
   const marks = (start: number, end: number, node: (s: string) => ReactNode): ReactNode[] => {
@@ -60,6 +70,26 @@ export function RichText({
   return (
     <>
       {pieces.map((p) => {
+        if (p.sticon) {
+          const s = p.sticon;
+          return (
+            <img
+              key={`s${p.start}`}
+              src={mediaUrl.sticon(s.productId, s.sticonId, s.version, s.animated)}
+              alt={text.slice(p.start, p.end)}
+              title={text.slice(p.start, p.end)}
+              draggable={false}
+              className="inline-block align-middle"
+              // Among text, centred on the line without making it taller.
+              style={{ width: size, height: size, margin: size === 20 ? "-3px 0" : undefined }}
+              onError={(e) => {
+                // An animation that isn't there: the still.
+                const still = mediaUrl.sticon(s.productId, s.sticonId, s.version);
+                if (e.currentTarget.src !== still) e.currentTarget.src = still;
+              }}
+            />
+          );
+        }
         if (p.mention) {
           const m = p.mention;
           return (
