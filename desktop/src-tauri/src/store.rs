@@ -105,6 +105,8 @@ impl Store {
             ("chats", "request", "INTEGER NOT NULL DEFAULT 0"),
             // 1 for an E2EE message not decrypted yet (its raw is kept).
             ("messages", "undecrypted", "INTEGER NOT NULL DEFAULT 0"),
+            // LAAB's own "mark as unread", display only (see `Chat::marked_unread`).
+            ("chats", "marked_unread", "INTEGER NOT NULL DEFAULT 0"),
         ] {
             self.add_column_if_missing(table, column, definition)?;
         }
@@ -129,7 +131,7 @@ impl Store {
         self.add_column_if_missing("members", "invited", "INTEGER NOT NULL DEFAULT 0")?;
         let count: i64 = db.query_row("SELECT COUNT(*) FROM workspaces", [], |r| r.get(0))?;
         if count == 0 {
-            db.execute("INSERT INTO workspaces VALUES ('main', 'หลัก', 0)", [])?;
+            db.execute("INSERT INTO workspaces (id,name,position) VALUES ('main', 'หลัก', 0)", [])?;
         }
         Ok(())
     }
@@ -267,7 +269,7 @@ impl Store {
 
     fn chats_where<P: rusqlite::Params>(&self, filter: &str, params: P) -> Result<Vec<Chat>> {
         let mut stmt = self.db.prepare(&format!(
-            "SELECT id,name,kind,preview,activity,unread,avatar,muted,picture,member_count,invited,request FROM chats {filter} ORDER BY activity DESC"
+            "SELECT id,name,kind,preview,activity,unread,avatar,muted,picture,member_count,invited,request,marked_unread FROM chats {filter} ORDER BY activity DESC"
         ))?;
         let rows = stmt.query_map(params, |r| {
             Ok(Chat {
@@ -283,6 +285,7 @@ impl Store {
                 member_count: r.get(9)?,
                 invited: r.get::<_, i64>(10)? != 0,
                 request: r.get::<_, i64>(11)? != 0,
+                marked_unread: r.get::<_, i64>(12)? != 0,
             })
         })?;
         Ok(rows.collect::<rusqlite::Result<_>>()?)
@@ -410,6 +413,15 @@ impl Store {
             params![unread, chat_id],
         )?;
         Ok(())
+    }
+
+    /// LAAB's "mark as unread": a flag for the chat list only. Returns
+    /// whether it changed.
+    pub fn set_marked_unread(&self, chat_id: &str, marked: bool) -> Result<bool> {
+        Ok(self.db.execute(
+            "UPDATE chats SET marked_unread=? WHERE id=? AND marked_unread<>?",
+            params![marked as i64, chat_id, marked as i64],
+        )? > 0)
     }
 
     pub fn set_muted(&self, chat_id: &str, muted: bool) -> Result<()> {
@@ -724,6 +736,21 @@ impl Store {
         Ok(None)
     }
 
+    /// The first of a chat's `unread` newest messages from others, where LINE
+    /// opens an unread chat and draws its unread mark (`lq1/x.java`). When
+    /// fewer are stored, the oldest of those.
+    pub fn first_unread(&self, chat_id: &str, unread: i64) -> Result<Option<String>> {
+        if unread <= 0 {
+            return Ok(None);
+        }
+        Ok(self.db.query_row(
+            "SELECT id FROM (SELECT id, created FROM messages WHERE chat_id=? AND mine=0 AND unsent=0
+                 ORDER BY created DESC LIMIT ?) ORDER BY created ASC LIMIT 1",
+            params![chat_id, unread],
+            |r| r.get(0),
+        ).optional()?)
+    }
+
     /// The newest `limit` messages of a chat, oldest first.
     pub fn messages(&self, chat_id: &str, limit: usize) -> Result<Vec<Message>> {
         let sql = format!(
@@ -1027,7 +1054,7 @@ impl Store {
                 .as_nanos()
         );
         self.db.execute(
-            "INSERT INTO workspaces VALUES (?,?,?)",
+            "INSERT INTO workspaces (id,name,position) VALUES (?,?,?)",
             params![id, name, position],
         )?;
         Ok(Workspace {
@@ -1452,6 +1479,51 @@ mod tests {
         s.upsert_messages(&[msg("1", "u1", "opened", 1.0)]).unwrap();
         assert_eq!(s.message("1").unwrap().unwrap().text, "opened");
         assert!(s.undecrypted_messages(None, 10).unwrap().is_empty());
+    }
+
+    #[test]
+    fn marking_unread_is_a_flag_that_sync_leaves_alone() {
+        let mut s = Store::memory().unwrap();
+        let mut c = chat("u1", "a");
+        c.unread = 1;
+        s.upsert_chats(&[c.clone()]).unwrap();
+        // Read on the phone: the next sync reports 0 and the count follows.
+        c.unread = 0;
+        s.upsert_chats(&[c.clone()]).unwrap();
+        assert_eq!(s.chat("u1").unwrap().unwrap().unread, 0);
+        // The mark changes no count, and survives sync and reads elsewhere.
+        assert!(s.set_marked_unread("u1", true).unwrap());
+        assert!(!s.set_marked_unread("u1", true).unwrap());
+        c.unread = 3;
+        s.upsert_chats(&[c.clone()]).unwrap();
+        s.set_unread("u1", 0).unwrap();
+        let row = s.chat("u1").unwrap().unwrap();
+        assert_eq!((row.unread, row.marked_unread), (0, true));
+        assert!(s.set_marked_unread("u1", false).unwrap());
+        assert!(!s.chat("u1").unwrap().unwrap().marked_unread);
+    }
+
+    #[test]
+    fn first_unread_counts_back_over_messages_from_others() {
+        let mut s = Store::memory().unwrap();
+        let mut mine = msg("3", "u1", "mine", 3.0);
+        mine.mine = true;
+        s.upsert_messages(&[
+            msg("1", "u1", "old", 1.0),
+            msg("2", "u1", "first unread", 2.0),
+            mine,
+            msg("4", "u1", "unsent", 4.0),
+            msg("5", "u1", "second unread", 5.0),
+            msg("6", "other", "another chat", 6.0),
+        ])
+        .unwrap();
+        s.mark_unsent("4").unwrap();
+        assert_eq!(s.first_unread("u1", 2).unwrap().as_deref(), Some("2"));
+        assert_eq!(s.first_unread("u1", 1).unwrap().as_deref(), Some("5"));
+        // More unread than stored: the oldest stored one from others.
+        assert_eq!(s.first_unread("u1", 9).unwrap().as_deref(), Some("1"));
+        assert_eq!(s.first_unread("u1", 0).unwrap(), None);
+        assert_eq!(s.first_unread("empty", 3).unwrap(), None);
     }
 
     #[test]

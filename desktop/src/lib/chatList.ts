@@ -22,7 +22,7 @@ export function filterChats(list: ChatList, filter: ChatFilter, sort: ChatSort, 
   const q = query.trim().toLocaleLowerCase("th");
   if (q) chats = chats.filter((c) => c.name.toLocaleLowerCase("th").includes(q) || c.preview.toLocaleLowerCase("th").includes(q));
   const byTime = (a: Chat, b: Chat) => b.lastActivity - a.lastActivity;
-  const sorted = [...chats].sort(sort === "unread" ? (a, b) => (b.unread > 0 ? 1 : 0) - (a.unread > 0 ? 1 : 0) || byTime(a, b) : byTime);
+  const sorted = [...chats].sort(sort === "unread" ? (a, b) => Number(looksUnread(b)) - Number(looksUnread(a)) || byTime(a, b) : byTime);
   const rank = new Map(pinned.map((id, i) => [id, i]));
   return [
     ...sorted.filter((c) => rank.has(c.id)).sort((a, b) => rank.get(a.id)! - rank.get(b.id)!),
@@ -94,6 +94,9 @@ export function adjacentChat(ids: string[], current: string | null, step: 1 | -1
   const j = i + step;
   return j < 0 || j >= ids.length ? null : ids[j];
 }
+
+/** Unread on LINE, or marked unread in LAAB. */
+export const looksUnread = (c: Chat) => c.unread > 0 || !!c.markedUnread;
 
 export const unreadLabel = (n: number) => (n > 999 ? "999+" : String(n));
 

@@ -1,4 +1,4 @@
-import { invoke as tauriInvoke, type InvokeArgs } from "@tauri-apps/api/core";
+import { invoke as tauriInvoke, type InvokeArgs, type InvokeOptions } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { QueryClient, queryOptions, useQuery } from "@tanstack/react-query";
 import { useEffect } from "react";
@@ -45,8 +45,8 @@ export const queryClient = new QueryClient({
 
 /** Calls a command. A failure also goes to LAAB's log, so a problem report
  *  can show which command failed and why. */
-function invoke<T>(command: string, args?: InvokeArgs): Promise<T> {
-  return tauriInvoke<T>(command, args).catch((e: unknown) => {
+function invoke<T>(command: string, args?: InvokeArgs, options?: InvokeOptions): Promise<T> {
+  return tauriInvoke<T>(command, args, options).catch((e: unknown) => {
     tauriInvoke("log_error", { command, error: String(e) }).catch(() => {});
     throw e;
   });
@@ -71,8 +71,9 @@ export const api = {
   reads: (chatId: string) => invoke<Record<string, string>>("reads", { chatId }),
   members: (chatId: string, force = false) => invoke<ChatMember[]>("members", { chatId, force }),
   setFocus: (chatId: string | null, active: boolean) => invoke<void>("set_focus", { chatId, active }),
-  openChat: (chatId: string) => invoke<void>("open_chat", { chatId }),
+  openChat: (chatId: string) => invoke<string | null>("open_chat", { chatId }),
   markRead: (chatId: string) => invoke<void>("mark_read", { chatId }),
+  markUnread: (chatId: string) => invoke<void>("mark_unread", { chatId }),
   refresh: (full = true) => invoke<void>("refresh", { full }),
   reloadChat: (chatId: string) => invoke<void>("reload_chat", { chatId }),
   /** A reqSeq for one message, sent again with each retry of it. */
@@ -94,6 +95,9 @@ export const api = {
   /** Sends each file, going on past failures; resolves to the ones that failed. */
   sendFiles: (chatId: string, paths: string[], silent = false) =>
     sent(invoke<{ path: string; error: string }[]>("send_files", { chatId, paths, silent })),
+  sendImageBytes: (chatId: string, bytes: Uint8Array, fileName: string) =>
+    sent(invoke<void>("send_image_bytes", bytes, { headers: { "chat-id": chatId, "file-name": encodeURIComponent(fileName) } })),
+  messageBytes: (chatId: string, messageId: string) => invoke<ArrayBuffer>("message_bytes", { chatId, messageId }),
   download: (chatId: string, messageId: string, fileName: string | null) => invoke<string>("download", { chatId, messageId, fileName }),
   react: (chatId: string, messageId: string, reaction: ReactionName | null) => invoke<void>("react", { chatId, messageId, reaction }),
   setMuted: (chatId: string, muted: boolean) => invoke<void>("set_muted", { chatId, muted }),

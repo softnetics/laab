@@ -3,7 +3,7 @@ import { compareIds, later, placement, readersOf } from "../reads";
 import { backspaceMention, composingQuery, fromSpans, insertMention, matching, present, targets, ALL_MEMBER } from "../mentions";
 import { callBubbleLabel, chatEventText, noticeFor, readCall, readChatEvent, isBlank } from "../notices";
 import { buildRows } from "../timeline";
-import { isAnimated, sticons } from "../media";
+import { bigSticonSize, isAnimated, sticons } from "../media";
 import { findHits, ranges } from "../inChatSearch";
 import { linkify, liffId, previewUrl } from "../links";
 import { adjacentChat, filterChats, folderName, groupRows, listPreview, requestBox } from "../chatList";
@@ -277,6 +277,8 @@ describe("chat list", () => {
   it("puts pins first and sorts unread first when asked", () => {
     expect(filterChats(list, "all", "recent", "").map((c) => c.id)).toEqual(["u2", "u1", "c1"]);
     expect(filterChats(list, "all", "unread", "").map((c) => c.id)).toEqual(["u2", "c1", "u1"]);
+    const marked: ChatList = { ...list, chats: list.chats.map((c) => (c.id === "u1" ? { ...c, markedUnread: true } : c)) };
+    expect(filterChats(marked, "all", "unread", "").map((c) => c.id)).toEqual(["u2", "u1", "c1"]);
     expect(filterChats(list, "groups", "recent", "").map((c) => c.id)).toEqual(["c1"]);
     expect(listPreview("เขา: hi")).toBe("hi");
   });
@@ -367,5 +369,40 @@ describe("datetime picker buttons", () => {
     expect(outOfRange("time", "09:00", "10:00", null)).toBe("เลือกได้ตั้งแต่ 10.00 น.");
     expect(outOfRange("time", "19:00", null, "18:30")).toBe("เลือกได้ถึง 18.30 น.");
     expect(outOfRange("time", "12:00", "10:00", "18:00")).toBeNull();
+  });
+});
+
+describe("sticons", () => {
+  it("reads REPLACE resources in order and drops bad ones", () => {
+    const replace = JSON.stringify({
+      sticon: {
+        resources: [
+          { S: 6, E: 12, productId: "5ac1bfd5040ab15980c9b435", sticonId: "002", version: 3, resourceType: "ANIMATION" },
+          { S: 0, E: 5, productId: "5ac1bfd5040ab15980c9b435", sticonId: "001", version: 1, resourceType: "STATIC" },
+          { S: 4, E: 7, productId: "p", sticonId: "overlaps" },
+          { S: 10, E: 99, productId: "p", sticonId: "past-the-end" },
+          { S: 0, E: 1, productId: "../x", sticonId: "1" },
+        ],
+      },
+    });
+    const got = sticons({ REPLACE: replace }, 12);
+    expect(got.map((s) => [s.start, s.end, s.sticonId, s.animated])).toEqual([
+      [0, 5, "001", false],
+      [6, 12, "002", true],
+    ]);
+    expect(got[1].version).toBe(3);
+    expect(sticons({}, 5)).toEqual([]);
+    expect(sticons({ REPLACE: "not json" }, 5)).toEqual([]);
+  });
+  it("draws one to three emoji alone big, as LINE does", () => {
+    const at = (...ranges: [number, number][]) =>
+      ranges.map(([start, end]) => ({ start, end, productId: "p", sticonId: "1", version: 1, animated: false }));
+    expect(bigSticonSize("(a)", at([0, 3]))).toBe(72);
+    expect(bigSticonSize("(a) (b)", at([0, 3], [4, 7]))).toBe(72);
+    expect(bigSticonSize("(a)(b)(c)", at([0, 3], [3, 6], [6, 9]))).toBe(52);
+    expect(bigSticonSize("(a)(b)(c)(d)", at([0, 3], [3, 6], [6, 9], [9, 12]))).toBeNull();
+    expect(bigSticonSize("hi (a)", at([3, 6]))).toBeNull();
+    expect(bigSticonSize("(a) hi", at([0, 3]))).toBeNull();
+    expect(bigSticonSize("hi", [])).toBeNull();
   });
 });

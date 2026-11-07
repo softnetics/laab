@@ -17,7 +17,7 @@ import { Composer, type ComposerHandle } from "./Composer";
 import { InvitationBar, MessageRequestBar } from "./GroupSheets";
 import { RichMenu } from "./RichMenu";
 import { BellSlashIcon, ChevronIcon, CloseIcon, ExternalIcon, MoreVIcon, NoteIcon, SearchIcon, SpeakerIcon } from "./Icons";
-import { popupClass } from "./kit";
+import { popupClass, Spinner } from "./kit";
 import type { RowContext } from "./MessageRow";
 import { StickerPanel } from "./StickerPanel";
 import { type Older, Timeline } from "./Timeline";
@@ -75,6 +75,9 @@ export function ChatView({ chatId, main }: { chatId: string; main: boolean }) {
     index: 0,
   });
   const [dragging, setDragging] = useState(false);
+  const [uploading, setUploading] = useState(false);
+  // LINE's unread mark: the first message that was unread when the chat opened.
+  const [unreadFrom, setUnreadFrom] = useState<string | null>(null);
   const me = session?.profile?.mid ?? "";
   const signedIn = session?.state === "signed_in";
 
@@ -82,10 +85,22 @@ export function ChatView({ chatId, main }: { chatId: string; main: boolean }) {
   // settles on a chat for 150 ms, so arrow-key browsing stays fast.
   useEffect(() => {
     if (main) api.setFocus(chatId, document.hasFocus());
-    const t = setTimeout(() => api.openChat(chatId).catch(() => {}), 150);
+    let cancelled = false;
+    setUnreadFrom(null);
+    const t = setTimeout(() => {
+      api
+        .openChat(chatId)
+        .then((first) => {
+          if (!cancelled) setUnreadFrom(first);
+        })
+        .catch(() => {});
+    }, 150);
     setStickers(false);
     setSearch({ open: false, query: "", debounced: "", index: 0 });
-    return () => clearTimeout(t);
+    return () => {
+      cancelled = true;
+      clearTimeout(t);
+    };
   }, [chatId, main]);
   useEffect(() => {
     if (!main) return;
@@ -174,20 +189,37 @@ export function ChatView({ chatId, main }: { chatId: string; main: boolean }) {
   });
 
   // Files dropped on the chat are sent one by one, through the composer so
-  // a failure shows there with Retry.
+  // a failure shows there with Retry. Files dropped while an upload runs
+  // wait for it, in the order they came.
+  const uploadQueue = useRef(Promise.resolve());
+  const pendingUploads = useRef(0);
+  const sendDropped = useRef((_: string[]) => {});
+  sendDropped.current = (paths: string[]) => {
+    if (!paths.length) return;
+    pendingUploads.current += 1;
+    setUploading(true);
+    uploadQueue.current = uploadQueue.current
+      .then(() => composer.current?.sendFiles(paths))
+      .catch((err) => notice(errorText(err)))
+      .finally(() => {
+        pendingUploads.current -= 1;
+        if (!pendingUploads.current) setUploading(false);
+      });
+  };
+
   useEffect(() => {
     const off = getCurrentWebview().onDragDropEvent((e) => {
       if (e.payload.type === "over" || e.payload.type === "enter") setDragging(true);
       else if (e.payload.type === "leave") setDragging(false);
       else if (e.payload.type === "drop") {
         setDragging(false);
-        if (e.payload.paths.length) composer.current?.sendFiles(e.payload.paths);
+        sendDropped.current(e.payload.paths);
       }
     });
     return () => {
       off.then((f) => f());
     };
-  }, [chatId]);
+  }, []);
 
   useEffect(() => {
     if (!main && chat)
@@ -310,6 +342,7 @@ export function ChatView({ chatId, main }: { chatId: string; main: boolean }) {
         ctx={ctx}
         members={members}
         people={people}
+        unreadFrom={unreadFrom}
         search={search.open && search.debounced.trim() ? { query: search.debounced, hits, index: search.index } : null}
       />
       {stickers && <StickerPanel chatId={chatId} onClose={() => setStickers(false)} />}
@@ -339,6 +372,12 @@ export function ChatView({ chatId, main }: { chatId: string; main: boolean }) {
         />
       )}
       {chat?.kind === "bot" && <RichMenu key={chatId} chatId={chatId} />}
+      {uploading && (
+        <div className="pointer-events-none absolute right-3 bottom-3 z-20 flex items-center gap-2 rounded-full bg-black/70 px-3 py-1.5 text-[12px] text-white shadow-lg">
+          <Spinner size={12} />
+          <span>กำลังส่งไฟล์…</span>
+        </div>
+      )}
       <AnimatePresence>
         {dragging && (
           <motion.div

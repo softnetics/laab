@@ -21,6 +21,10 @@ pub struct Chat {
     /// LINE `picturePath` (e.g. `/0h...`), used to fetch the avatar.
     pub picture: Option<String>,
     pub member_count: Option<i64>,
+    /// Marked unread in LAAB. Display only: LINE has no such state, so it is
+    /// never sent, leaves `unread` alone, and clears when the chat is opened.
+    #[serde(default)]
+    pub marked_unread: bool,
     /// A group we are invited to and have not joined.
     #[serde(default)]
     pub invited: bool,

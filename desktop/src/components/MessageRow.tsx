@@ -4,10 +4,11 @@ import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { open as openDialog, save } from "@tauri-apps/plugin-dialog";
 import { memo, useState } from "react";
 import { api, errorText, mediaUrl, q, queryClient } from "../lib/api";
+import { copyImage } from "../lib/clipboardImage";
 import { performFlexAction } from "../lib/flexActions";
 import { callBubbleLabel, isBlank, noticeFor, readCall } from "../lib/notices";
 import { nextReaction } from "../lib/reactions";
-import { isAnimated, sticons } from "../lib/media";
+import { bigSticonSize, isAnimated, sticons } from "../lib/media";
 import { clock } from "../lib/time";
 import { setTranslateTarget, translateLanguages, translateTarget } from "../lib/translate";
 import type { MentionSpan, Message, ReactionName } from "../lib/types";
@@ -441,23 +442,31 @@ function Content({
       </Bubble>
     );
   }
-  return (
-    <Bubble mine={m.mine} tail={tail}>
-      {m.replyTo && <ReplyQuote id={m.replyTo} ctx={ctx} mine={m.mine} />}
+  const emoji = m.contentType === "NONE" ? sticons(m.metadata, m.text.length) : undefined;
+  const richText = (
       <RichText
         text={m.text || (m.contentType !== "NONE" ? m.contentType.toLowerCase() : "")}
         mentions={m.mentions}
-        sticons={m.contentType === "NONE" ? sticons(m.metadata, m.text.length) : undefined}
         mine={m.mine}
         highlight={highlight}
         current={current}
         chatId={ctx.chatId}
+        sticons={emoji}
         onMention={(span, el) =>
           span.mid && !span.all
             ? setUi({ profile: { mid: span.mid, name: ctx.name(span.mid), picture: ctx.picture(span.mid) } })
             : setMention({ span, el })
         }
       />
+  );
+  // One to three LINE emoji alone: drawn big with no bubble, as LINE does.
+  if (!m.replyTo && emoji && bigSticonSize(m.text, emoji)) {
+    return <div className="flex flex-wrap items-end gap-1 leading-none">{richText}</div>;
+  }
+  return (
+    <Bubble mine={m.mine} tail={tail}>
+      {m.replyTo && <ReplyQuote id={m.replyTo} ctx={ctx} mine={m.mine} />}
+      {richText}
       {mention && <MentionCard span={mention.span} ctx={ctx} anchor={mention.el} onClose={() => setMention(null)} />}
       {link && <LinkCard url={link} chatId={ctx.chatId} mine={m.mine} />}
     </Bubble>
@@ -478,6 +487,7 @@ function rowMenu(m: Message, dev: boolean, ctx?: RowContext) {
   const copyText =
     flexAlt ||
     (m.contentType === "CONTACT" ? (m.metadata.displayName ?? "") : ["IMAGE", "VIDEO", "STICKER", "FILE"].includes(m.contentType) ? "" : m.text);
+  const copyPhoto = m.contentType === "IMAGE";
   const text = m.contentType === "NONE" && !!m.text.trim();
   const sent = !m.id.startsWith("local-");
   const run = (p: Promise<unknown>, done?: string) => p.then(() => done && notice(done)).catch((e) => notice(errorText(e)));
@@ -497,7 +507,11 @@ function rowMenu(m: Message, dev: boolean, ctx?: RowContext) {
   return (
     <>
       {live && item("ตอบกลับ", () => setUi({ composerMode: { chatId: ctx.chatId, kind: "reply", message: m }, composerFocus: Date.now() }))}
-      {item("คัดลอก", () => writeText(copyText), !copyText)}
+      {item(
+        "คัดลอก",
+        () => (copyPhoto ? run(api.messageBytes(ctx.chatId, m.id).then(copyImage), "คัดลอกรูปแล้ว") : writeText(copyText)),
+        !copyText && !copyPhoto,
+      )}
       {m.mine &&
         live &&
         text &&
@@ -658,7 +672,9 @@ export const MessageRow = memo(function MessageRow({
     </div>
   );
   const bubble = (
-    <div className="relative">
+    // min-w-0: a reply quote is one truncated line, and without it the
+    // bubble keeps that whole line's width and pushes the row past the view.
+    <div className="relative min-w-0">
       <Ctx menu={rowMenu(m, dev, ctx)}>
         {photos && photos.length > 1 ? (
           <PhotoGrid photos={photos} ctx={ctx} />
@@ -726,8 +742,18 @@ export const MessageRow = memo(function MessageRow({
             )}
           </div>
           <div className={`flex min-w-0 flex-col ${tail ? "pl-2" : ""}`}>
-            {runStart && ctx.group && m.senderId && <span className="mb-1 text-[12px] text-secondary">{ctx.name(m.senderId)}</span>}
-            <div className="flex items-end gap-1.5">
+            {runStart && ctx.group && m.senderId && (
+              <button
+                className="mb-1 self-start text-[12px] text-secondary hover:text-primary hover:underline"
+                onClick={() =>
+                  setUi({ mentionRequest: { chatId: ctx.chatId, mid: m.senderId!, name: ctx.name(m.senderId!) } })
+                }
+                title="กล่าวถึงสมาชิกนี้"
+              >
+                {ctx.name(m.senderId)}
+              </button>
+            )}
+            <div className="flex min-w-0 items-end gap-1.5">
               {bubble}
               {meta}
             </div>

@@ -89,6 +89,10 @@ pub fn sniff_mime(data: &[u8], path: &Path) -> &'static str {
             b'P',
             ..,
         ] => "image/webp",
+        [_, _, _, _, b'f', b't', b'y', b'p', b'h', b'e', b'i', b'c', ..]
+        | [_, _, _, _, b'f', b't', b'y', b'p', b'h', b'e', b'i', b'x', ..]
+        | [_, _, _, _, b'f', b't', b'y', b'p', b'm', b'i', b'f', b'1', ..] => "image/heic",
+        // Every other ISO media brand (isom, mp42, M4V, 3gp4, qt, dash…).
         [_, _, _, _, b'f', b't', b'y', b'p', ..] => "video/mp4",
         _ => match path
             .extension()
@@ -100,6 +104,7 @@ pub fn sniff_mime(data: &[u8], path: &Path) -> &'static str {
             Some("jpg" | "jpeg") => "image/jpeg",
             Some("gif") => "image/gif",
             Some("webp") => "image/webp",
+            Some("heic" | "heif") => "image/heic",
             Some("svg") => "image/svg+xml",
             Some("mp4" | "mov") => "video/mp4",
             Some("m4a") => "audio/mp4",
@@ -107,6 +112,48 @@ pub fn sniff_mime(data: &[u8], path: &Path) -> &'static str {
             _ => "application/octet-stream",
         },
     }
+}
+
+/// WebKit on some macOS versions cannot display HEIC from a custom protocol,
+/// so HEIC photos are served as a JPEG made once with the system decoder and
+/// kept, encrypted like the original, beside it in the cache.
+fn heic_as_jpeg(path: &Path, data: &[u8]) -> Option<Vec<u8>> {
+    let mut name = path.file_name()?.to_os_string();
+    name.push(".jpg");
+    let cached = path.with_file_name(name);
+    if let Ok(jpeg) = crate::vault::read(&cached) {
+        crate::vault::touch(&cached);
+        return Some(jpeg);
+    }
+    let jpeg = convert_heic(data)?;
+    if let Err(e) = crate::vault::write(&cached, &jpeg) {
+        tracing::warn!("heic cache: {e:#}");
+    }
+    Some(jpeg)
+}
+
+/// `sips` only works on files: the plain HEIC and JPEG live for the length of
+/// the call in a fresh private (0700) folder, removed even on an early return.
+#[cfg(target_os = "macos")]
+fn convert_heic(data: &[u8]) -> Option<Vec<u8>> {
+    let dir = tempfile::Builder::new().prefix("laab-heic-").tempdir().ok()?;
+    let input = dir.path().join("in.heic");
+    let output = dir.path().join("out.jpg");
+    std::fs::write(&input, data).ok()?;
+    std::process::Command::new("/usr/bin/sips")
+        .args(["-s", "format", "jpeg"])
+        .arg(&input)
+        .arg("--out")
+        .arg(&output)
+        .output()
+        .ok()
+        .filter(|r| r.status.success())
+        .and_then(|_| std::fs::read(&output).ok())
+}
+
+#[cfg(not(target_os = "macos"))]
+fn convert_heic(_: &[u8]) -> Option<Vec<u8>> {
+    None
 }
 
 pub(crate) fn respond(status: StatusCode, body: Vec<u8>, mime: &str) -> Response<Vec<u8>> {
@@ -150,6 +197,12 @@ pub(crate) fn file_response(path: &Path, range: Option<&str>) -> Option<Response
     }
     let mime = sniff_mime(&file.head(16).ok()?, path);
     crate::vault::touch(path);
+    if mime == "image/heic" && range.is_none() {
+        let data = file.read_all().ok()?;
+        if let Some(jpeg) = heic_as_jpeg(path, &data) {
+            return Some(respond(StatusCode::OK, jpeg, "image/jpeg"));
+        }
+    }
     let Some((start, end)) = range.and_then(|r| byte_range(r, len)) else {
         let data = file.read_all().ok()?;
         let mut res = respond(StatusCode::OK, data, mime);
@@ -221,10 +274,17 @@ pub async fn handle(state: Arc<AppState>, req: Request<Vec<u8>>) -> Response<Vec
         }
         _ => Err(anyhow!("unknown media path")),
     };
-    match result.ok().and_then(|p| file_response(&p, range)) {
-        Some(r) => r,
-        None => respond(StatusCode::NOT_FOUND, Vec::new(), "text/plain"),
-    }
+    // Decrypting, and converting HEIC, is blocking work: keep it off the
+    // runtime so one large file does not hold up every other request.
+    let range = range.map(str::to_owned);
+    let response = match result {
+        Ok(p) => tokio::task::spawn_blocking(move || file_response(&p, range.as_deref()))
+            .await
+            .ok()
+            .flatten(),
+        Err(_) => None,
+    };
+    response.unwrap_or_else(|| respond(StatusCode::NOT_FOUND, Vec::new(), "text/plain"))
 }
 
 async fn fetch(url: &str) -> Result<Vec<u8>> {
@@ -709,6 +769,17 @@ pub async fn download_file(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sniffs_heic_apart_from_other_iso_media() {
+        let head = |brand: &[u8; 4]| [&[0, 0, 0, 0x18][..], b"ftyp", brand].concat();
+        let none = Path::new("");
+        assert_eq!(sniff_mime(&head(b"heic"), none), "image/heic");
+        assert_eq!(sniff_mime(&head(b"mif1"), none), "image/heic");
+        for brand in [b"isom", b"M4V ", b"iso5", b"3gp4", b"dash"] {
+            assert_eq!(sniff_mime(&head(brand), none), "video/mp4");
+        }
+    }
 
     #[test]
     fn decodes_queries() {

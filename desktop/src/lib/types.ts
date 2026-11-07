@@ -17,6 +17,8 @@ export interface Chat {
   invited?: boolean;
   /** In LINE's message request box: from someone who is not a friend, not accepted yet. */
   request?: boolean;
+  /** LAAB's own "mark as unread": shown as a dot, never sent to LINE. */
+  markedUnread?: boolean;
 }
 
 export interface ChatMember {
