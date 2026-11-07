@@ -184,17 +184,22 @@ export function ChatView({ chatId, main }: { chatId: string; main: boolean }) {
     return () => window.removeEventListener("keydown", onKey, true);
   });
 
-  const sendDropped = useCallback(
-    (paths: string[]) => {
-      if (!paths.length || uploading) return;
-      setUploading(true);
-      api
-        .sendFiles(chatId, paths)
-        .catch((err) => notice(errorText(err)))
-        .finally(() => setUploading(false));
-    },
-    [chatId, uploading],
-  );
+  // Files dropped while an upload runs wait for it, in the order they came.
+  const uploadQueue = useRef(Promise.resolve());
+  const pendingUploads = useRef(0);
+  const sendDropped = useRef((_: string[]) => {});
+  sendDropped.current = (paths: string[]) => {
+    if (!paths.length) return;
+    pendingUploads.current += 1;
+    setUploading(true);
+    uploadQueue.current = uploadQueue.current
+      .then(() => api.sendFiles(chatId, paths))
+      .catch((err) => notice(errorText(err)))
+      .finally(() => {
+        pendingUploads.current -= 1;
+        if (!pendingUploads.current) setUploading(false);
+      });
+  };
 
   // Files dropped on the chat are sent one by one.
   useEffect(() => {
@@ -203,13 +208,13 @@ export function ChatView({ chatId, main }: { chatId: string; main: boolean }) {
       else if (e.payload.type === "leave") setDragging(false);
       else if (e.payload.type === "drop") {
         setDragging(false);
-        sendDropped(e.payload.paths);
+        sendDropped.current(e.payload.paths);
       }
     });
     return () => {
       off.then((f) => f());
     };
-  }, [chatId, sendDropped]);
+  }, []);
 
   useEffect(() => {
     if (!main && chat)

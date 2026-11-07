@@ -261,7 +261,9 @@ export const Composer = forwardRef<
     const data = e.clipboardData;
     const file = Array.from(data.files).find((f) => f.type.startsWith("image/"));
     const hasImage = !!file || Array.from(data.items).some((item) => item.kind === "file" && item.type.startsWith("image/")) || Array.from(data.types).some((type) => type.startsWith("image/"));
-    if (!hasImage) return;
+    // Office apps and web pages put a picture of copied text beside the text
+    // itself: paste the text, and stage an image only when there is none.
+    if (!hasImage || (!file && data.getData("text/plain"))) return;
     e.preventDefault();
     const stage = async () => {
       const bytes = file ? new Uint8Array(await file.arrayBuffer()) : await readClipboardPng();
@@ -278,7 +280,7 @@ export const Composer = forwardRef<
   const onKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.nativeEvent.isComposing || e.keyCode === 229) return;
     const plain = !e.metaKey && !e.ctrlKey && !e.altKey && !e.shiftKey;
-    if (pendingImage && e.key === "Enter" && (plain || (e.metaKey && !e.shiftKey))) {
+    if (pendingImage && !(pickerOpen && candidates.length) && e.key === "Enter" && (plain || (e.metaKey && !e.shiftKey))) {
       e.preventDefault();
       void send();
       return;
