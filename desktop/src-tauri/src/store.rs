@@ -96,6 +96,8 @@ impl Store {
             ("chats", "synced", "REAL"),
             // A hidden chat stays out of the list until it gets a newer message.
             ("chats", "hidden_at", "REAL"),
+            // Set by "mark as unread": keeps the badge until the chat is read.
+            ("chats", "marked_unread", "INTEGER NOT NULL DEFAULT 0"),
         ] {
             self.add_column_if_missing(table, column, definition)?;
         }
@@ -223,7 +225,7 @@ impl Store {
             tx.execute(
                 "INSERT INTO chats (id,name,kind,preview,activity,unread,avatar,muted,picture,member_count) VALUES (?,?,?,?,?,?,?,?,?,?)
                  ON CONFLICT(id) DO UPDATE SET name=excluded.name, kind=excluded.kind, preview=excluded.preview, activity=excluded.activity,
-                 unread=CASE WHEN chats.unread=1 THEN 1 ELSE excluded.unread END, avatar=COALESCE(excluded.avatar, chats.avatar), muted=excluded.muted,
+                 unread=CASE WHEN chats.marked_unread=1 THEN MAX(excluded.unread, 1) ELSE excluded.unread END, avatar=COALESCE(excluded.avatar, chats.avatar), muted=excluded.muted,
                  picture=COALESCE(excluded.picture, chats.picture), member_count=COALESCE(excluded.member_count, chats.member_count)",
                 params![c.id, c.name, c.kind, c.preview, c.last_activity, c.unread, c.avatar, c.muted as i64, c.picture, c.member_count],
             )?;
@@ -322,10 +324,20 @@ impl Store {
         Ok(())
     }
 
+    /// Sets the unread count. Reading the chat also clears a manual mark.
     pub fn set_unread(&self, chat_id: &str, unread: i64) -> Result<()> {
         self.db.execute(
-            "UPDATE chats SET unread=? WHERE id=?",
+            "UPDATE chats SET unread=?, marked_unread=0 WHERE id=?",
             params![unread, chat_id],
+        )?;
+        Ok(())
+    }
+
+    /// Shows the chat as unread until it is read, whatever sync reports.
+    pub fn mark_unread(&self, chat_id: &str) -> Result<()> {
+        self.db.execute(
+            "UPDATE chats SET unread=MAX(unread, 1), marked_unread=1 WHERE id=?",
+            [chat_id],
         )?;
         Ok(())
     }
@@ -1182,6 +1194,30 @@ mod tests {
             s.search("report", &[SearchKind::File]).unwrap()[0].title,
             "report.pdf"
         );
+    }
+
+    #[test]
+    fn sync_keeps_a_manual_unread_mark_but_not_a_real_count_of_one() {
+        let mut s = Store::memory().unwrap();
+        let mut c = chat("u1", "a");
+        c.unread = 1;
+        s.upsert_chats(&[c.clone()]).unwrap();
+        // Read on the phone: the next sync reports 0 and the badge goes.
+        c.unread = 0;
+        s.upsert_chats(&[c.clone()]).unwrap();
+        assert_eq!(s.chat("u1").unwrap().unwrap().unread, 0);
+        // Marked unread here: sync keeps at least 1, and follows a higher count.
+        s.mark_unread("u1").unwrap();
+        s.upsert_chats(&[c.clone()]).unwrap();
+        assert_eq!(s.chat("u1").unwrap().unwrap().unread, 1);
+        c.unread = 5;
+        s.upsert_chats(&[c.clone()]).unwrap();
+        assert_eq!(s.chat("u1").unwrap().unwrap().unread, 5);
+        // Opening the chat clears the mark.
+        s.set_unread("u1", 0).unwrap();
+        c.unread = 0;
+        s.upsert_chats(&[c]).unwrap();
+        assert_eq!(s.chat("u1").unwrap().unwrap().unread, 0);
     }
 
     #[test]

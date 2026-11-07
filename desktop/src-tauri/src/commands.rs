@@ -196,7 +196,7 @@ pub async fn mark_read(state: S<'_>, chat_id: String) -> R<()> {
 /// Keep a chat visibly unread until the user opens it again.
 #[tauri::command]
 pub fn mark_unread(state: S<'_>, chat_id: String) -> R<()> {
-    state.store().set_unread(&chat_id, 1).map_err(err)?;
+    state.store().mark_unread(&chat_id).map_err(err)?;
     state.chats_changed();
     Ok(())
 }
