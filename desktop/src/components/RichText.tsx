@@ -79,8 +79,9 @@ export function RichText({
               alt={text.slice(p.start, p.end)}
               title={text.slice(p.start, p.end)}
               draggable={false}
-              className="inline-block align-text-bottom"
-              style={{ width: size, height: size }}
+              className="inline-block align-middle"
+              // Among text, centred on the line without making it taller.
+              style={{ width: size, height: size, margin: size === 20 ? "-3px 0" : undefined }}
               onError={(e) => {
                 // An animation that isn't there: the still.
                 const still = mediaUrl.sticon(s.productId, s.sticonId, s.version);
