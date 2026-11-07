@@ -8,7 +8,7 @@ import { linkify, liffId } from "../links";
 import { adjacentChat, filterChats, folderName, groupRows, listPreview } from "../chatList";
 import { nextReaction, topTypes } from "../reactions";
 import { dayHeader, fullStamp, listLabel } from "../time";
-import { sticons } from "../media";
+import { bigSticonSize, sticons } from "../media";
 import type { ChatList, Message } from "../types";
 
 const msg = (p: Partial<Message>): Message => ({
@@ -289,5 +289,16 @@ describe("sticons", () => {
     expect(got[1].version).toBe(3);
     expect(sticons({}, 5)).toEqual([]);
     expect(sticons({ REPLACE: "not json" }, 5)).toEqual([]);
+  });
+  it("draws one to three emoji alone big, as LINE does", () => {
+    const at = (...ranges: [number, number][]) =>
+      ranges.map(([start, end]) => ({ start, end, productId: "p", sticonId: "1", version: 1, animated: false }));
+    expect(bigSticonSize("(a)", at([0, 3]))).toBe(72);
+    expect(bigSticonSize("(a) (b)", at([0, 3], [4, 7]))).toBe(72);
+    expect(bigSticonSize("(a)(b)(c)", at([0, 3], [3, 6], [6, 9]))).toBe(52);
+    expect(bigSticonSize("(a)(b)(c)(d)", at([0, 3], [3, 6], [6, 9], [9, 12]))).toBeNull();
+    expect(bigSticonSize("hi (a)", at([3, 6]))).toBeNull();
+    expect(bigSticonSize("(a) hi", at([0, 3]))).toBeNull();
+    expect(bigSticonSize("hi", [])).toBeNull();
   });
 });

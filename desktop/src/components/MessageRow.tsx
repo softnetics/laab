@@ -5,7 +5,7 @@ import { open as openDialog, save } from "@tauri-apps/plugin-dialog";
 import { memo, useState } from "react";
 import { api, errorText, mediaUrl, q, queryClient } from "../lib/api";
 import { copyImage } from "../lib/clipboardImage";
-import { sticons } from "../lib/media";
+import { bigSticonSize, sticons } from "../lib/media";
 import { performFlexAction } from "../lib/flexActions";
 import { callBubbleLabel, isBlank, noticeFor, readCall } from "../lib/notices";
 import { nextReaction } from "../lib/reactions";
@@ -430,9 +430,8 @@ function Content({
       </Bubble>
     );
   }
-  return (
-    <Bubble mine={m.mine} tail={tail}>
-      {m.replyTo && <ReplyQuote id={m.replyTo} ctx={ctx} mine={m.mine} />}
+  const emoji = m.contentType === "NONE" ? sticons(m.metadata, m.text.length) : undefined;
+  const richText = (
       <RichText
         text={m.text || (m.contentType !== "NONE" ? m.contentType.toLowerCase() : "")}
         mentions={m.mentions}
@@ -440,13 +439,22 @@ function Content({
         highlight={highlight}
         current={current}
         chatId={ctx.chatId}
-        sticons={m.contentType === "NONE" ? sticons(m.metadata, m.text.length) : undefined}
+        sticons={emoji}
         onMention={(span, el) =>
           span.mid && !span.all
             ? setUi({ profile: { mid: span.mid, name: ctx.name(span.mid), picture: ctx.picture(span.mid) } })
             : setMention({ span, el })
         }
       />
+  );
+  // One to three LINE emoji alone: drawn big with no bubble, as LINE does.
+  if (!m.replyTo && emoji && bigSticonSize(m.text, emoji)) {
+    return <div className="flex flex-wrap items-end gap-1 leading-none">{richText}</div>;
+  }
+  return (
+    <Bubble mine={m.mine} tail={tail}>
+      {m.replyTo && <ReplyQuote id={m.replyTo} ctx={ctx} mine={m.mine} />}
+      {richText}
       {mention && <MentionCard span={mention.span} ctx={ctx} anchor={mention.el} onClose={() => setMention(null)} />}
     </Bubble>
   );

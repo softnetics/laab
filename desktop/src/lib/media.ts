@@ -35,3 +35,17 @@ export function sticons(metadata: Record<string, string>, textLength: number): S
   let end = 0;
   return out.filter((s) => s.start >= end && ((end = s.end), true));
 }
+
+/** A message of one to three LINE emoji and nothing else shows them big and
+ *  with no bubble, as LINE does: 72pt for one or two, 52pt for three. Else
+ *  null, and they sit in the text at its size. */
+export function bigSticonSize(text: string, list: Sticon[]): number | null {
+  if (!list.length || list.length > 3) return null;
+  let at = 0;
+  for (const s of list) {
+    if (text.slice(at, s.start).trim()) return null;
+    at = s.end;
+  }
+  if (text.slice(at).trim()) return null;
+  return list.length === 3 ? 52 : 72;
+}

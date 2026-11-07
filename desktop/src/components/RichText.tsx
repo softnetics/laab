@@ -1,7 +1,7 @@
 import { Fragment, type ReactNode } from "react";
 import { mediaUrl } from "../lib/api";
 import { linkify } from "../lib/links";
-import type { Sticon } from "../lib/media";
+import { bigSticonSize, type Sticon } from "../lib/media";
 import type { MentionSpan } from "../lib/types";
 import { openUrl } from "../lib/open";
 
@@ -41,8 +41,7 @@ export function RichText({
     at = p.end;
   }
   // A message of emoji alone shows them big, as LINE does.
-  const onlySticons = sticons.length > 0 && pieces.every((p) => p.sticon || !text.slice(p.start, p.end).trim());
-  const size = onlySticons && sticons.length <= 3 ? 48 : 20;
+  const size = bigSticonSize(text, sticons) ?? 20;
   if (at < text.length) pieces.push({ start: at, end: text.length });
 
   const marks = (start: number, end: number, node: (s: string) => ReactNode): ReactNode[] => {
