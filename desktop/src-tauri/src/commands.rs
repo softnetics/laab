@@ -134,22 +134,21 @@ pub fn set_focus(state: S<'_>, chat_id: Option<String>, active: bool) {
 }
 
 /// Opening a chat: clear unread, acknowledge, then fetch fresh history,
-/// read status and members in the background.
+/// read status and members in the background. Returns the first unread
+/// message, if any, for the timeline's unread mark.
 #[tauri::command]
 pub async fn open_chat(state: S<'_>, chat_id: String) -> R<Option<String>> {
     crate::usage::hit(crate::usage::Action::OpenedChat);
     let s = state.inner().clone();
-    let had_unread = s
+    let unread = s
         .store()
         .chat(&chat_id)
         .ok()
         .flatten()
-        .is_some_and(|c| c.unread > 0);
-    let target = if had_unread {
-        s.store().unread_open_target(&chat_id).map_err(err)?
-    } else {
-        None
-    };
+        .map_or(0, |c| c.unread);
+    let had_unread = unread > 0;
+    // Where the timeline draws "unread messages", before the count is cleared.
+    let target = s.store().first_unread(&chat_id, unread).map_err(err)?;
     let unmarked = s.store().set_marked_unread(&chat_id, false).map_err(err)?;
     if had_unread {
         s.store().set_unread(&chat_id, 0).map_err(err)?;

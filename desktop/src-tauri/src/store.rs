@@ -587,11 +587,17 @@ impl Store {
         Ok(None)
     }
 
-    /// The latest available message to show when reopening an unread chat.
-    pub fn unread_open_target(&self, chat_id: &str) -> Result<Option<String>> {
+    /// The first of a chat's `unread` newest messages from others, where LINE
+    /// opens an unread chat and draws its unread mark (`lq1/x.java`). When
+    /// fewer are stored, the oldest of those.
+    pub fn first_unread(&self, chat_id: &str, unread: i64) -> Result<Option<String>> {
+        if unread <= 0 {
+            return Ok(None);
+        }
         Ok(self.db.query_row(
-            "SELECT id FROM messages WHERE chat_id=? AND unsent=0 ORDER BY created DESC LIMIT 1",
-            [chat_id],
+            "SELECT id FROM (SELECT id, created FROM messages WHERE chat_id=? AND mine=0 AND unsent=0
+                 ORDER BY created DESC LIMIT ?) ORDER BY created ASC LIMIT 1",
+            params![chat_id, unread],
             |r| r.get(0),
         ).optional()?)
     }
@@ -1219,24 +1225,26 @@ mod tests {
     }
 
     #[test]
-    fn unread_open_skips_all_trailing_unsends() {
+    fn first_unread_counts_back_over_messages_from_others() {
         let mut s = Store::memory().unwrap();
+        let mut mine = msg("3", "u1", "mine", 3.0);
+        mine.mine = true;
         s.upsert_messages(&[
-            msg("1", "u1", "available", 1.0),
-            msg("2", "u1", "unsent", 2.0),
-            msg("3", "u1", "silent", 3.0),
-            msg("4", "other", "another chat", 4.0),
-        ]).unwrap();
-        s.mark_unsent("2").unwrap();
-        s.db.execute("UPDATE messages SET unsent=2 WHERE id='3'", []).unwrap();
-        assert_eq!(s.unread_open_target("u1").unwrap().as_deref(), Some("1"));
-        s.mark_unsent("1").unwrap();
-        assert_eq!(s.unread_open_target("u1").unwrap(), None);
-        assert_eq!(s.unread_open_target("empty").unwrap(), None);
-        let mut image = msg("5", "u1", "", 5.0);
-        image.content_type = "IMAGE".into();
-        s.upsert_messages(&[image]).unwrap();
-        assert_eq!(s.unread_open_target("u1").unwrap().as_deref(), Some("5"));
+            msg("1", "u1", "old", 1.0),
+            msg("2", "u1", "first unread", 2.0),
+            mine,
+            msg("4", "u1", "unsent", 4.0),
+            msg("5", "u1", "second unread", 5.0),
+            msg("6", "other", "another chat", 6.0),
+        ])
+        .unwrap();
+        s.mark_unsent("4").unwrap();
+        assert_eq!(s.first_unread("u1", 2).unwrap().as_deref(), Some("2"));
+        assert_eq!(s.first_unread("u1", 1).unwrap().as_deref(), Some("5"));
+        // More unread than stored: the oldest stored one from others.
+        assert_eq!(s.first_unread("u1", 9).unwrap().as_deref(), Some("1"));
+        assert_eq!(s.first_unread("u1", 0).unwrap(), None);
+        assert_eq!(s.first_unread("empty", 3).unwrap(), None);
     }
 
     #[test]

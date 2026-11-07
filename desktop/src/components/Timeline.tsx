@@ -29,6 +29,7 @@ export function Timeline({
   members,
   people,
   search,
+  unreadFrom,
 }: {
   messages: Message[];
   /** The first page is still loading (nothing cached yet). */
@@ -41,6 +42,9 @@ export function Timeline({
   members?: ChatMember[];
   people: Record<string, { picture: string | null }>;
   search: { query: string; hits: string[]; index: number } | null;
+  /** The first message that was unread when the chat opened: LINE draws its
+   *  unread mark above it and opens the chat there (`lq1/x.java`). */
+  unreadFrom?: string | null;
 }) {
   const scroller = useRef<HTMLDivElement>(null);
   const focusId = useUi((s) => s.focusMessageId);
@@ -144,20 +148,39 @@ export function Timeline({
     scroller.current?.scrollTo({ top: scroller.current.scrollHeight });
   };
 
+  // Open at the unread mark, once, unless a message or search hit was asked
+  // for. Fewer than a screen of unread messages leaves the view at the bottom.
+  const unreadShown = useRef<string | null>(null);
+  useLayoutEffect(() => {
+    if (!unreadFrom || unreadShown.current === unreadFrom || focusId || currentHit) return;
+    const node = scroller.current?.querySelector(`[data-unread-mark]`);
+    if (!node) return;
+    unreadShown.current = unreadFrom;
+    const el = scroller.current!;
+    const top = node.getBoundingClientRect().top - el.getBoundingClientRect().top + el.scrollTop - 8;
+    if (top < el.scrollHeight - el.clientHeight) {
+      pinned.current = false;
+      autoUntil.current = Date.now() + 100;
+      el.scrollTop = top;
+    }
+  }, [unreadFrom, rows.length, focusId, currentHit]);
+
   // ⌘K or a deep link asked for a message; in-chat search steps through hits.
   const target = currentHit ?? focusId;
-  // The target may precede a full page of unsent messages.
+  // A message asked for, or the first unread one, may be older than the
+  // loaded page: load older pages until it arrives, 20 at most.
+  const wanted = target ? (target === focusId ? target : null) : unreadShown.current !== unreadFrom ? unreadFrom : null;
   useEffect(() => {
-    if (target !== previousTarget.current) {
-      previousTarget.current = target;
+    if (wanted !== previousTarget.current) {
+      previousTarget.current = wanted ?? null;
       focusLoads.current = 0;
     }
-    if (target && target === focusId && focusLoads.current < 20 && !loading && !failed && !messages.some((m) => m.id === target) && older.state === "idle") {
+    if (wanted && focusLoads.current < 20 && !loading && !failed && !messages.some((m) => m.id === wanted) && older.state === "idle") {
       focusLoads.current += 1;
       loadOlder();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [target, loading, failed, messages, older.state]);
+  }, [wanted, loading, failed, messages, older.state]);
   useLayoutEffect(() => {
     if (!target) return;
     const node = scroller.current?.querySelector(`[data-message="${CSS.escape(target)}"]`);
@@ -202,6 +225,13 @@ export function Timeline({
                   <span className="chip-text rounded-full bg-date-chip px-3 py-[5px] text-[12px] leading-[15px]">
                     {dayHeader(r.message.createdTime)}
                   </span>
+                </div>
+              )}
+              {unreadFrom && (r.message.id === unreadFrom || r.photos?.some((p) => p.id === unreadFrom)) && (
+                <div data-unread-mark className="flex items-center gap-3 pt-[18px] text-[12px] text-secondary">
+                  <span className="h-px flex-1 bg-current opacity-30" />
+                  ข้อความที่ยังไม่ได้อ่าน
+                  <span className="h-px flex-1 bg-current opacity-30" />
                 </div>
               )}
               {r.notice ? (

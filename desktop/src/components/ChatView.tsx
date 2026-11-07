@@ -10,7 +10,7 @@ import { api, errorText, messageLimit, q, queryClient, setMessageLimit, useChatL
 import { adjacentChat, isGroup, isKeepMemo } from "../lib/chatList";
 import { findHits } from "../lib/inChatSearch";
 import { closeChat, openChat } from "../lib/nav";
-import { dismissTop, notice, setUi, ui } from "../lib/ui";
+import { dismissTop, notice, ui } from "../lib/ui";
 import { Announcements } from "./Announcements";
 import { HeaderMenu } from "./ChatActions";
 import { Composer, type ComposerHandle } from "./Composer";
@@ -75,6 +75,8 @@ export function ChatView({ chatId, main }: { chatId: string; main: boolean }) {
   });
   const [dragging, setDragging] = useState(false);
   const [uploading, setUploading] = useState(false);
+  // LINE's unread mark: the first message that was unread when the chat opened.
+  const [unreadFrom, setUnreadFrom] = useState<string | null>(null);
   const me = session?.profile?.mid ?? "";
   const signedIn = session?.state === "signed_in";
 
@@ -83,13 +85,14 @@ export function ChatView({ chatId, main }: { chatId: string; main: boolean }) {
   useEffect(() => {
     if (main) api.setFocus(chatId, document.hasFocus());
     let cancelled = false;
-    const explicitTarget = ui.state.focusMessageId;
+    setUnreadFrom(null);
     const t = setTimeout(() => {
-      api.openChat(chatId).then((target) => {
-        if (!cancelled && target && !explicitTarget && !ui.state.focusMessageId) {
-          setUi({ focusMessageId: target });
-        }
-      }).catch(() => {});
+      api
+        .openChat(chatId)
+        .then((first) => {
+          if (!cancelled) setUnreadFrom(first);
+        })
+        .catch(() => {});
     }, 150);
     setStickers(false);
     setSearch({ open: false, query: "", debounced: "", index: 0 });
@@ -337,6 +340,7 @@ export function ChatView({ chatId, main }: { chatId: string; main: boolean }) {
         ctx={ctx}
         members={members}
         people={people}
+        unreadFrom={unreadFrom}
         search={search.open && search.debounced.trim() ? { query: search.debounced, hits, index: search.index } : null}
       />
       {stickers && <StickerPanel chatId={chatId} onClose={() => setStickers(false)} />}
