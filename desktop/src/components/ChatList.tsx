@@ -3,7 +3,7 @@ import { Menu } from "@base-ui/react/menu";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api, errorText, useChatList, useSession } from "../lib/api";
 import { clickEndsDrag, isRecent, markRecent, moving, pressChat, useChatDrag } from "../lib/chatDrag";
-import { filterChats, folderName, folderOf, groupRows, isKeepMemo, type ListRow, listPreview } from "../lib/chatList";
+import { filterChats, folderName, folderOf, groupRows, isKeepMemo, type ListRow, listPreview, looksUnread } from "../lib/chatList";
 import { openChat } from "../lib/nav";
 import { listLabel } from "../lib/time";
 import type { Chat, ChatList, Workspace } from "../lib/types";
@@ -243,7 +243,7 @@ function Tabs() {
   ];
   const unreadIn = (id: ChatFilter) => {
     if (!list || id === "all") return false;
-    return filterChats(list, id, "recent", "").some((c) => c.unread > 0);
+    return filterChats(list, id, "recent", "").some(looksUnread);
   };
   return (
     <Ctx
@@ -542,6 +542,12 @@ export function ChatRow({
               <Preview text={listPreview(chat.preview)} />
             </span>
             <Badge count={chat.unread} className={chat.muted ? "bg-secondary!" : ""} />
+            {chat.markedUnread && chat.unread <= 0 && (
+              <span
+                aria-label="ทำเครื่องหมายว่ายังไม่ได้อ่าน"
+                className={`mt-1.5 h-2.5 w-2.5 shrink-0 rounded-full ${chat.muted ? "bg-secondary" : "bg-line-green"}`}
+              />
+            )}
           </div>
         </div>
       </div>

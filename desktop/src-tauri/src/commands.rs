@@ -150,8 +150,11 @@ pub async fn open_chat(state: S<'_>, chat_id: String) -> R<Option<String>> {
     } else {
         None
     };
+    let unmarked = s.store().set_marked_unread(&chat_id, false).map_err(err)?;
     if had_unread {
         s.store().set_unread(&chat_id, 0).map_err(err)?;
+    }
+    if had_unread || unmarked {
         s.chats_changed();
     }
     if s.demo {
@@ -185,6 +188,7 @@ async fn acknowledge(state: &Arc<AppState>, chat_id: &str) {
 pub async fn mark_read(state: S<'_>, chat_id: String) -> R<()> {
     let s = state.inner().clone();
     let _ = s.store().set_unread(&chat_id, 0);
+    let _ = s.store().set_marked_unread(&chat_id, false);
     s.chats_changed();
     if !s.demo {
         acknowledge(&s, &chat_id).await;
@@ -193,11 +197,13 @@ pub async fn mark_read(state: S<'_>, chat_id: String) -> R<()> {
     Ok(())
 }
 
-/// Keep a chat visibly unread until the user opens it again.
+/// LAAB's "mark as unread": a dot in the chat list until the chat is opened
+/// here. LINE has no such state, so nothing is sent and the count is kept.
 #[tauri::command]
 pub fn mark_unread(state: S<'_>, chat_id: String) -> R<()> {
-    state.store().mark_unread(&chat_id).map_err(err)?;
-    state.chats_changed();
+    if state.store().set_marked_unread(&chat_id, true).map_err(err)? {
+        state.chats_changed();
+    }
     Ok(())
 }
 

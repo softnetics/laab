@@ -96,7 +96,7 @@ impl Store {
             ("chats", "synced", "REAL"),
             // A hidden chat stays out of the list until it gets a newer message.
             ("chats", "hidden_at", "REAL"),
-            // Set by "mark as unread": keeps the badge until the chat is read.
+            // LAAB's own "mark as unread", display only (see `Chat::marked_unread`).
             ("chats", "marked_unread", "INTEGER NOT NULL DEFAULT 0"),
         ] {
             self.add_column_if_missing(table, column, definition)?;
@@ -225,7 +225,7 @@ impl Store {
             tx.execute(
                 "INSERT INTO chats (id,name,kind,preview,activity,unread,avatar,muted,picture,member_count) VALUES (?,?,?,?,?,?,?,?,?,?)
                  ON CONFLICT(id) DO UPDATE SET name=excluded.name, kind=excluded.kind, preview=excluded.preview, activity=excluded.activity,
-                 unread=CASE WHEN chats.marked_unread=1 THEN MAX(excluded.unread, 1) ELSE excluded.unread END, avatar=COALESCE(excluded.avatar, chats.avatar), muted=excluded.muted,
+                 unread=excluded.unread, avatar=COALESCE(excluded.avatar, chats.avatar), muted=excluded.muted,
                  picture=COALESCE(excluded.picture, chats.picture), member_count=COALESCE(excluded.member_count, chats.member_count)",
                 params![c.id, c.name, c.kind, c.preview, c.last_activity, c.unread, c.avatar, c.muted as i64, c.picture, c.member_count],
             )?;
@@ -246,7 +246,7 @@ impl Store {
 
     fn chats_where<P: rusqlite::Params>(&self, filter: &str, params: P) -> Result<Vec<Chat>> {
         let mut stmt = self.db.prepare(&format!(
-            "SELECT id,name,kind,preview,activity,unread,avatar,muted,picture,member_count FROM chats {filter} ORDER BY activity DESC"
+            "SELECT id,name,kind,preview,activity,unread,avatar,muted,picture,member_count,marked_unread FROM chats {filter} ORDER BY activity DESC"
         ))?;
         let rows = stmt.query_map(params, |r| {
             Ok(Chat {
@@ -260,6 +260,7 @@ impl Store {
                 muted: r.get::<_, i64>(7)? != 0,
                 picture: r.get(8)?,
                 member_count: r.get(9)?,
+                marked_unread: r.get::<_, i64>(10)? != 0,
             })
         })?;
         Ok(rows.collect::<rusqlite::Result<_>>()?)
@@ -324,22 +325,21 @@ impl Store {
         Ok(())
     }
 
-    /// Sets the unread count. Reading the chat also clears a manual mark.
     pub fn set_unread(&self, chat_id: &str, unread: i64) -> Result<()> {
         self.db.execute(
-            "UPDATE chats SET unread=?, marked_unread=0 WHERE id=?",
+            "UPDATE chats SET unread=? WHERE id=?",
             params![unread, chat_id],
         )?;
         Ok(())
     }
 
-    /// Shows the chat as unread until it is read, whatever sync reports.
-    pub fn mark_unread(&self, chat_id: &str) -> Result<()> {
-        self.db.execute(
-            "UPDATE chats SET unread=MAX(unread, 1), marked_unread=1 WHERE id=?",
-            [chat_id],
-        )?;
-        Ok(())
+    /// LAAB's "mark as unread": a flag for the chat list only. Returns
+    /// whether it changed.
+    pub fn set_marked_unread(&self, chat_id: &str, marked: bool) -> Result<bool> {
+        Ok(self.db.execute(
+            "UPDATE chats SET marked_unread=? WHERE id=? AND marked_unread<>?",
+            params![marked as i64, chat_id, marked as i64],
+        )? > 0)
     }
 
     pub fn set_muted(&self, chat_id: &str, muted: bool) -> Result<()> {
@@ -1197,27 +1197,25 @@ mod tests {
     }
 
     #[test]
-    fn sync_keeps_a_manual_unread_mark_but_not_a_real_count_of_one() {
+    fn marking_unread_is_a_flag_that_sync_leaves_alone() {
         let mut s = Store::memory().unwrap();
         let mut c = chat("u1", "a");
         c.unread = 1;
         s.upsert_chats(&[c.clone()]).unwrap();
-        // Read on the phone: the next sync reports 0 and the badge goes.
+        // Read on the phone: the next sync reports 0 and the count follows.
         c.unread = 0;
         s.upsert_chats(&[c.clone()]).unwrap();
         assert_eq!(s.chat("u1").unwrap().unwrap().unread, 0);
-        // Marked unread here: sync keeps at least 1, and follows a higher count.
-        s.mark_unread("u1").unwrap();
+        // The mark changes no count, and survives sync and reads elsewhere.
+        assert!(s.set_marked_unread("u1", true).unwrap());
+        assert!(!s.set_marked_unread("u1", true).unwrap());
+        c.unread = 3;
         s.upsert_chats(&[c.clone()]).unwrap();
-        assert_eq!(s.chat("u1").unwrap().unwrap().unread, 1);
-        c.unread = 5;
-        s.upsert_chats(&[c.clone()]).unwrap();
-        assert_eq!(s.chat("u1").unwrap().unwrap().unread, 5);
-        // Opening the chat clears the mark.
         s.set_unread("u1", 0).unwrap();
-        c.unread = 0;
-        s.upsert_chats(&[c]).unwrap();
-        assert_eq!(s.chat("u1").unwrap().unwrap().unread, 0);
+        let row = s.chat("u1").unwrap().unwrap();
+        assert_eq!((row.unread, row.marked_unread), (0, true));
+        assert!(s.set_marked_unread("u1", false).unwrap());
+        assert!(!s.chat("u1").unwrap().unwrap().marked_unread);
     }
 
     #[test]

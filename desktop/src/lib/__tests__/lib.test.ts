@@ -225,6 +225,8 @@ describe("chat list", () => {
   it("puts pins first and sorts unread first when asked", () => {
     expect(filterChats(list, "all", "recent", "").map((c) => c.id)).toEqual(["u2", "u1", "c1"]);
     expect(filterChats(list, "all", "unread", "").map((c) => c.id)).toEqual(["u2", "c1", "u1"]);
+    const marked: ChatList = { ...list, chats: list.chats.map((c) => (c.id === "u1" ? { ...c, markedUnread: true } : c)) };
+    expect(filterChats(marked, "all", "unread", "").map((c) => c.id)).toEqual(["u2", "u1", "c1"]);
     expect(filterChats(list, "groups", "recent", "").map((c) => c.id)).toEqual(["c1"]);
     expect(listPreview("เขา: hi")).toBe("hi");
   });

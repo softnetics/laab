@@ -13,6 +13,8 @@ export interface Chat {
   muted: boolean;
   picture: string | null;
   memberCount: number | null;
+  /** LAAB's own "mark as unread": shown as a dot, never sent to LINE. */
+  markedUnread?: boolean;
 }
 
 export interface ChatMember {
