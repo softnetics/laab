@@ -1,14 +1,15 @@
 import { describe, expect, it } from "vitest";
 import { compareIds, later, placement, readersOf } from "../reads";
-import { backspaceMention, composingQuery, insertMention, matching, present, targets, ALL_MEMBER } from "../mentions";
+import { backspaceMention, composingQuery, fromSpans, insertMention, matching, present, targets, ALL_MEMBER } from "../mentions";
 import { callBubbleLabel, chatEventText, noticeFor, readCall, readChatEvent, isBlank } from "../notices";
 import { buildRows } from "../timeline";
+import { bigSticonSize, isAnimated, sticons } from "../media";
 import { findHits, ranges } from "../inChatSearch";
-import { linkify, liffId } from "../links";
-import { adjacentChat, filterChats, folderName, groupRows, listPreview } from "../chatList";
-import { nextReaction, topTypes } from "../reactions";
+import { linkify, liffId, previewUrl } from "../links";
+import { adjacentChat, filterChats, folderName, groupRows, listPreview, requestBox } from "../chatList";
+import { nextReaction, paidEmoji, topTypes } from "../reactions";
 import { dayHeader, fullStamp, listLabel } from "../time";
-import { bigSticonSize, sticons } from "../media";
+import { joinPicker, outOfRange, pickerNow, splitPicker } from "../datetimePicker";
 import type { ChatList, Message } from "../types";
 
 const msg = (p: Partial<Message>): Message => ({
@@ -69,6 +70,18 @@ describe("mentions", () => {
     expect(present("@Arthi x", m)).toEqual([]);
     expect(backspaceMention("hi @Arthit", 10, m)).toEqual({ text: "hi ", caret: 3, mentions: [] });
   });
+  it("takes a sent message's mentions back into the composer to edit", () => {
+    const text = "@Arthit @All hi";
+    const m = fromSpans(text, [
+      { start: 8, end: 12, all: true },
+      { start: 0, end: 7, mid: "u1" },
+    ]);
+    expect(targets(text, m)).toEqual([
+      { start: 0, end: 7, mid: "u1" },
+      { start: 8, end: 12, all: true },
+    ]);
+    expect(fromSpans("hi there", [{ start: 0, end: 2, mid: "u1" }])).toEqual([]);
+  });
   it("matches members, All by either name", () => {
     const members = [ALL_MEMBER, { mid: "u1", name: "Arthit" }];
     expect(matching(members, "ทั้ง").map((m) => m.mid)).toEqual(["all"]);
@@ -85,6 +98,16 @@ describe("notices", () => {
     const done = readCall(msg({ contentType: "CALL", metadata: { TYPE: "V", RESULT: "NORMAL", DURATION: "3725000" } }))!;
     expect(done.kind).toBe("video");
     expect(callBubbleLabel(done, true)).toBe("1:02:05");
+    const busy = readCall(msg({ contentType: "CALL", metadata: { TYPE: "A", RESULT: "BUSY" } }))!;
+    expect(callBubbleLabel(busy, true)).toBe("สายไม่ว่าง");
+    expect(callBubbleLabel(busy, false)).toBe("สายที่ไม่ได้รับ");
+    expect(callBubbleLabel(readCall(msg({ contentType: "CALL", metadata: { RESULT: "FAIL" } }))!, true)).toBe("โทรไม่สำเร็จ");
+    expect(callBubbleLabel(readCall(msg({ contentType: "CALL", metadata: { RESULT: "INFO" } }))!, true)).toBe("การโทร");
+    const invite = readCall(msg({ contentType: "CALL", metadata: { GC_EVT_TYPE: "I", GC_MEDIA_TYPE: "VIDEO" } }))!;
+    expect([invite.group, invite.kind, callBubbleLabel(invite, false)]).toEqual([true, "video", "เชิญเข้าร่วมการโทรแบบกลุ่ม"]);
+    // Older call logs carry voip… keys.
+    const legacy = readCall(msg({ contentType: "CALL", metadata: { voipType: "V", voipResult: "NORMAL", voipDuration: "61000" } }))!;
+    expect([legacy.kind, callBubbleLabel(legacy, false)]).toEqual(["video", "01:01"]);
   });
   it("turns group events and unsends into notice rows", () => {
     const ev = readChatEvent(msg({ contentType: "CHATEVENT", metadata: { LOC_KEY: "C_MI", LOC_ARGS: "me\u001eu2" } }))!;
@@ -170,7 +193,36 @@ describe("in-chat search", () => {
   });
 });
 
+describe("sticons", () => {
+  it("reads REPLACE resources in order and drops bad ones", () => {
+    const replace = JSON.stringify({
+      sticon: {
+        resources: [
+          { S: 6, E: 12, productId: "5ac1bfd5040ab15980c9b435", sticonId: "002", version: 3, resourceType: "ANIMATION" },
+          { S: 0, E: 5, productId: "5ac1bfd5040ab15980c9b435", sticonId: "001", version: 1, resourceType: "STATIC" },
+          { S: 4, E: 7, productId: "p", sticonId: "overlaps" },
+          { S: 10, E: 99, productId: "p", sticonId: "past-the-end" },
+          { S: 0, E: 1, productId: "../x", sticonId: "1" },
+        ],
+      },
+    });
+    const got = sticons({ REPLACE: replace }, 12);
+    expect(got.map((s) => [s.start, s.end, s.sticonId, s.animated])).toEqual([
+      [0, 5, "001", false],
+      [6, 12, "002", true],
+    ]);
+    expect(got[1].version).toBe(3);
+    expect(sticons({}, 5)).toEqual([]);
+    expect(sticons({ REPLACE: "not json" }, 5)).toEqual([]);
+  });
+});
+
 describe("links", () => {
+  it("previews the first web link only", () => {
+    expect(previewUrl("hi line://app/1 then www.a.com and https://b.com")).toBe("https://www.a.com");
+    expect(previewUrl("only line://nv/chat")).toBeNull();
+    expect(previewUrl("no links")).toBeNull();
+  });
   it("splits urls out of text and spots LIFF links", () => {
     expect(linkify("see https://a.com/x. ok").map((s) => s.url ?? null)).toEqual([null, "https://a.com/x", null]);
     expect(liffId("https://liff.line.me/1234567-AbCdEf12/x")).toBe("1234567-AbCdEf12");
@@ -230,6 +282,17 @@ describe("chat list", () => {
     expect(filterChats(list, "groups", "recent", "").map((c) => c.id)).toEqual(["c1"]);
     expect(listPreview("เขา: hi")).toBe("hi");
   });
+  it("keeps message requests in their own box", () => {
+    const withRequest: ChatList = {
+      ...list,
+      chats: [...list.chats, { ...list.chats[0], id: "u9", name: "Stranger", request: true, unread: 2 }],
+    };
+    expect(filterChats(withRequest, "all", "recent", "").map((c) => c.id)).not.toContain("u9");
+    expect(filterChats(withRequest, "friends", "recent", "").map((c) => c.id)).not.toContain("u9");
+    expect(filterChats(withRequest, "requests", "recent", "").map((c) => c.id)).toEqual(["u9"]);
+    expect(requestBox(withRequest)).toEqual({ count: 1, unread: true });
+    expect(requestBox(list)).toEqual({ count: 0, unread: false });
+  });
   it("groups a folder's chats under it, where its newest chat would be", () => {
     const foldered: ChatList = { ...list, workspaces: [{ id: "f", name: "", position: 1 }], pins: { main: [], f: ["c1", "u2"] } };
     const chats = filterChats(foldered, "all", "recent", "");
@@ -243,6 +306,14 @@ describe("chat list", () => {
     expect(adjacentChat(["a", "b"], null, 1)).toBe("a");
     expect(adjacentChat(["a", "b"], null, -1)).toBe("b");
     expect(adjacentChat(["a", "b"], "b", 1)).toBeNull();
+  });
+});
+
+describe("paid reactions", () => {
+  it("reads the LINE emoji of a paid reaction", () => {
+    expect(paidEmoji("PAID:5ac1:007:3:1")).toEqual({ productId: "5ac1", emojiId: "007", version: 3, animated: true });
+    expect(paidEmoji("PAID")).toBeNull();
+    expect(paidEmoji("LOVE")).toBeNull();
   });
 });
 
@@ -265,6 +336,39 @@ describe("reactions and time", () => {
     expect(dayHeader(new Date(2026, 9, 19).getTime(), now)).toBe("19 ต.ค.");
     expect(dayHeader(new Date(2025, 9, 19).getTime(), now)).toBe("19 ต.ค. 2025");
     expect(fullStamp(new Date(2026, 9, 29, 7, 40).getTime())).toBe("29 ต.ค. 2026 7.40 น.");
+  });
+});
+
+describe("animated photos", () => {
+  const photo = (info?: string) => msg({ contentType: "IMAGE", metadata: info ? { MEDIA_CONTENT_INFO: info } : {} });
+  it("plays a GIF that LINE marks animated", () => {
+    expect(isAnimated(photo('{"category":"original","extension":"gif","animated":true}'))).toBe(true);
+    expect(isAnimated(photo('{"extension":"GIF"}'))).toBe(true);
+  });
+  it("keeps other photos still", () => {
+    expect(isAnimated(photo('{"category":"original","extension":"jpg"}'))).toBe(false);
+    expect(isAnimated(photo("not json"))).toBe(false);
+    expect(isAnimated(photo())).toBe(false);
+    expect(isAnimated(msg({ contentType: "VIDEO", metadata: { MEDIA_CONTENT_INFO: '{"animated":true}' } }))).toBe(false);
+  });
+});
+
+describe("datetime picker buttons", () => {
+  it("formats now in the mode's format", () => {
+    const d = new Date(2026, 10, 6, 9, 5);
+    expect(pickerNow("date", d)).toBe("2026-11-06");
+    expect(pickerNow("time", d)).toBe("09:05");
+    expect(pickerNow("datetime", d)).toBe("2026-11-06T09:05");
+  });
+  it("splits and joins the fields", () => {
+    expect(splitPicker("datetime", "2026-11-06T09:05")).toEqual({ date: "2026-11-06", time: "09:05" });
+    expect(joinPicker("datetime", "2026-11-06", "09:05")).toBe("2026-11-06T09:05");
+    expect(joinPicker("time", "", "21:30")).toBe("21:30");
+  });
+  it("says when a value is out of the bot's range", () => {
+    expect(outOfRange("time", "09:00", "10:00", null)).toBe("เลือกได้ตั้งแต่ 10.00 น.");
+    expect(outOfRange("time", "19:00", null, "18:30")).toBe("เลือกได้ถึง 18.30 น.");
+    expect(outOfRange("time", "12:00", "10:00", "18:00")).toBeNull();
   });
 });
 

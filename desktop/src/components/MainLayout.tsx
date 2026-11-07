@@ -1,3 +1,4 @@
+import { ForwardSheet } from "./ForwardSheet";
 import { useHotkey } from "@tanstack/react-hotkeys";
 import { listen } from "@tauri-apps/api/event";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
@@ -70,10 +71,14 @@ export function MainLayout({ chatId }: { chatId: string | null }) {
   }, [session?.state]);
   useEffect(foldIfNarrow, []);
 
-  // Banners and Raycast deep links open a chat.
+  // Banners and Raycast deep links open a chat. A message request opens
+  // with the request box listed, as LINE's banner opens its box.
+  const chatListRef = useRef(list);
+  chatListRef.current = list;
   useEffect(() => {
     const off = listen<{ chatId: string; messageId?: string | null }>("open-chat", (e) => {
       if (ui.state.searchOpen) setUi({ searchOpen: false });
+      if (chatListRef.current?.chats.some((c) => c.id === e.payload.chatId && c.request)) setUi({ filter: "requests", listQuery: "" });
       openChat(e.payload.chatId, { messageId: e.payload.messageId ?? null });
     });
     return () => {
@@ -139,7 +144,9 @@ export function MainLayout({ chatId }: { chatId: string | null }) {
           onClick={() => (folded ? unfoldChat() : foldChat(RAIL + 2, width)).catch((e) => notice(errorText(e)))}
           className="absolute top-[70px] -left-3.5 z-20 grid h-9 w-3.5 place-items-center rounded-l-md bg-separator/70 text-secondary hover:bg-separator"
         >
-          <ChevronIcon dir={folded ? "left" : "right"} size={10} />
+          {/* Points the way the window edge moves: left to hide the chat, right
+              to bring it back. */}
+          <ChevronIcon dir={folded ? "right" : "left"} size={10} />
         </button>
       </div>
       <main
@@ -162,6 +169,7 @@ export function MainLayout({ chatId }: { chatId: string | null }) {
       <ProfileSheet main />
       <LiffConsent />
       <SharePicker />
+      <ForwardSheet />
       {chatId && <RawInspector chatId={chatId} />}
     </div>
   );

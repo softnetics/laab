@@ -11,18 +11,23 @@
 use std::sync::Arc;
 
 use anyhow::{Result, anyhow, bail};
-use line_rs::client::calendar::{EventInput, EventTarget, new_event_id};
+use line_rs::client::TalkMessage;
+use line_rs::client::calendar::{
+    self as cal, EventInput, EventTarget, Frequency, InvitationStatus, Reminder, new_event_id,
+};
 use line_rs::link::LineLink;
 use line_rs::rest::translate::TranslateText;
 use line_rs::service::moa::{DownloadPhotoOptions, GetAlbumsOptions, GetPhotosOptions};
 use line_rs::service::relation::AddFriendByMidOptions;
+use line_rs::thrift::Value;
 use line_rs::timeline::{CreatePost, ListPost, PostMedia};
 use line_rs::tv;
 use serde::Serialize;
 use serde_json::Value as Json;
 
-use crate::convert::{num_of, str_of};
+use crate::convert::{self, num_of, str_of};
 use crate::line::{self, Line};
+use crate::model::MentionSpan;
 use crate::state::{AppState, now_ms};
 
 async fn line(state: &Arc<AppState>) -> Result<Arc<Line>> {
@@ -35,6 +40,19 @@ async fn talk_seq(l: &Line) -> Result<i64> {
 
 // -- messages ---------------------------------------------------------------
 
+/// LINE's refusal of an edit or unsend, in Thai when it says why.
+fn refused(e: line_rs::Error) -> anyhow::Error {
+    use line_rs::ErrorCode as C;
+    let text = match e.error_code() {
+        Some(C::NotPremium) => "การแก้ไขข้อความใช้ได้เฉพาะสมาชิก LINE Premium",
+        Some(C::MessageNotEditable) => "ข้อความนี้แก้ไขไม่ได้",
+        Some(C::MessageNotEditableTimelimit) => "เลยเวลาที่ LINE ให้แก้ไขข้อความนี้แล้ว",
+        Some(C::MessageNotDestructible) => "ยกเลิกข้อความนี้ไม่ได้แล้ว LINE ให้ยกเลิกได้ภายใน 24 ชั่วโมงหลังส่ง",
+        _ => return e.into(),
+    };
+    anyhow!(text)
+}
+
 /// Unsend one of our messages for everyone.
 pub async fn unsend(state: &Arc<AppState>, message_id: &str) -> Result<()> {
     let l = line(state).await?;
@@ -43,41 +61,69 @@ pub async fn unsend(state: &Arc<AppState>, message_id: &str) -> Result<()> {
         .base
         .talk()
         .call("unsendMessage", tv!({"seq": seq, "messageId": message_id}))
-        .await?;
+        .await
+        .map_err(refused)?;
     line::apply_unsend(state, message_id);
     Ok(())
 }
 
-/// Replace the text of one of our messages (Premium; unverified).
+/// The message to edit, with `mentions` as its `MENTION` metadata: line-rs
+/// keeps the metadata it finds, and the old offsets would be wrong for the
+/// new text.
+fn edit_target(raw: Option<Value>, me: &str, chat_id: &str, message_id: &str, mentions: &[MentionSpan]) -> Value {
+    let mut raw = raw.unwrap_or_else(|| tv!({"id": message_id, "contentType": "NONE"}));
+    if raw["from"].as_str().is_none_or(str::is_empty) {
+        raw.insert("from", me);
+    }
+    if raw["to"].as_str().is_none_or(str::is_empty) {
+        raw.insert("to", chat_id);
+    }
+    let mut meta: line_rs::thrift::Map = raw["contentMetadata"]
+        .entries()
+        .into_iter()
+        .filter(|(k, _)| k != "MENTION")
+        .map(|(k, v)| (k, v.clone()))
+        .collect();
+    if let Some(m) = convert::mention_metadata(mentions) {
+        meta.insert("MENTION".into(), Value::String(m));
+    }
+    raw.insert("contentMetadata", Value::Struct(meta));
+    raw
+}
+
+/// Replace the text of one of our messages (Premium; unverified). line-rs
+/// edits the stored message: same chat type,
+/// encrypted again if the original was or the chat now uses Letter Sealing.
 pub async fn edit(
     state: &Arc<AppState>,
     chat_id: &str,
     message_id: &str,
     text: &str,
+    mentions: &[MentionSpan],
 ) -> Result<()> {
     if text.trim().is_empty() {
         bail!("empty_message");
     }
     let l = line(state).await?;
-    l.client
-        .base
-        .talk()
-        .edit_message(
-            tv!({"from": l.me.clone(), "to": chat_id, "id": message_id, "text": text,
-            "contentType": "NONE", "contentMetadata": {}}),
-        )
-        .await?;
+    let raw = edit_target(line::stored_raw(state, message_id), &l.me, chat_id, message_id, mentions);
+    TalkMessage::new(l.client.clone(), raw)
+        .edit(text)
+        .await
+        .map_err(|e| {
+            if e.error_code() == Some(line_rs::ErrorCode::NotPremium) {
+                line::remember_premium(state, false);
+            }
+            refused(e)
+        })?;
     let _ = line::fetch_history(state, chat_id).await;
     Ok(())
 }
 
-/// Translate `text` into `target` (e.g. `th`). Desktop REST call; unverified.
+/// Translate `text` into `target` (LINE's code: `th`, `en`, `zh-TW`, …).
+/// Desktop REST call; unverified.
 pub async fn translate(state: &Arc<AppState>, text: &str, target: &str) -> Result<String> {
     let l = line(state).await?;
-    let reply = l
-        .client
-        .base
-        .rest()
+    let reply = translate_client(&l)
         .translate(&TranslateText::new(text, target), None)
         .await?;
     reply["translatedText"]
@@ -88,36 +134,199 @@ pub async fn translate(state: &Arc<AppState>, text: &str, target: &str) -> Resul
         .ok_or_else(|| anyhow!("translate_empty"))
 }
 
+/// What `copy.obs` needs to send a stored E2EE media message to `to`
+/// again: its object, the key from its decrypted `payload`, and the size,
+/// name, length and picture size LINE shows. `None` for anything else.
+fn forward_request(to: &str, content_type: &str, raw: &Value, payload: &Json) -> Option<line_rs::obs::ForwardMedia> {
+    use line_rs::obs::{ForwardMedia, MediaOptions, ObjType};
+    let meta = &raw["contentMetadata"];
+    let text = |key: &str| meta[key].as_str().filter(|v| !v.is_empty());
+    let info: Json = text("MEDIA_CONTENT_INFO")
+        .and_then(|i| serde_json::from_str(i).ok())
+        .unwrap_or_default();
+    let o_type = match content_type {
+        "IMAGE" if info["animated"] == true || info["extension"] == "gif" => ObjType::Gif,
+        "IMAGE" => ObjType::Image,
+        "VIDEO" => ObjType::Video,
+        "AUDIO" => ObjType::Audio,
+        "FILE" => ObjType::File,
+        _ => return None,
+    };
+    let mut opts = MediaOptions::new();
+    if let Some(ms) = text("DURATION").and_then(|d| d.parse().ok()) {
+        opts = opts.duration_ms(ms);
+    }
+    if let (Some(w), Some(h)) = (info["width"].as_u64(), info["height"].as_u64()) {
+        opts = opts.size(w as u32, h as u32);
+    }
+    let file_name = payload["fileName"]
+        .as_str()
+        .filter(|n| !n.is_empty())
+        .map(str::to_string)
+        .or_else(|| info["extension"].as_str().map(|ext| format!("image.{ext}")));
+    Some(ForwardMedia {
+        to: to.to_string(),
+        o_type,
+        src_oid: text("OID")?.to_string(),
+        src_message_id: raw["id"].as_str().filter(|v| !v.is_empty())?.to_string(),
+        key_material: payload["keyMaterial"].as_str().filter(|k| !k.is_empty())?.to_string(),
+        file_size: text("FILE_SIZE").and_then(|s| s.parse().ok()).unwrap_or(0),
+        file_name,
+        opts,
+    })
+}
+
+/// Send a stored E2EE media message to `to` by having LINE copy its
+/// encrypted object (`copy.obs`), so nothing is
+/// downloaded or uploaded again.
+async fn forward_by_copy(state: &AppState, l: &Line, message_id: &str, content_type: &str, to: &str) -> Result<()> {
+    let raw = line::stored_raw(state, message_id).ok_or_else(|| anyhow!("no stored message"))?;
+    if raw["chunks"].as_list().is_none_or(|c| c.is_empty()) {
+        bail!("not an E2EE message");
+    }
+    let payload = l.client.base.decrypt_e2ee_data_message(&raw).await?;
+    let request = forward_request(to, content_type, &raw, &payload)
+        .ok_or_else(|| anyhow!("nothing to copy"))?;
+    l.client.base.obs().forward_media(request).await?;
+    Ok(())
+}
+
+/// The REST client translations go through, one per LINE session, so the
+/// channel token it gets (LINE's translate channel, or the timeline one it
+/// falls back to) lasts from one translation to the next.
+fn translate_client(l: &Line) -> Arc<line_rs::rest::RestClient> {
+    static CLIENT: std::sync::Mutex<Option<Arc<line_rs::rest::RestClient>>> = std::sync::Mutex::new(None);
+    let mut slot = CLIENT.lock().unwrap();
+    // The same session: the client wraps this very BaseClient.
+    if let Some(c) = slot.as_ref().filter(|c| std::ptr::eq(&**c.client(), &*l.client.base)) {
+        return c.clone();
+    }
+    let c = Arc::new(l.client.base.rest());
+    *slot = Some(c.clone());
+    c
+}
+
 /// Keep Memo is the chat with yourself; "save to Keep" sends a copy there.
+/// Media is copied on LINE's side when it can be, else downloaded and sent
+/// again.
 pub async fn save_to_keep(state: &Arc<AppState>, chat_id: &str, message_id: &str) -> Result<()> {
+    let l = line(state).await?;
+    let me = l.me.clone();
+    drop(l);
+    let kind = state
+        .store()
+        .message(message_id)?
+        .map(|m| m.content_type)
+        .unwrap_or_default();
+    if kind == "STICKER" {
+        bail!("ยังบันทึกสติกเกอร์ลง Keep ไม่ได้");
+    }
+    send_copy(state, chat_id, message_id, &me).await
+}
+
+/// Forward a message to the chats `to`, as LINE's "แชร์" does. Returns
+/// each chat it couldn't reach, with why.
+pub async fn forward(state: &Arc<AppState>, chat_id: &str, message_id: &str, to: &[String]) -> Vec<(String, String)> {
+    let mut failed = Vec::new();
+    for target in to {
+        match send_copy(state, chat_id, message_id, target).await {
+            Ok(()) => {
+                let _ = line::fetch_history(state, target).await;
+            }
+            Err(e) => failed.push((target.clone(), e.to_string())),
+        }
+    }
+    failed
+}
+
+/// Send a copy of a stored message to `to`: text without its mentions
+/// (they name people of another chat), a sticker, a contact card, or
+/// media copied on LINE's side (`copy.obs`) and, when that fails, sent
+/// again from the file.
+async fn send_copy(state: &Arc<AppState>, chat_id: &str, message_id: &str, to: &str) -> Result<()> {
+    use line_rs::client::MessageInput;
     let l = line(state).await?;
     let m = state
         .store()
         .message(message_id)?
         .ok_or_else(|| anyhow!("message_not_found"))?;
+    let chat = l.chat(to);
     match m.content_type.as_str() {
-        "IMAGE" | "VIDEO" | "FILE" => {
+        kind @ ("IMAGE" | "VIDEO" | "AUDIO" | "FILE") => {
+            match forward_by_copy(state, &l, message_id, kind, to).await {
+                Ok(()) => return Ok(()),
+                Err(e) => tracing::info!("copy.obs failed, sending the file again: {e}"),
+            }
             let path = crate::media::download_file(state, chat_id, message_id, m.file_name.clone())
                 .await?;
             let data = crate::vault::read(&path)?;
             let name = m.file_name.clone().unwrap_or_else(|| "file".into());
-            let chat = l.chat(&l.me);
-            let sent = match m.content_type.as_str() {
+            let duration = m.duration_ms.and_then(|d| u64::try_from(d).ok());
+            let sent = match kind {
                 "IMAGE" => chat.send_image(data, Some(&name)).await,
-                "VIDEO" => chat.send_video(data, Some(&name), None).await,
+                "VIDEO" => chat.send_video(data, Some(&name), duration).await,
+                "AUDIO" => chat.send_audio(data, Some(&name), duration).await,
                 _ => chat.send_file(data, &name).await,
             };
             sent.map_err(|e| anyhow!("{e}"))?;
         }
-        "STICKER" => bail!("ยังบันทึกสติกเกอร์ลง Keep ไม่ได้"),
-        _ if !m.text.trim().is_empty() => {
-            l.client
-                .send_message(&l.me, line_rs::client::MessageInput::text(m.text.clone()))
-                .await?;
+        "STICKER" => {
+            let input = sticker_copy(&m).ok_or_else(|| anyhow!("ข้อความนี้ไม่มีสติกเกอร์ให้ส่งต่อ"))?;
+            l.client.send_message(to, input).await.map_err(refused_sticker)?;
         }
-        _ => bail!("ข้อความนี้ไม่มีเนื้อหาให้บันทึก"),
+        "CONTACT" => {
+            let mid = m.metadata.get("mid").filter(|v| !v.is_empty()).ok_or_else(|| anyhow!("ไม่มีรายชื่อให้ส่งต่อ"))?;
+            let name = m.metadata.get("displayName").cloned().unwrap_or_default();
+            chat.send_contact(mid, &name).await?;
+        }
+        _ if !m.text.trim().is_empty() => {
+            l.client.send_message(to, MessageInput::text(m.text.clone())).await?;
+        }
+        _ => bail!("ข้อความนี้ไม่มีเนื้อหาให้ส่งต่อ"),
     }
     Ok(())
+}
+
+/// A sticker message to send again: package, sticker, version and the
+/// option (animation, sound) recipients play it with.
+fn sticker_copy(m: &crate::model::Message) -> Option<line_rs::client::MessageInput> {
+    let id = m.sticker_id.as_deref().filter(|v| !v.is_empty())?;
+    let package = m.sticker_package.as_deref().filter(|v| !v.is_empty())?;
+    let version = m.sticker_version.as_deref().unwrap_or("1");
+    let mut input = line_rs::client::MessageInput::sticker(package, id, version).e2ee(false);
+    if let Some(opt) = m.metadata.get("STKOPT").filter(|v| !v.is_empty()) {
+        input = input.sticker_options(opt.clone());
+    }
+    Some(input)
+}
+
+fn refused_sticker(e: line_rs::Error) -> anyhow::Error {
+    if e.error_code() == Some(line_rs::ErrorCode::UserNotStickerOwner) {
+        anyhow!("สติกเกอร์นี้ไม่ได้อยู่ในบัญชีของคุณ จึงส่งต่อไม่ได้")
+    } else {
+        anyhow!("{e}")
+    }
+}
+
+/// Share someone's contact card with the chats `to`. Returns each chat it
+/// couldn't reach, with why.
+pub async fn share_contact(state: &Arc<AppState>, mid: &str, name: &str, to: &[String]) -> Vec<(String, String)> {
+    let mut failed = Vec::new();
+    for target in to {
+        let sent = async {
+            let l = line(state).await?;
+            l.chat(target).send_contact(mid, name).await?;
+            anyhow::Ok(())
+        }
+        .await;
+        match sent {
+            Ok(()) => {
+                let _ = line::fetch_history(state, target).await;
+            }
+            Err(e) => failed.push((target.clone(), e.to_string())),
+        }
+    }
+    failed
 }
 
 // -- chats ------------------------------------------------------------------
@@ -178,22 +387,24 @@ pub async fn announce(
     text: &str,
 ) -> Result<()> {
     let l = line(state).await?;
-    l.client
-        .base
-        .talk()
-        .call(
-            "createChatRoomAnnouncement",
-            tv!({"chatRoomMid": chat_id, "type": "MESSAGE",
-                "contents": {"text": text, "link": format!("line://nv/chatMsg?chatId={chat_id}&messageId={message_id}")}}),
-        )
-        .await?;
+    l.chat(chat_id).announce(message_id, text).await?;
     Ok(())
 }
 
 // -- people -----------------------------------------------------------------
 
+/// Block or unblock with RelationService (`blockRelation`,
+/// `unblockRelation`); the legacy Talk calls if it fails.
 pub async fn set_blocked(state: &Arc<AppState>, mid: &str, blocked: bool) -> Result<()> {
     let l = line(state).await?;
+    let relation = l.client.base.relation();
+    let result = if blocked {
+        relation.block_relation(mid).await
+    } else {
+        relation.unblock_relation(mid, None).await
+    };
+    let Err(e) = result else { return Ok(()) };
+    tracing::warn!("blockRelation/unblockRelation: {e}");
     let seq = talk_seq(&l).await?;
     let talk = l.client.base.talk();
     if blocked {
@@ -217,14 +428,60 @@ pub struct FoundContact {
     pub picture: Option<String>,
 }
 
-/// Find someone by LINE ID or a line.me / line:// profile link.
+/// A `GetContactV3Response`, or the legacy `Contact` (bare or under
+/// `contact`) of the old Talk lookups.
+fn found_contact(json: &Json) -> Option<FoundContact> {
+    if let Some(mid) = str_of(&json["targetUserMid"]) {
+        let detail = &json["targetProfileDetail"];
+        return Some(FoundContact {
+            name: str_of(&detail["profileName"]).unwrap_or_else(|| mid.clone()),
+            picture: str_of(&detail["picturePath"]),
+            mid,
+        });
+    }
+    let c = if json["contact"].is_null() { json } else { &json["contact"] };
+    let mid = str_of(&c["mid"])?;
+    Some(FoundContact {
+        name: str_of(&c["displayName"]).unwrap_or_else(|| mid.clone()),
+        picture: str_of(&c["picturePath"]),
+        mid,
+    })
+}
+
+/// Find someone by LINE ID or a line.me / line:// profile link, with
+/// `findContactBySearchIdOrTicketV3`.
+/// The legacy Talk lookups stay as a fallback.
 pub async fn find_contact(state: &Arc<AppState>, query: &str) -> Result<FoundContact> {
+    use line_rs::link::ProfileRef;
     let l = line(state).await?;
     let query = query.trim();
-    let raw = match LineLink::parse(query) {
-        Some(link @ LineLink::Profile(_)) => l.client.base.resolve_link(&link).await?,
+    let relation = l.client.base.relation();
+    let link = LineLink::parse(query);
+    let v3 = match &link {
+        Some(LineLink::Profile(ProfileRef::Ticket(t))) => relation.find_contact_by_ticket_v3(t).await,
+        Some(LineLink::Profile(ProfileRef::UserId(id))) => {
+            relation.find_contact_by_search_id_or_ticket_v3(id).await
+        }
+        // An official account's @id as a search id is unverified.
+        Some(LineLink::Profile(ProfileRef::OfficialAccount(id))) => {
+            relation
+                .find_contact_by_search_id_or_ticket_v3(&format!("@{}", id.trim_start_matches('@')))
+                .await
+        }
         Some(_) => bail!("ลิงก์นี้ไม่ใช่ลิงก์เพิ่มเพื่อน"),
-        None => {
+        None => relation.find_contact_by_search_id_or_ticket_v3(query).await,
+    };
+    match v3 {
+        Ok(v) => {
+            if let Some(found) = found_contact(&v.to_json()) {
+                return Ok(found);
+            }
+        }
+        Err(e) => tracing::warn!("findContactBySearchIdOrTicketV3: {e}"),
+    }
+    let raw = match link {
+        Some(link @ LineLink::Profile(_)) => l.client.base.resolve_link(&link).await?,
+        _ => {
             let id = query.trim_start_matches('@');
             l.client
                 .base
@@ -233,18 +490,7 @@ pub async fn find_contact(state: &Arc<AppState>, query: &str) -> Result<FoundCon
                 .await?
         }
     };
-    let json = raw.to_json();
-    let c = if json["contact"].is_null() {
-        &json
-    } else {
-        &json["contact"]
-    };
-    let mid = str_of(&c["mid"]).ok_or_else(|| anyhow!("ไม่พบผู้ใช้"))?;
-    Ok(FoundContact {
-        name: str_of(&c["displayName"]).unwrap_or_else(|| mid.clone()),
-        picture: str_of(&c["picturePath"]),
-        mid,
-    })
+    found_contact(&raw.to_json()).ok_or_else(|| anyhow!("ไม่พบผู้ใช้"))
 }
 
 #[derive(Serialize)]
@@ -260,12 +506,69 @@ pub struct ContactProfile {
     pub blocked: bool,
 }
 
-/// Someone's profile card: `getContact` for the name, status message and
-/// friend/blocked state, the home profile for the cover. The cover is a
-/// best effort: without it the card falls back to the profile picture.
+/// Someone's profile card: `getContactsV3` for the name, status message
+/// and friend/blocked state (the legacy
+/// `getContact` if V3 fails), the home profile for the cover. The cover is
+/// a best effort: without it the card falls back to the profile picture.
 pub async fn contact_profile(state: &Arc<AppState>, mid: &str) -> Result<ContactProfile> {
     let l = line(state).await?;
-    let c = l.client.base.talk().get_contact(mid).await?.to_json();
+    let mut card = match l
+        .client
+        .base
+        .relation()
+        .get_contacts_v3(&[mid.to_string()], None)
+        .await
+    {
+        Ok(v) => profile_from_v3(&v.to_json(), mid),
+        Err(e) => {
+            tracing::warn!("getContactsV3 {mid}: {e}");
+            None
+        }
+    };
+    if card.is_none() {
+        let c = l.client.base.talk().get_contact(mid).await?.to_json();
+        card = Some(profile_from_contact(&c, mid));
+    }
+    let mut card = card.expect("set above");
+    let home = line_rs::rest::home::HomeProfileQuery {
+        home_id: mid.into(),
+        ..Default::default()
+    };
+    card.cover = match l.client.base.rest().home().profile(home).await {
+        Ok(json) => cover_object_id(&json),
+        Err(e) => {
+            tracing::warn!("home profile {mid}: {e}");
+            None
+        }
+    };
+    Ok(card)
+}
+
+/// A profile card from a `getContactsV3` reply.
+fn profile_from_v3(json: &Json, mid: &str) -> Option<ContactProfile> {
+    let r = json["responses"]
+        .as_array()?
+        .iter()
+        .find(|r| r["targetUserMid"].as_str() == Some(mid))?;
+    let detail = &r["targetProfileDetail"];
+    let has = |d: &Json| d.get("user").is_some() || d.get("bot").is_some();
+    // statusMessage is a RichString{content, meta}.
+    let status = str_of(&detail["statusMessage"]["content"]).or_else(|| str_of(&detail["statusMessage"]));
+    Some(ContactProfile {
+        mid: mid.into(),
+        name: str_of(&r["friendDetail"]["user"]["overriddenName"])
+            .or_else(|| str_of(&detail["profileName"]))
+            .unwrap_or_else(|| mid.into()),
+        picture: str_of(&detail["picturePath"]),
+        status_message: status.filter(|s| !s.trim().is_empty()),
+        cover: None,
+        friend: has(&r["friendDetail"]),
+        blocked: has(&r["blockDetail"]),
+    })
+}
+
+/// A profile card from the legacy `getContact`.
+fn profile_from_contact(c: &Json, mid: &str) -> ContactProfile {
     // ContactStatus: FRIEND 1, FRIEND_BLOCKED 2, RECOMMEND_BLOCKED 4,
     // DELETED_BLOCKED 6. It arrives as a number or as the enum name.
     let status = c["status"]
@@ -280,41 +583,30 @@ pub async fn contact_profile(state: &Arc<AppState>, mid: &str) -> Result<Contact
             })
         })
         .unwrap_or(0);
-    let home = line_rs::rest::home::HomeProfileQuery {
-        home_id: mid.into(),
-        ..Default::default()
-    };
-    let cover = match l.client.base.rest().home().profile(home).await {
-        Ok(json) => cover_object_id(&json),
-        Err(e) => {
-            tracing::warn!("home profile {mid}: {e}");
-            None
-        }
-    };
-    Ok(ContactProfile {
+    ContactProfile {
         mid: mid.into(),
         name: str_of(&c["displayNameOverridden"])
             .or_else(|| str_of(&c["displayName"]))
             .unwrap_or_else(|| mid.into()),
         picture: str_of(&c["picturePath"]),
         status_message: str_of(&c["statusMessage"]).filter(|s| !s.trim().is_empty()),
-        cover,
+        cover: None,
         friend: matches!(status, 1 | 2),
         blocked: matches!(status, 2 | 4 | 6),
-    })
+    }
 }
 
-/// The cover's object id in a home profile response. The shape is not
-/// documented, so look for `coverObsInfo.objectId` (or `coverObjectId`)
-/// anywhere in it.
+/// The cover's OBS path (see [`obs_path`]) in a home profile response.
+/// The shape is not documented, so look for `coverObsInfo` (or
+/// `coverObjectId`) anywhere in it.
 fn cover_object_id(json: &Json) -> Option<String> {
     match json {
         Json::Object(o) => {
-            if let Some(id) = o.get("coverObsInfo").and_then(|c| c.get("objectId")).and_then(str_of) {
-                return Some(id);
+            if let Some(path) = o.get("coverObsInfo").and_then(|c| obs_path(c, "myhome/c")) {
+                return Some(path);
             }
             if let Some(id) = o.get("coverObjectId").and_then(str_of) {
-                return Some(id);
+                return Some(format!("myhome/c/{id}"));
             }
             o.values().find_map(cover_object_id)
         }
@@ -323,25 +615,22 @@ fn cover_object_id(json: &Json) -> Option<String> {
     }
 }
 
-/// A profile cover, downloaded into the avatar cache on first use.
-pub async fn cover_file(state: &Arc<AppState>, oid: &str) -> Result<std::path::PathBuf> {
+/// A profile cover, downloaded into the avatar cache on first use. `path`
+/// is the OBS path from [`cover_object_id`]; a bare object id (from
+/// earlier builds) lies in `myhome/c`.
+pub async fn cover_file(state: &Arc<AppState>, path: &str) -> Result<std::path::PathBuf> {
     let dest = state
         .paths
         .avatars()
-        .join(format!("cover-{}.jpg", crate::media::safe_name(oid)));
+        .join(format!("cover-{}.jpg", crate::media::safe_name(path)));
     if dest.exists() {
         return Ok(dest);
     }
-    let l = line(state).await?;
-    let bytes = l
-        .client
-        .base
-        .obs()
-        .download_object_for_service("myhome/c", oid, vec![])
-        .await
-        .map_err(|e| anyhow!("{e}"))?;
-    crate::vault::write(&dest, &bytes)?;
-    Ok(dest)
+    let (base, oid) = match path.rsplit_once('/') {
+        Some((base, oid)) => (base.to_string(), oid),
+        None => ("myhome/c".to_string(), path),
+    };
+    crate::media::home_obs_file(state, &base, oid, &dest).await
 }
 
 pub async fn add_friend(state: &Arc<AppState>, mid: &str) -> Result<()> {
@@ -372,6 +661,122 @@ pub async fn join_group_link(state: &Arc<AppState>, url: &str) -> Result<String>
     Ok(mid)
 }
 
+/// Accept a chat from LINE's message request box
+/// (`updateChatStatusBulk` with `trusted`).
+pub async fn accept_message_request(state: &Arc<AppState>, chat_id: &str) -> Result<()> {
+    let l = line(state).await?;
+    l.client
+        .base
+        .talk()
+        .update_chat_status_bulk(&[chat_id.to_string()], true)
+        .await?;
+    state.store().set_request(chat_id, false)?;
+    state.chats_changed();
+    Ok(())
+}
+
+/// Delete a chat from LINE's message request box: its history goes
+/// (`sendChatRemoved`) and it leaves the box until a new message arrives.
+/// Unverified: whether LINE also drops it from the box server-side.
+pub async fn delete_message_request(state: &Arc<AppState>, chat_id: &str) -> Result<()> {
+    delete_history(state, chat_id).await?;
+    state.store().hide_chat(chat_id)?;
+    state.chats_changed();
+    Ok(())
+}
+
+// -- groups -----------------------------------------------------------------
+
+/// Reload a group's row and members after we changed it.
+async fn group_changed(state: &Arc<AppState>, l: &Arc<Line>, chat_id: &str) {
+    line::refresh_chat_row(state, l, chat_id).await;
+    if let Err(e) = line::load_members(state, chat_id, true).await {
+        tracing::warn!("reloading members: {e}");
+    }
+}
+
+/// Join a group we were invited to.
+pub async fn accept_invitation(state: &Arc<AppState>, chat_id: &str) -> Result<()> {
+    let l = line(state).await?;
+    l.chat(chat_id).accept_invitation().await?;
+    {
+        let mut store = state.store();
+        if let Ok(Some(mut c)) = store.chat(chat_id) {
+            c.invited = false;
+            c.preview.clear();
+            store.upsert_chats(&[c])?;
+        }
+    }
+    state.chats_changed();
+    group_changed(state, &l, chat_id).await;
+    Ok(())
+}
+
+/// Decline an invitation: the group leaves the list.
+pub async fn reject_invitation(state: &Arc<AppState>, chat_id: &str) -> Result<()> {
+    let l = line(state).await?;
+    l.chat(chat_id).reject_invitation().await?;
+    state.store().hide_chat(chat_id)?;
+    state.chats_changed();
+    Ok(())
+}
+
+/// Create a group named `name` with these people invited; returns its id.
+pub async fn create_group(state: &Arc<AppState>, name: &str, mids: &[String]) -> Result<String> {
+    let l = line(state).await?;
+    let mids: Vec<&str> = mids.iter().map(String::as_str).collect();
+    let chat = l.client.create_group(name.trim(), &mids).await?;
+    let id = chat.mid().to_string();
+    if id.is_empty() {
+        bail!("LINE ไม่ได้ส่งกลุ่มที่สร้างกลับมา");
+    }
+    let row = crate::model::Chat {
+        id: id.clone(),
+        name: if name.trim().is_empty() { id.clone() } else { name.trim().into() },
+        kind: "group".into(),
+        last_activity: now_ms(),
+        ..Default::default()
+    };
+    state.store().upsert_chats(&[row])?;
+    state.chats_changed();
+    group_changed(state, &l, &id).await;
+    Ok(id)
+}
+
+pub async fn invite_members(state: &Arc<AppState>, chat_id: &str, mids: &[String]) -> Result<()> {
+    let l = line(state).await?;
+    let mids: Vec<&str> = mids.iter().map(String::as_str).collect();
+    l.chat(chat_id).invite(&mids).await?;
+    group_changed(state, &l, chat_id).await;
+    Ok(())
+}
+
+pub async fn remove_member(state: &Arc<AppState>, chat_id: &str, mid: &str) -> Result<()> {
+    let l = line(state).await?;
+    l.chat(chat_id).kick(mid).await?;
+    group_changed(state, &l, chat_id).await;
+    Ok(())
+}
+
+pub async fn cancel_invitation(state: &Arc<AppState>, chat_id: &str, mids: &[String]) -> Result<()> {
+    let l = line(state).await?;
+    let mids: Vec<&str> = mids.iter().map(String::as_str).collect();
+    l.chat(chat_id).cancel_invitation(&mids).await?;
+    group_changed(state, &l, chat_id).await;
+    Ok(())
+}
+
+pub async fn rename_group(state: &Arc<AppState>, chat_id: &str, name: &str) -> Result<()> {
+    let name = name.trim();
+    if name.is_empty() {
+        bail!("ชื่อกลุ่มว่าง");
+    }
+    let l = line(state).await?;
+    l.chat(chat_id).update_name(name).await?;
+    group_changed(state, &l, chat_id).await;
+    Ok(())
+}
+
 // -- notes ------------------------------------------------------------------
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -395,6 +800,8 @@ pub struct NotePost {
 #[serde(rename_all = "camelCase")]
 pub struct NoteMedia {
     pub object_id: String,
+    /// Its OBS path, `service/namespace/objectId` (see [`obs_path`]).
+    pub obs: String,
     pub video: bool,
 }
 
@@ -407,7 +814,8 @@ pub struct NoteComment {
     pub author_picture: Option<String>,
     pub text: String,
     pub created_time: f64,
-    /// Image object ids in `myhome/cmt`.
+    /// OBS paths of its images (see [`obs_path`]; `myhome/cmt/...` unless
+    /// the comment names another place).
     pub images: Vec<String>,
 }
 
@@ -425,6 +833,23 @@ fn picture_path(url: &Json) -> Option<String> {
     (!path.is_empty()).then(|| path.to_string())
 }
 
+/// The OBS path, `service/namespace/objectId`, of a media object in post
+/// or profile data. LINE describes one as `{objectId, serviceName,
+/// obsNamespace, ...}`; without the two names it lies under
+/// `default` (`myhome/h` for note photos, `myhome/cmt` for comment images,
+/// `myhome/c` for covers).
+pub fn obs_path(o: &Json, default: &str) -> Option<String> {
+    let oid = str_of(&o["objectId"]).or_else(|| str_of(&o["oid"]))?;
+    let name = |k: &str| {
+        o[k].as_str()
+            .filter(|s| !s.is_empty() && crate::media::safe_name(s) == *s)
+    };
+    Some(match (name("serviceName"), name("obsNamespace")) {
+        (Some(svc), Some(ns)) => format!("{svc}/{ns}/{oid}"),
+        _ => format!("{default}/{oid}"),
+    })
+}
+
 fn parse_post(post: &Json) -> Option<NotePost> {
     let info = &post["postInfo"];
     let user = &post["userInfo"];
@@ -435,6 +860,7 @@ fn parse_post(post: &Json) -> Option<NotePost> {
         .filter_map(|m| {
             Some(NoteMedia {
                 object_id: str_of(&m["objectId"]).or_else(|| str_of(&m["oid"]))?,
+                obs: obs_path(m, "myhome/h")?,
                 video: m["type"]
                     .as_str()
                     .is_some_and(|t| t.eq_ignore_ascii_case("VIDEO")),
@@ -467,8 +893,10 @@ pub fn parse_comments(result: &Json) -> Vec<NoteComment> {
     fn object_ids(v: &Json, out: &mut Vec<String>) {
         match v {
             Json::Object(o) => {
-                if let Some(id) = o.get("objectId").and_then(str_of) {
-                    out.push(id);
+                if o.contains_key("objectId")
+                    && let Some(path) = obs_path(v, "myhome/cmt")
+                {
+                    out.push(path);
                 }
                 o.values().for_each(|x| object_ids(x, out));
             }
@@ -522,19 +950,70 @@ fn check_timeline(code: i64, message: &str) -> Result<()> {
     Ok(())
 }
 
+/// Notes per `post/list.json` page.
+const NOTE_PAGE: u32 = 20;
+
+/// Every note of a group, newest first: page after page (`postLimit`, then
+/// the last post's id and time).
+/// Stops after 25 pages.
 pub async fn list_notes(state: &Arc<AppState>, chat_id: &str) -> Result<Vec<NotePost>> {
     let l = line(state).await?;
-    let reply = l
-        .client
-        .base
-        .timeline()
-        .list_post(ListPost {
-            home_id: chat_id.into(),
-            ..Default::default()
-        })
-        .await?;
-    check_timeline(reply.code, &reply.message)?;
-    Ok(parse_notes(&reply.result))
+    let timeline = l.client.base.timeline();
+    let mut query = ListPost {
+        home_id: chat_id.into(),
+        post_limit: Some(NOTE_PAGE),
+        ..Default::default()
+    };
+    let mut out: Vec<NotePost> = Vec::new();
+    for _ in 0..25 {
+        let reply = timeline.list_post(query.clone()).await?;
+        check_timeline(reply.code, &reply.message)?;
+        let page = parse_notes(&reply.result);
+        let fresh: Vec<NotePost> = page
+            .into_iter()
+            .filter(|n| !out.iter().any(|o| o.id == n.id))
+            .collect();
+        if fresh.is_empty() {
+            break;
+        }
+        out.extend(fresh);
+        match line_rs::timeline::next_page(&reply.result, &query) {
+            Some(next) => query = next,
+            None => break,
+        }
+    }
+    Ok(out)
+}
+
+/// Width and height of a PNG, GIF or JPEG, from its header.
+pub fn image_size(data: &[u8]) -> Option<(u32, u32)> {
+    let be16 = |i: usize| Some(u16::from_be_bytes(data.get(i..i + 2)?.try_into().ok()?) as u32);
+    if data.starts_with(b"\x89PNG\r\n\x1a\n") {
+        let w = u32::from_be_bytes(data.get(16..20)?.try_into().ok()?);
+        let h = u32::from_be_bytes(data.get(20..24)?.try_into().ok()?);
+        return Some((w, h));
+    }
+    if data.starts_with(b"GIF8") {
+        let le16 = |i: usize| Some(u16::from_le_bytes(data.get(i..i + 2)?.try_into().ok()?) as u32);
+        return Some((le16(6)?, le16(8)?));
+    }
+    if !data.starts_with(&[0xFF, 0xD8]) {
+        return None;
+    }
+    let mut i = 2;
+    while i + 4 <= data.len() {
+        if data[i] != 0xFF {
+            i += 1;
+            continue;
+        }
+        let marker = data[i + 1];
+        // Start of frame (not DHT 0xC4, JPG 0xC8 or DAC 0xCC).
+        if (0xC0..=0xCF).contains(&marker) && ![0xC4, 0xC8, 0xCC].contains(&marker) {
+            return Some((be16(i + 7)?, be16(i + 5)?));
+        }
+        i += 2 + be16(i + 2)? as usize;
+    }
+    None
 }
 
 /// Post a note with text and photos (uploaded to `myhome/h` first).
@@ -563,11 +1042,16 @@ pub async fn create_note(
                 .as_deref(),
             Some("mp4" | "mov" | "m4v")
         );
+        // Also send where the object is and its size.
+        let mut media = PostMedia::note(String::new(), video);
+        media.size = Some(data.len() as u64);
+        if let Some((w, h)) = image_size(&data).filter(|_| !video) {
+            media.width = Some(w);
+            media.height = Some(h);
+        }
         let (object_id, _) = timeline.upload_note_media(video, data).await?;
-        post.contents.media.push(PostMedia {
-            object_id,
-            kind: if video { "VIDEO" } else { "PHOTO" }.into(),
-        });
+        media.object_id = object_id;
+        post.contents.media.push(media);
     }
     let reply = timeline.create_post(post).await?;
     check_timeline(reply.code, &reply.message)
@@ -584,56 +1068,54 @@ pub async fn note_detail(
     let reply = timeline.get_post(chat_id, post_id).await?;
     check_timeline(reply.code, &reply.message)?;
     let note = parse_post(&reply.result["feed"]["post"]).ok_or_else(|| anyhow!("ไม่พบโน้ตนี้"))?;
-    // line-rs has no comment list; this is the endpoint LINE's note server
-    // answers (checked live 2026-10-22, POST with x-lhm: GET).
-    let mut headers = timeline.init().await?.clone();
-    headers.insert("x-lhm", reqwest::header::HeaderValue::from_static("GET"));
-    let url = url::Url::parse_with_params(
-        &format!(
-            "https://{}/ext/note/nt/api/v57/comment/getList.json",
-            l.client.base.endpoint
-        ),
-        &[
-            ("homeId", chat_id),
-            ("contentId", post_id),
-            ("actorId", chat_id),
-            ("limit", "100"),
-        ],
-    )?;
-    let body: Json = l
-        .client
-        .base
-        .http
-        .post(url)
-        .headers(headers)
-        .send()
-        .await?
-        .json()
-        .await?;
-    if body["code"].as_i64().unwrap_or(0) != 0 {
-        tracing::warn!("note comments {post_id}: {body}");
+    // The post's author goes as actorId.
+    // LAAB used to send the group, which the note server was seen to
+    // answer; fall back to it if the author gets nothing.
+    let mut comments = Vec::new();
+    let mut actors = vec![note.author_mid.as_str(), chat_id];
+    actors.dedup();
+    for actor in actors.into_iter().filter(|a| !a.is_empty()) {
+        match timeline.list_comments(chat_id, post_id, actor, None).await {
+            Ok(r) if r.code == 0 => {
+                comments = parse_comments(&r.result);
+                if !comments.is_empty() || note.comment_count == 0 {
+                    break;
+                }
+            }
+            Ok(r) => tracing::warn!("note comments {post_id}: code {}", r.code),
+            Err(e) => tracing::warn!("note comments {post_id}: {e}"),
+        }
     }
-    Ok(NoteDetail {
-        note,
-        comments: parse_comments(&body["result"]),
-    })
+    Ok(NoteDetail { note, comments })
 }
 
+/// Comment on a note. `actorId` is the post's author; it is looked up
+/// when not given.
 pub async fn add_comment(
     state: &Arc<AppState>,
     chat_id: &str,
     post_id: &str,
     text: &str,
+    author_mid: Option<&str>,
 ) -> Result<()> {
     if text.trim().is_empty() {
         bail!("empty_comment");
     }
     let l = line(state).await?;
-    let reply = l
-        .client
-        .base
-        .timeline()
-        .create_comment(post_id, text, chat_id, None, Vec::new())
+    let timeline = l.client.base.timeline();
+    let author = match author_mid.filter(|m| !m.is_empty()) {
+        Some(m) => m.to_string(),
+        None => {
+            let reply = timeline.get_post(chat_id, post_id).await?;
+            check_timeline(reply.code, &reply.message)?;
+            parse_post(&reply.result["feed"]["post"])
+                .map(|p| p.author_mid)
+                .filter(|m| !m.is_empty())
+                .ok_or_else(|| anyhow!("ไม่พบโน้ตนี้"))?
+        }
+    };
+    let reply = timeline
+        .create_comment(post_id, &author, text, chat_id, None, Vec::new())
         .await?;
     check_timeline(reply.code, &reply.message)
 }
@@ -652,15 +1134,16 @@ pub async fn delete_note(state: &Arc<AppState>, chat_id: &str, post_id: &str) ->
 // -- calendar ---------------------------------------------------------------
 
 /// An event on a chat's LINE Calendar. Times are epoch milliseconds.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Default, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CalendarEvent {
     pub id: String,
     pub title: String,
+    /// For a recurring event, its first occurrence.
     pub start: i64,
     pub end: i64,
     pub all_day: bool,
-    /// IANA zone the event was made in; all-day dates read in it.
+    /// IANA zone the event was made in; all-day dates and repeats read in it.
     pub timezone: String,
     pub location: String,
     pub url: String,
@@ -673,6 +1156,56 @@ pub struct CalendarEvent {
     /// Whose calendar it is: a chat mid, or `cal:` and a calendar id for a
     /// calendar that isn't a chat's (the user's own). Edits go back there.
     pub chat_id: String,
+    /// How it repeats; None for a one-off.
+    pub recurrence: Option<CalendarRecurrence>,
+    /// Occurrences changed or deleted on their own.
+    pub overrides: Vec<CalendarOverride>,
+    /// LINE's `Reminder` values (1 one hour before … 6 noon two days before).
+    pub reminders: Vec<i32>,
+    pub invitees: Vec<CalendarInvitee>,
+    pub color_id: i32,
+}
+
+/// A recurrence rule. `until` and `except_ids` are epoch milliseconds.
+#[derive(Debug, Clone, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CalendarRecurrence {
+    /// `daily`, `weekly`, `monthly`, `yearly`, or `other` (not shown as repeating).
+    pub frequency: &'static str,
+    pub interval: u32,
+    pub until: Option<i64>,
+    pub by_day: Vec<String>,
+    pub except_ids: Vec<i64>,
+}
+
+/// One occurrence of a recurring event that was changed on its own.
+#[derive(Debug, Clone, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CalendarOverride {
+    /// The original start of the occurrence it replaces, epoch ms.
+    pub recur_id: i64,
+    pub deleted: bool,
+    pub title: String,
+    pub start: i64,
+    pub end: i64,
+    pub all_day: bool,
+    pub timezone: String,
+    pub location: String,
+    pub url: String,
+    pub description: String,
+    /// Who is invited to this occurrence and their answers to it.
+    pub invitees: Vec<CalendarInvitee>,
+}
+
+#[derive(Debug, Clone, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CalendarInvitee {
+    pub mid: String,
+    /// `needsAction`, `accepted`, `declined` or empty.
+    pub status: &'static str,
+    /// The invitee is the logged-in user.
+    pub me: bool,
+    pub updated_at: i64,
 }
 
 /// One of the calendars in the all-calendars view.
@@ -703,7 +1236,57 @@ fn calendar_target(chat_id: &str) -> EventTarget<'_> {
     }
 }
 
-fn calendar_event(e: line_rs::client::calendar::Event, chat_id: &str) -> CalendarEvent {
+fn status_name(s: InvitationStatus) -> &'static str {
+    match s {
+        InvitationStatus::NeedsAction => "needsAction",
+        InvitationStatus::Accepted => "accepted",
+        InvitationStatus::Declined => "declined",
+        _ => "",
+    }
+}
+
+fn invitees(list: Vec<cal::Invitee>, me: &str) -> Vec<CalendarInvitee> {
+    list.into_iter()
+        .map(|i| CalendarInvitee {
+            me: !me.is_empty() && i.invitee_id == me,
+            mid: i.invitee_id,
+            status: status_name(i.status),
+            updated_at: i.client_updated_at,
+        })
+        .collect()
+}
+
+fn calendar_event(e: cal::Event, chat_id: &str, me: &str) -> CalendarEvent {
+    let recurrence = e.recurrence.map(|r| CalendarRecurrence {
+        frequency: match r.frequency {
+            Frequency::Daily => "daily",
+            Frequency::Weekly => "weekly",
+            Frequency::Monthly => "monthly",
+            Frequency::Yearly => "yearly",
+            _ => "other",
+        },
+        interval: r.interval,
+        until: r.until.map(|u| u * MS_PER_S),
+        by_day: r.by_day,
+        except_ids: r.except_ids.iter().map(|x| x * MS_PER_S).collect(),
+    });
+    let overrides = e
+        .recurrence_child_events
+        .into_iter()
+        .map(|c| CalendarOverride {
+            recur_id: c.recur_id * MS_PER_S,
+            deleted: c.is_deleted,
+            title: c.title,
+            start: c.start_time * MS_PER_S,
+            end: c.end_time * MS_PER_S,
+            all_day: c.is_all_day,
+            timezone: c.timezone,
+            location: c.location,
+            url: c.url,
+            description: c.description,
+            invitees: invitees(c.invitees, me),
+        })
+        .collect();
     CalendarEvent {
         id: e.id,
         title: e.title,
@@ -718,6 +1301,11 @@ fn calendar_event(e: line_rs::client::calendar::Event, chat_id: &str) -> Calenda
         updated_at: e.client_updated_at,
         editable: e.is_editable_in_line_calendar,
         chat_id: chat_id.to_string(),
+        recurrence,
+        overrides,
+        reminders: e.reminders.iter().map(|r| r.raw()).collect(),
+        invitees: invitees(e.invitees, me),
+        color_id: e.color_id,
     }
 }
 
@@ -733,21 +1321,77 @@ pub struct CalendarEventInput {
     pub location: String,
     pub url: String,
     pub description: String,
+    /// LINE `Reminder` values; None leaves an edited event's as they were.
+    #[serde(default)]
+    pub reminders: Option<Vec<i32>>,
+    /// How it repeats; None leaves an edited event's rule as it was.
+    #[serde(default)]
+    pub repeat: Option<RepeatInput>,
+}
+
+/// The repeat rule the form sets, as LINE's calendar offers them: daily,
+/// weekly on chosen days, monthly on the date or on an nth weekday
+/// ("2TU", "-1FR"), yearly; every `interval`; until a day.
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RepeatInput {
+    /// `none`, `daily`, `weekly`, `monthly` or `yearly`.
+    pub frequency: String,
+    #[serde(default)]
+    pub interval: u32,
+    /// Epoch ms; the chosen last day at 23:59:59.
+    pub until: Option<i64>,
+    #[serde(default)]
+    pub by_day: Vec<String>,
+}
+
+impl RepeatInput {
+    /// The rule to send, None for no repeat. The rule's exceptions stay
+    /// as `previous` had them.
+    fn to_line(&self, previous: Option<&cal::Recurrence>) -> Option<cal::Recurrence> {
+        let frequency = match self.frequency.as_str() {
+            "daily" => Frequency::Daily,
+            "weekly" => Frequency::Weekly,
+            "monthly" => Frequency::Monthly,
+            "yearly" => Frequency::Yearly,
+            _ => return None,
+        };
+        Some(cal::Recurrence {
+            frequency,
+            interval: self.interval.max(1),
+            until: self.until.map(|u| u / MS_PER_S),
+            by_day: if matches!(frequency, Frequency::Weekly | Frequency::Monthly) {
+                self.by_day.clone()
+            } else {
+                Vec::new()
+            },
+            except_ids: previous.map(|p| p.except_ids.clone()).unwrap_or_default(),
+        })
+    }
 }
 
 impl CalendarEventInput {
-    fn to_line(&self) -> EventInput {
-        EventInput {
-            title: self.title.trim().to_string(),
-            start_time: self.start / MS_PER_S,
-            end_time: self.end / MS_PER_S,
-            timezone: self.timezone.clone(),
-            is_all_day: self.all_day,
-            location: self.location.trim().to_string(),
-            url: self.url.trim().to_string(),
-            description: self.description.trim_end().to_string(),
-            color_id: 0,
+    /// The event to send: the form's fields over `base`, the event as LINE
+    /// last sent it (for an edit), so what the form doesn't show (repeats,
+    /// invitees, colour, stamp, the message it came from) goes back as it
+    /// was.
+    fn to_line(&self, base: Option<&cal::Event>) -> EventInput {
+        let mut out = base.map(EventInput::from_event).unwrap_or_default();
+        out.title = self.title.trim().to_string();
+        out.start_time = self.start / MS_PER_S;
+        out.end_time = self.end / MS_PER_S;
+        out.timezone = self.timezone.clone();
+        out.is_all_day = self.all_day;
+        out.location = self.location.trim().to_string();
+        out.url = self.url.trim().to_string();
+        out.description = self.description.trim_end().to_string();
+        if let Some(r) = &self.reminders {
+            out.reminders = r.iter().map(|v| Reminder::from_raw(*v)).collect();
         }
+        if let Some(r) = &self.repeat {
+            out.recurrence = r.to_line(out.recurrence.as_ref());
+        }
+        out
     }
 }
 
@@ -762,7 +1406,7 @@ pub async fn calendar_events(state: &Arc<AppState>, chat_id: &str) -> Result<Vec
     let mut out: Vec<CalendarEvent> = events
         .into_iter()
         .filter(|e| !e.is_deleted)
-        .map(|e| calendar_event(e, chat_id))
+        .map(|e| calendar_event(e, chat_id, &l.me))
         .collect();
     out.sort_by_key(|e| (e.start, e.end));
     remember_calendar(
@@ -834,11 +1478,7 @@ pub async fn prefetch_calendars(state: &Arc<AppState>, chat_id: Option<&str>) {
 /// calendar that fails to load is left out rather than failing the rest.
 pub async fn all_calendar_events(state: &Arc<AppState>) -> Result<AllCalendars> {
     let l = line(state).await?;
-    let calendars: Vec<CalendarInfo> = l
-        .client
-        .base
-        .list_all_calendars()
-        .await?
+    let calendars: Vec<CalendarInfo> = shown_calendars(l.client.base.list_all_calendars().await?)
         .into_iter()
         .map(|c| CalendarInfo {
             chat_id: if c.chatroom_id.is_empty() {
@@ -875,6 +1515,45 @@ pub async fn all_calendar_events(state: &Arc<AppState>) -> Result<AllCalendars> 
     Ok(all)
 }
 
+/// The calendars LINE's Calendar tab shows: not hidden from the list
+/// (`is_shown_in_calendar_list`) and with their events turned on
+/// (`is_visible`). Should LINE leave both flags out of every calendar (an
+/// account that never touched them), all are shown rather than none.
+fn shown_calendars(all: Vec<cal::Calendar>) -> Vec<cal::Calendar> {
+    if all.iter().all(|c| !c.is_visible && !c.is_shown_in_calendar_list) {
+        return all;
+    }
+    all.into_iter()
+        .filter(|c| c.is_visible && c.is_shown_in_calendar_list)
+        .collect()
+}
+
+/// Chats whose calendar is known to exist this session.
+static CHAT_CALENDARS: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+
+/// Makes sure a chat has a calendar before the first write to it, as LINE
+/// does (GetChatCalendar, then CreateChatCalendar). The user's own
+/// calendars (`cal:`) always exist.
+async fn ensure_calendar(l: &Line, chat_id: &str) -> Result<()> {
+    if chat_id.starts_with("cal:") || CHAT_CALENDARS.lock().unwrap().iter().any(|c| c == chat_id) {
+        return Ok(());
+    }
+    l.client.base.ensure_chat_calendar(chat_id).await?;
+    CHAT_CALENDARS.lock().unwrap().push(chat_id.to_string());
+    Ok(())
+}
+
+/// The event as LINE has it now, for an edit to start from.
+async fn fetch_event(l: &Line, chat_id: &str, event_id: &str) -> Result<Option<cal::Event>> {
+    Ok(l
+        .client
+        .base
+        .list_events_stream(calendar_target(chat_id), 0)
+        .await?
+        .into_iter()
+        .find(|e| e.id == event_id && !e.is_deleted))
+}
+
 /// Adds an event to a chat's calendar. `notify` posts LINE's "event
 /// created" card in the chat, as the app's switch does.
 pub async fn create_calendar_event(
@@ -884,13 +1563,14 @@ pub async fn create_calendar_event(
     notify: bool,
 ) -> Result<()> {
     let l = line(state).await?;
+    ensure_calendar(&l, chat_id).await?;
     let id = new_event_id();
     l.client
         .base
         .create_event(
             calendar_target(chat_id),
             &id,
-            &event.to_line(),
+            &event.to_line(None),
             Some(notify),
         )
         .await?;
@@ -906,15 +1586,45 @@ pub async fn update_calendar_event(
     notify: bool,
 ) -> Result<()> {
     let l = line(state).await?;
+    // LINE replaces the whole event, so start from what it has now.
+    let current = fetch_event(&l, chat_id, event_id).await?;
+    let previous = current.as_ref().map_or(updated_at, |e| e.client_updated_at.max(updated_at));
     l.client
         .base
         .update_event(
             calendar_target(chat_id),
             event_id,
-            &event.to_line(),
-            updated_at,
+            &event.to_line(current.as_ref()),
+            previous,
             Some(notify),
         )
+        .await?;
+    Ok(())
+}
+
+/// Accept or decline an invitation to an event (or to one occurrence of a
+/// recurring one, `recur_id` in epoch ms). Only chat calendars have
+/// invitations.
+pub async fn respond_calendar_invitation(
+    state: &Arc<AppState>,
+    chat_id: &str,
+    event_id: &str,
+    recur_id: Option<i64>,
+    accept: bool,
+    updated_at: i64,
+) -> Result<()> {
+    if chat_id.starts_with("cal:") {
+        bail!("ปฏิทินนี้ไม่มีการเชิญ");
+    }
+    let l = line(state).await?;
+    let status = if accept {
+        InvitationStatus::Accepted
+    } else {
+        InvitationStatus::Declined
+    };
+    l.client
+        .base
+        .respond_to_invitation(chat_id, event_id, recur_id.map(|r| r / MS_PER_S), status, updated_at)
         .await?;
     Ok(())
 }
@@ -954,22 +1664,17 @@ pub struct AlbumPhoto {
     pub video: bool,
 }
 
-/// Albums of one chat. LINE lists every album, so filter by chat.
+/// Albums of one chat. LINE lists every album, page by page, so read
+/// every page and filter by chat.
 pub async fn list_albums(state: &Arc<AppState>, chat_id: &str) -> Result<Vec<Album>> {
     let l = line(state).await?;
-    let reply = l
+    let albums = l
         .client
         .base
         .moa()
-        .get_albums(GetAlbumsOptions::default())
+        .get_all_albums(GetAlbumsOptions::default())
         .await?;
-    if let Some(code) = reply.code.filter(|c| *c != 0) {
-        bail!("album {code}: {}", reply.message.unwrap_or_default());
-    }
-    Ok(reply
-        .result
-        .map(|r| r.albums)
-        .unwrap_or_default()
+    Ok(albums
         .into_iter()
         .filter(|a| a.chat_id == chat_id)
         .filter_map(|a| {
@@ -1024,7 +1729,9 @@ pub async fn album_photos(
                 .resource_type
                 .as_deref()
                 .is_some_and(|t| t.eq_ignore_ascii_case("VIDEO"));
-            let path = album_photo_path(state, &oid).to_string_lossy().into_owned();
+            let path = album_photo_path(state, &oid, video)
+                .to_string_lossy()
+                .into_owned();
             out.push(AlbumPhoto {
                 id,
                 oid,
@@ -1041,39 +1748,47 @@ pub async fn album_photos(
     Ok(out)
 }
 
-fn album_photo_path(state: &AppState, oid: &str) -> std::path::PathBuf {
+/// Where an album photo, or the video itself, is cached.
+fn album_photo_path(state: &AppState, oid: &str, video: bool) -> std::path::PathBuf {
+    let ext = if video { "mp4" } else { "jpg" };
     state
         .paths
         .media()
-        .join(format!("album-{}.jpg", crate::media::safe_name(oid)))
+        .join(format!("album-{}.{ext}", crate::media::safe_name(oid)))
 }
 
-/// One album photo, downloaded into the media cache on first use.
+/// One album photo, or with `video` the video itself (`album/v`; a
+/// video's photo is its still), streamed into the media cache on first
+/// use.
 pub async fn album_photo_file(
     state: &Arc<AppState>,
     chat_id: &str,
     album_id: &str,
     oid: &str,
+    video: bool,
 ) -> Result<std::path::PathBuf> {
-    let dest = album_photo_path(state, oid);
+    let dest = album_photo_path(state, oid, video);
     if dest.exists() {
         return Ok(dest);
     }
     let l = line(state).await?;
-    let bytes = l
-        .client
+    let mut file = crate::vault::Writer::create(&dest)?;
+    l.client
         .base
         .moa()
-        .download_photo(DownloadPhotoOptions {
-            chat_id: chat_id.into(),
-            album_id: album_id.into(),
-            oid: oid.into(),
-            prefix: None,
-        })
+        .download_photo_to(
+            DownloadPhotoOptions {
+                chat_id: chat_id.into(),
+                album_id: album_id.into(),
+                oid: oid.into(),
+                prefix: Some(if video { "album/v" } else { "album/a" }.into()),
+            },
+            &mut file,
+        )
         .await?;
-    crate::vault::write(&dest, &bytes)?;
+    let saved = file.finish()?;
     crate::cache::schedule_trim(state);
-    Ok(dest)
+    Ok(saved)
 }
 
 pub async fn create_album(state: &Arc<AppState>, chat_id: &str, title: &str) -> Result<()> {
@@ -1112,6 +1827,94 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    fn stored(meta: Value) -> Value {
+        let mut raw = tv!({"id": "777", "to": "u-friend"});
+        raw.insert("contentMetadata", meta);
+        raw
+    }
+
+    #[test]
+    fn keep_copies_a_photo_with_its_key_and_size() {
+        let raw = stored(tv!({"OID": "SRC", "SID": "emi", "FILE_SIZE": "2048",
+            "MEDIA_CONTENT_INFO": "{\"category\":\"original\",\"extension\":\"png\",\"width\":40,\"height\":30}"}));
+        let f = forward_request("u-me", "IMAGE", &raw, &json!({"keyMaterial": "KEY"})).unwrap();
+        assert_eq!(f.to, "u-me");
+        assert_eq!(f.o_type, line_rs::obs::ObjType::Image);
+        assert_eq!((f.src_oid.as_str(), f.src_message_id.as_str()), ("SRC", "777"));
+        assert_eq!(f.key_material, "KEY");
+        assert_eq!(f.file_size, 2048);
+        assert_eq!(f.file_name.as_deref(), Some("image.png"));
+        assert_eq!((f.opts.width, f.opts.height), (Some(40), Some(30)));
+    }
+
+    #[test]
+    fn keep_copies_gifs_clips_and_files_as_what_they_are() {
+        use line_rs::obs::ObjType;
+        let gif = stored(tv!({"OID": "o", "MEDIA_CONTENT_INFO": "{\"extension\":\"gif\",\"animated\":true}"}));
+        let key = json!({"keyMaterial": "K"});
+        assert_eq!(forward_request("u", "IMAGE", &gif, &key).unwrap().o_type, ObjType::Gif);
+
+        let voice = stored(tv!({"OID": "o", "DURATION": "3100"}));
+        let f = forward_request("u", "AUDIO", &voice, &key).unwrap();
+        assert_eq!((f.o_type, f.opts.duration_ms), (ObjType::Audio, Some(3100)));
+
+        let file = stored(tv!({"OID": "o", "FILE_SIZE": "9"}));
+        let f = forward_request("u", "FILE", &file, &json!({"keyMaterial": "K", "fileName": "report.pdf"})).unwrap();
+        assert_eq!((f.o_type, f.file_name.as_deref()), (ObjType::File, Some("report.pdf")));
+    }
+
+    #[test]
+    fn keep_sends_again_what_it_cannot_copy() {
+        let key = json!({"keyMaterial": "K"});
+        // No object, no key, or not media.
+        assert!(forward_request("u", "IMAGE", &stored(tv!({"SID": "emi"})), &key).is_none());
+        assert!(forward_request("u", "VIDEO", &stored(tv!({"OID": "o"})), &json!({})).is_none());
+        assert!(forward_request("u", "STICKER", &stored(tv!({"OID": "o"})), &key).is_none());
+    }
+
+    #[test]
+    fn reads_v3_and_legacy_contact_lookups() {
+        let v3 = json!({"targetUserMid": "u1", "userType": "USER",
+            "targetProfileDetail": {"profileName": "A", "picturePath": "/0h"}});
+        let f = found_contact(&v3).unwrap();
+        assert_eq!((f.mid.as_str(), f.name.as_str(), f.picture.as_deref()), ("u1", "A", Some("/0h")));
+        let legacy = json!({"contact": {"mid": "u2", "displayName": "B"}});
+        assert_eq!(found_contact(&legacy).unwrap().mid, "u2");
+        assert!(found_contact(&json!({})).is_none());
+    }
+
+    #[test]
+    fn profile_card_from_get_contacts_v3() {
+        let reply = json!({"responses": [{
+            "targetUserMid": "u1",
+            "targetProfileDetail": {"profileName": "A", "statusMessage": {"content": " hi "}},
+            "friendDetail": {"user": {}},
+            "blockDetail": {"user": {}},
+        }]});
+        let p = profile_from_v3(&reply, "u1").unwrap();
+        assert_eq!((p.name.as_str(), p.status_message.as_deref()), ("A", Some(" hi ")));
+        assert!(p.friend && p.blocked);
+        assert!(profile_from_v3(&reply, "u2").is_none());
+        let legacy = profile_from_contact(&json!({"displayName": "B", "status": "FRIEND_BLOCKED"}), "u2");
+        assert!(legacy.friend && legacy.blocked);
+    }
+
+    #[test]
+    fn reads_image_sizes_from_headers() {
+        let mut png = b"\x89PNG\r\n\x1a\n\0\0\0\x0dIHDR".to_vec();
+        png.extend(640u32.to_be_bytes());
+        png.extend(480u32.to_be_bytes());
+        assert_eq!(image_size(&png), Some((640, 480)));
+        let gif = b"GIF89a\x20\x03\x58\x02".to_vec();
+        assert_eq!(image_size(&gif), Some((800, 600)));
+        // SOI, an APP0 segment, then SOF0 with height 300 and width 400.
+        let jpeg = [
+            0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x04, 0x00, 0x00, 0xFF, 0xC0, 0x00, 0x11, 0x08, 0x01, 0x2C, 0x01, 0x90,
+        ];
+        assert_eq!(image_size(&jpeg), Some((400, 300)));
+        assert_eq!(image_size(b"nope"), None);
+    }
+
     #[test]
     fn parses_note_feed() {
         let result = json!({"feeds": [
@@ -1133,6 +1936,16 @@ mod tests {
             (1, 2, 1)
         );
         assert_eq!(notes[0].media[0].object_id, "a");
+        assert_eq!(notes[0].media[0].obs, "myhome/h/a");
+    }
+
+    #[test]
+    fn media_lies_where_the_post_says() {
+        let m = json!({"objectId": "o1", "serviceName": "myhome", "obsNamespace": "hm"});
+        assert_eq!(obs_path(&m, "myhome/h").as_deref(), Some("myhome/hm/o1"));
+        let odd = json!({"objectId": "o1", "serviceName": "../x", "obsNamespace": "h"});
+        assert_eq!(obs_path(&odd, "myhome/h").as_deref(), Some("myhome/h/o1"));
+        assert_eq!(obs_path(&json!({}), "myhome/h"), None);
     }
 
     #[test]
@@ -1148,15 +1961,15 @@ mod tests {
             ("O", "สวย")
         );
         assert_eq!(c[0].author_picture.as_deref(), Some("/0hAbc"));
-        assert_eq!(c[0].images, vec!["img1"]);
+        assert_eq!(c[0].images, vec!["myhome/cmt/img1"]);
     }
 
     #[test]
     fn finds_the_cover_anywhere_in_a_home_profile() {
-        let nested = serde_json::json!({"result": {"homeInfo": {"coverObsInfo": {"objectId": "abc", "serviceName": "myhome"}}}});
-        assert_eq!(cover_object_id(&nested).as_deref(), Some("abc"));
+        let nested = serde_json::json!({"result": {"homeInfo": {"coverObsInfo": {"objectId": "abc", "serviceName": "myhome", "obsNamespace": "c"}}}});
+        assert_eq!(cover_object_id(&nested).as_deref(), Some("myhome/c/abc"));
         let flat = serde_json::json!({"result": [{"coverObjectId": "xyz"}]});
-        assert_eq!(cover_object_id(&flat).as_deref(), Some("xyz"));
+        assert_eq!(cover_object_id(&flat).as_deref(), Some("myhome/c/xyz"));
         assert_eq!(cover_object_id(&serde_json::json!({"result": {}})), None);
     }
 
@@ -1168,7 +1981,7 @@ mod tests {
             end_time: 1_793_707_200,
             ..Default::default()
         };
-        let e = calendar_event(wire, "c1");
+        let e = calendar_event(wire, "c1", "u-me");
         assert_eq!((e.start, e.end), (1_793_703_600_000, 1_793_707_200_000));
 
         let input = CalendarEventInput {
@@ -1180,8 +1993,198 @@ mod tests {
             location: String::new(),
             url: String::new(),
             description: String::new(),
+            reminders: None,
+            repeat: None,
         };
-        let out = input.to_line();
+        let out = input.to_line(None);
         assert_eq!((out.start_time, out.end_time), (1_793_703_600, 1_793_707_200));
+    }
+
+    #[test]
+    fn an_edit_keeps_what_the_form_does_not_show() {
+        let fetched = cal::Event {
+            id: "a-1".into(),
+            title: "old".into(),
+            timezone: "Asia/Tokyo".into(),
+            color_id: 4,
+            stamp_id: "s".into(),
+            message_id: Some("m".into()),
+            recurrence: Some(cal::Recurrence {
+                frequency: Frequency::Weekly,
+                interval: 1,
+                by_day: vec!["MO".into()],
+                ..Default::default()
+            }),
+            reminders: vec![Reminder::OneDayBefore],
+            invitees: vec![cal::Invitee {
+                invitee_id: "u2".into(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let input = CalendarEventInput {
+            title: " new ".into(),
+            start: 2_000_000,
+            end: 3_000_000,
+            all_day: false,
+            timezone: "Asia/Tokyo".into(),
+            location: String::new(),
+            url: String::new(),
+            description: String::new(),
+            reminders: None,
+            repeat: None,
+        };
+        let out = input.to_line(Some(&fetched));
+        assert_eq!(out.title, "new");
+        assert_eq!(out.color_id, 4);
+        assert_eq!(out.stamp_id, "s");
+        assert_eq!(out.message_id.as_deref(), Some("m"));
+        assert_eq!(out.recurrence, fetched.recurrence);
+        assert_eq!(out.reminders, [Reminder::OneDayBefore]);
+        assert_eq!(out.invitees, ["u2"]);
+        assert_eq!(out.original_invitees, ["u2"]);
+
+        let out = CalendarEventInput {
+            reminders: Some(vec![1, 3]),
+            ..input
+        }
+        .to_line(Some(&fetched));
+        assert_eq!(out.reminders, [Reminder::OneHourBefore, Reminder::TwoHoursBefore]);
+    }
+
+    #[test]
+    fn the_form_sets_changes_or_removes_the_repeat_rule() {
+        let fetched = cal::Event {
+            recurrence: Some(cal::Recurrence {
+                frequency: Frequency::Weekly,
+                interval: 1,
+                by_day: vec!["MO".into()],
+                except_ids: vec![500],
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let input = |repeat: RepeatInput| CalendarEventInput {
+            title: "x".into(),
+            start: 0,
+            end: 0,
+            all_day: false,
+            timezone: "Asia/Bangkok".into(),
+            location: String::new(),
+            url: String::new(),
+            description: String::new(),
+            reminders: None,
+            repeat: Some(repeat),
+        };
+        let rule = |frequency: &str, interval, until, by_day: &[&str]| RepeatInput {
+            frequency: frequency.into(),
+            interval,
+            until,
+            by_day: by_day.iter().map(|d| d.to_string()).collect(),
+        };
+        let out = input(rule("monthly", 2, Some(1_800_000_000_999), &["-1FR"])).to_line(Some(&fetched));
+        assert_eq!(
+            out.recurrence,
+            Some(cal::Recurrence {
+                frequency: Frequency::Monthly,
+                interval: 2,
+                until: Some(1_800_000_000),
+                by_day: vec!["-1FR".into()],
+                except_ids: vec![500],
+            })
+        );
+        let out = input(rule("daily", 0, None, &["MO"])).to_line(None);
+        let r = out.recurrence.unwrap();
+        assert_eq!((r.frequency, r.interval, r.by_day.len()), (Frequency::Daily, 1, 0));
+        assert_eq!(input(rule("none", 1, None, &[])).to_line(Some(&fetched)).recurrence, None);
+    }
+
+    #[test]
+    fn hidden_calendars_are_left_out_unless_every_one_looks_hidden() {
+        let c = |id: &str, visible: bool, listed: bool| cal::Calendar {
+            id: id.into(),
+            is_visible: visible,
+            is_shown_in_calendar_list: listed,
+            ..Default::default()
+        };
+        let ids = |v: Vec<cal::Calendar>| v.into_iter().map(|c| c.id).collect::<Vec<_>>();
+        assert_eq!(
+            ids(shown_calendars(vec![c("a", true, true), c("b", false, true), c("c", true, false)])),
+            ["a"]
+        );
+        assert_eq!(ids(shown_calendars(vec![c("a", false, false), c("b", false, false)])), ["a", "b"]);
+    }
+
+    #[test]
+    fn calendar_events_carry_repeats_overrides_and_invitees_in_ms() {
+        let wire = cal::Event {
+            recurrence: Some(cal::Recurrence {
+                frequency: Frequency::Monthly,
+                interval: 2,
+                until: Some(1_800_000_000),
+                by_day: vec!["-1FR".into()],
+                except_ids: vec![1_700_000_000],
+            }),
+            recurrence_child_events: vec![cal::ChildEvent {
+                recur_id: 1_700_100_000,
+                start_time: 1_700_200_000,
+                is_deleted: true,
+                ..Default::default()
+            }],
+            invitees: vec![
+                cal::Invitee {
+                    invitee_id: "u-me".into(),
+                    status: InvitationStatus::NeedsAction,
+                    client_updated_at: 7,
+                },
+                cal::Invitee {
+                    invitee_id: "u2".into(),
+                    status: InvitationStatus::Declined,
+                    ..Default::default()
+                },
+            ],
+            reminders: vec![Reminder::NoonTheDayBefore],
+            ..Default::default()
+        };
+        let e = calendar_event(wire, "c1", "u-me");
+        let r = e.recurrence.unwrap();
+        assert_eq!((r.frequency, r.interval), ("monthly", 2));
+        assert_eq!(r.until, Some(1_800_000_000_000));
+        assert_eq!(r.except_ids, [1_700_000_000_000]);
+        assert_eq!(e.overrides[0].recur_id, 1_700_100_000_000);
+        assert!(e.overrides[0].deleted);
+        assert_eq!((e.invitees[0].status, e.invitees[0].me), ("needsAction", true));
+        assert_eq!((e.invitees[1].status, e.invitees[1].me), ("declined", false));
+        assert_eq!(e.reminders, [2]);
+    }
+
+    #[test]
+    fn an_edit_carries_the_new_mentions_and_keeps_the_rest() {
+        let raw = tv!({"id": "9", "from": "u-me", "to": "c1", "toType": 2,
+            "contentMetadata": {"MENTION": "{\"MENTIONEES\":[]}", "e2eeVersion": "2", "OBS_POP": "x"}});
+        let span = MentionSpan { start: 0, end: 4, mid: Some("u2".into()), all: false };
+        let edited = edit_target(Some(raw), "u-me", "c1", "9", &[span]);
+        let meta = &edited["contentMetadata"];
+        assert_eq!(meta["OBS_POP"].as_str(), Some("x"));
+        assert!(meta["MENTION"].as_str().unwrap().contains("\"M\":\"u2\""));
+        assert_eq!(edited["toType"].as_i64(), Some(2));
+
+        let edited = edit_target(None, "u-me", "c1", "9", &[]);
+        assert_eq!(edited["from"].as_str(), Some("u-me"));
+        assert_eq!(edited["to"].as_str(), Some("c1"));
+        assert!(edited["contentMetadata"]["MENTION"].is_null());
+    }
+
+    #[test]
+    fn edit_and_unsend_refusals_read_in_thai() {
+        let talk = |code: &str| line_rs::Error::Request {
+            method: "editMessage".into(),
+            path: "/S4".into(),
+            data: tv!({"code": code, "reason": ""}),
+        };
+        assert!(refused(talk("NOT_PREMIUM")).to_string().contains("LINE Premium"));
+        assert!(refused(talk("MESSAGE_NOT_EDITABLE_TIMELIMIT")).to_string().contains("เลยเวลา"));
+        assert!(refused(talk("MESSAGE_NOT_DESTRUCTIBLE")).to_string().contains("24 ชั่วโมง"));
+        assert!(refused(talk("NOT_A_MEMBER")).to_string().contains("NOT_A_MEMBER"));
     }
 }

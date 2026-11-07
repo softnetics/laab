@@ -17,7 +17,7 @@ tauri = { version = "2", features = [] }
 tauri-plugin-opener = "2"
 tauri-plugin-dialog = "2"
 tauri-plugin-clipboard-manager = "2"
-line-rs = { git = "https://github.com/softnetics/line-rs", rev = "f8842ee6c47197bf7abffa35937808d81b240c07" }
+line-rs = { git = "https://github.com/softnetics/line-rs", rev = "ebce4e07cdcee14af867f7364e921cb0302b8d87" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["full"] }
@@ -56,3 +56,8 @@ security-framework = "3"
 objc2-foundation = { version = "0.3", features = ["block2", "NSNotification", "NSOperation", "NSProcessInfo"] }
 objc2 = "0.6"
 block2 = "0.6"
+objc2-av-foundation = { version = "0.3", default-features = false, features = ["std", "AVAsset", "AVAssetImageGenerator", "AVTime", "objc2-core-media", "objc2-core-graphics", "objc2-core-foundation"] }
+objc2-core-media = { version = "0.3", default-features = false, features = ["std", "CMTime"] }
+objc2-image-io = { version = "0.3", default-features = false, features = ["std", "CGImageSource", "CGImageDestination", "CGImageProperties", "objc2-core-graphics"] }
+objc2-core-graphics = { version = "0.3", default-features = false, features = ["std", "CGImage", "CGBitmapContext", "CGColorSpace", "CGContext"] }
+objc2-core-foundation = { version = "0.3", default-features = false, features = ["std", "CFData", "CFDictionary", "CFString", "CFNumber", "CFURL", "CFBase", "CFCGTypes"] }

@@ -5,11 +5,12 @@ import { open as openDialog, save } from "@tauri-apps/plugin-dialog";
 import { memo, useState } from "react";
 import { api, errorText, mediaUrl, q, queryClient } from "../lib/api";
 import { copyImage } from "../lib/clipboardImage";
-import { bigSticonSize, sticons } from "../lib/media";
 import { performFlexAction } from "../lib/flexActions";
 import { callBubbleLabel, isBlank, noticeFor, readCall } from "../lib/notices";
 import { nextReaction } from "../lib/reactions";
+import { bigSticonSize, isAnimated, sticons } from "../lib/media";
 import { clock } from "../lib/time";
+import { setTranslateTarget, translateLanguages, translateTarget } from "../lib/translate";
 import type { MentionSpan, Message, ReactionName } from "../lib/types";
 import { notice, setUi, ui, useUi } from "../lib/ui";
 import { openUrl } from "../lib/open";
@@ -22,6 +23,7 @@ import { Popover } from "./Popover";
 import { ReactButton, ReactionBadge } from "./Reactions";
 import { ReadMark, type Reader } from "./ReadMark";
 import { RichImage } from "./RichImage";
+import { LinkCard, previewUrl } from "./LinkCard";
 import { RichText } from "./RichText";
 
 export interface RowContext {
@@ -128,9 +130,16 @@ function PhotoGrid({ photos, ctx }: { photos: Message[]; ctx: RowContext }) {
   );
 }
 
+/** What a photo shows in the chat: the downloaded file, else the thumbnail;
+ *  an animated GIF plays, so it loads the file itself. */
+function photoSrc(m: Message, chatId: string) {
+  if (m.imagePath) return mediaUrl.local(m.imagePath);
+  return mediaUrl.message(chatId, m.id, !isAnimated(m));
+}
+
 function GridPhoto({ m, ctx, className }: { m: Message; ctx: RowContext; className: string }) {
   const [failed, setFailed] = useState(false);
-  const src = m.imagePath ? mediaUrl.local(m.imagePath) : mediaUrl.message(ctx.chatId, m.id, true);
+  const src = photoSrc(m, ctx.chatId);
   return (
     <div className={`relative cursor-pointer bg-incoming ${className}`} aria-label="เปิดรูป" {...pressable(() => viewMessage(ctx.chatId, m))}>
       {failed ? (
@@ -176,7 +185,7 @@ function MediaBubble({ m, ctx }: { m: Message; ctx: RowContext }) {
   const [failed, setFailed] = useState(false);
   const video = m.contentType === "VIDEO";
   // A downloaded video's imagePath is the video itself, not a picture.
-  const src = m.imagePath && !video ? mediaUrl.local(m.imagePath) : mediaUrl.message(ctx.chatId, m.id, true);
+  const src = video ? mediaUrl.message(ctx.chatId, m.id, true) : photoSrc(m, ctx.chatId);
   return (
     <div className={`flex flex-col ${m.mine ? "items-end" : "items-start"}`}>
       {/* LINE for Mac: square corners, and links under every photo/video. */}
@@ -212,7 +221,8 @@ function MediaBubble({ m, ctx }: { m: Message; ctx: RowContext }) {
   );
 }
 
-const fileNameOf = (m: Message) => m.fileName ?? (m.contentType === "VIDEO" ? `LINE_${m.id}.mp4` : `LINE_${m.id}.jpg`);
+const fileNameOf = (m: Message) =>
+  m.fileName ?? `LINE_${m.id}.${m.contentType === "VIDEO" ? "mp4" : isAnimated(m) ? "gif" : "jpg"}`;
 
 /** LINE for Mac's links under a photo, a video or photos sent together.
  *  Under a grid they act on every photo in it. */
@@ -421,6 +431,8 @@ function Content({
         </Bubble>
       );
   }
+  // Preview the first web link of a text message.
+  const link = m.contentType === "NONE" && m.unsent === 0 ? previewUrl(m.text) : null;
   if (isBlank(m)) {
     return (
       <Bubble mine={m.mine} tail={tail}>
@@ -456,8 +468,16 @@ function Content({
       {m.replyTo && <ReplyQuote id={m.replyTo} ctx={ctx} mine={m.mine} />}
       {richText}
       {mention && <MentionCard span={mention.span} ctx={ctx} anchor={mention.el} onClose={() => setMention(null)} />}
+      {link && <LinkCard url={link} chatId={ctx.chatId} mine={m.mine} />}
     </Bubble>
   );
+}
+
+/** Whether a message can be sent on: what the backend copies. */
+function copyable(m: Message) {
+  if (["IMAGE", "VIDEO", "AUDIO", "FILE", "STICKER"].includes(m.contentType)) return true;
+  if (m.contentType === "CONTACT") return !!m.metadata.mid;
+  return m.contentType === "NONE" && !!m.text.trim();
 }
 
 /** LINE for Mac's message menu, in its order. Items LAAB cannot do (แชร์)
@@ -482,6 +502,8 @@ function rowMenu(m: Message, dev: boolean, ctx?: RowContext) {
   const live = sent && m.unsent === 0;
   const status = queryClient.getQueryData(q.analytics.queryKey);
   const reportable = !!status && status !== "unavailable";
+  // Editing needs LINE Premium; hide it once LINE says the account has none.
+  const canEdit = queryClient.getQueryData(q.session.queryKey)?.premium !== false;
   return (
     <>
       {live && item("ตอบกลับ", () => setUi({ composerMode: { chatId: ctx.chatId, kind: "reply", message: m }, composerFocus: Date.now() }))}
@@ -493,6 +515,7 @@ function rowMenu(m: Message, dev: boolean, ctx?: RowContext) {
       {m.mine &&
         live &&
         text &&
+        canEdit &&
         item(
           <>
             แก้ไข <span className="h-1.5 w-1.5 rounded-full bg-line-green" />
@@ -531,6 +554,7 @@ function rowMenu(m: Message, dev: boolean, ctx?: RowContext) {
                 .then((t) => setUi({ translations: { ...ui.state.translations, [m.id]: t } }))
                 .catch((e) => notice(errorText(e))),
             )}
+          {copyable(m) && item("ส่งต่อ…", () => setUi({ forwarding: { kind: "message", chatId: ctx.chatId, message: m } }))}
           {item("ส่งไปยัง Keep Memo", () => run(api.saveToKeep(ctx.chatId, m.id), "ส่งไปยัง Keep Memo แล้ว"))}
           {ctx.group && text && item("บันทึกที่โน้ต", () => run(api.createNote(ctx.chatId, m.text), "บันทึกที่โน้ตแล้ว"))}
           {text && (
@@ -660,7 +684,28 @@ export const MessageRow = memo(function MessageRow({
       </Ctx>
       {translation && (
         <div className={`selectable mt-1 max-w-[420px] rounded-xl bg-field px-3 py-1.5 text-[12.5px] ${m.mine ? "ml-auto" : ""}`}>
-          <div className="mb-0.5 text-[11px] text-secondary">คำแปล</div>
+          <div className="mb-0.5 flex items-center gap-1 text-[11px] text-secondary">
+            <span>คำแปล</span>
+            <select
+              aria-label="แปลเป็นภาษา"
+              defaultValue={translateTarget()}
+              onChange={(e) => {
+                const target = e.target.value;
+                setTranslateTarget(target);
+                api
+                  .translate(m.text, target)
+                  .then((t) => setUi({ translations: { ...ui.state.translations, [m.id]: t } }))
+                  .catch((err) => notice(errorText(err)));
+              }}
+              className="rounded bg-transparent text-[11px] text-secondary outline-none hover:text-primary"
+            >
+              {translateLanguages.map((l) => (
+                <option key={l.code} value={l.code}>
+                  {l.label}
+                </option>
+              ))}
+            </select>
+          </div>
           {translation}
         </div>
       )}

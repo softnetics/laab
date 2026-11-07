@@ -18,6 +18,11 @@ export function linkify(text: string): Segment[] {
   return out;
 }
 
+/** The first web link in a message's text, the one LINE previews. */
+export function previewUrl(text: string): string | null {
+  return linkify(text).find((s) => s.url && /^https?:\/\//i.test(s.url))?.url ?? null;
+}
+
 const LIFF_ID = /^\d{6,}-[A-Za-z0-9]{6,}$/;
 
 export function liffId(url: string): string | null {

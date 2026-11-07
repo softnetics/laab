@@ -13,6 +13,10 @@ export interface Chat {
   muted: boolean;
   picture: string | null;
   memberCount: number | null;
+  /** A group we are invited to and have not joined. */
+  invited?: boolean;
+  /** In LINE's message request box: from someone who is not a friend, not accepted yet. */
+  request?: boolean;
   /** LAAB's own "mark as unread": shown as a dot, never sent to LINE. */
   markedUnread?: boolean;
 }
@@ -22,6 +26,7 @@ export interface ChatMember {
   name: string;
   all?: boolean;
   picture?: string | null;
+  invited?: boolean;
 }
 
 export interface MentionSpan {
@@ -36,7 +41,9 @@ export interface Reaction {
   reaction: ReactionName;
 }
 
-export type ReactionName = "NICE" | "LOVE" | "FUN" | "AMAZING" | "SAD" | "OMG" | "PAID";
+/** A paid reaction (a LINE emoji) is `PAID:<productId>:<emojiId>:<version>:<1|0 animated>`,
+ *  or plain `PAID` when its emoji is unknown. */
+export type ReactionName = "NICE" | "LOVE" | "FUN" | "AMAZING" | "SAD" | "OMG" | "PAID" | `PAID:${string}`;
 
 export interface Message {
   id: string;
@@ -128,6 +135,18 @@ export interface Sticker {
   version: string | null;
 }
 
+/** A link's preview card (LINE's preview service). */
+export interface LinkPreview {
+  url: string;
+  title: string;
+  summary: string;
+  domain: string;
+  /** LINE's copy of the page's picture. */
+  image: string | null;
+  /** LINE refused the page: on its phishing or block list. */
+  warning: "phishing" | "blocked" | null;
+}
+
 export interface StickerPack {
   id: string;
   name: string;
@@ -151,6 +170,8 @@ export interface Session {
   profile: Profile | null;
   syncDone: number;
   syncTotal: number;
+  /** LINE Premium; null until LINE says. Editing needs it. */
+  premium: boolean | null;
 }
 
 export interface Person {
@@ -174,7 +195,8 @@ export interface NotePost {
   authorMid: string;
   authorName: string;
   authorPicture: string | null;
-  media: { objectId: string; video: boolean }[];
+  /** `obs`: where it lies, `service/namespace/objectId`. */
+  media: { objectId: string; obs: string; video: boolean }[];
   text: string;
   createdTime: number;
   mediaCount: number;
@@ -202,6 +224,50 @@ export interface CalendarEvent {
   /** Whose calendar: a chat mid, or `cal:` and an id for the user's own
    *  calendar. Edits and deletes go here. */
   chatId: string;
+  /** How it repeats; `start`/`end` are then the first occurrence. */
+  recurrence?: CalendarRecurrence | null;
+  /** Occurrences changed or deleted on their own. */
+  overrides?: CalendarOverride[];
+  /** LINE `Reminder` values, see `reminderLabels`. */
+  reminders?: number[];
+  invitees?: CalendarInvitee[];
+  colorId?: number;
+  /** Set on one occurrence of a recurring event: its original start (ms),
+   *  LINE's recur_id. `id` stays the series'. */
+  recurId?: number;
+}
+
+export interface CalendarRecurrence {
+  frequency: "daily" | "weekly" | "monthly" | "yearly" | "other";
+  interval: number;
+  /** Last moment an occurrence may start, epoch ms. */
+  until: number | null;
+  /** iCalendar days: "MO"… for weekly, "2TU" / "-1FR" for monthly. */
+  byDay: string[];
+  /** Original starts (ms) of occurrences left out. */
+  exceptIds: number[];
+}
+
+export interface CalendarOverride {
+  recurId: number;
+  deleted: boolean;
+  title: string;
+  start: number;
+  end: number;
+  allDay: boolean;
+  timezone: string;
+  location: string;
+  url: string;
+  description: string;
+  /** This occurrence's invitees and their answers to it. */
+  invitees?: CalendarInvitee[];
+}
+
+export interface CalendarInvitee {
+  mid: string;
+  status: "needsAction" | "accepted" | "declined" | "";
+  me: boolean;
+  updatedAt: number;
 }
 
 /** Every calendar the user can see, for the rail's ปฏิทิน window. */
@@ -212,8 +278,19 @@ export interface AllCalendars {
 
 export type CalendarEventInput = Pick<
   CalendarEvent,
-  "title" | "start" | "end" | "allDay" | "timezone" | "location" | "url" | "description"
->;
+  "title" | "start" | "end" | "allDay" | "timezone" | "location" | "url" | "description" | "reminders"
+> & {
+  /** Left out, an edit keeps the event's rule as it is. */
+  repeat?: RepeatInput;
+};
+
+/** A repeat rule from the event form. `until` is epoch ms. */
+export interface RepeatInput {
+  frequency: "none" | "daily" | "weekly" | "monthly" | "yearly";
+  interval: number;
+  until: number | null;
+  byDay: string[];
+}
 
 export interface Album {
   id: string;
@@ -236,6 +313,7 @@ export interface NoteComment {
   authorPicture: string | null;
   text: string;
   createdTime: number;
+  /** OBS paths of its images, `service/namespace/objectId`. */
   images: string[];
 }
 
@@ -257,12 +335,35 @@ export interface ContactProfile {
 }
 
 /** An official account's rich menu, in canvas pixels. */
+/** What a rich-menu area does: `web` opens `uri`, `postback` sends `data`, `sendMessage` sends `text`,
+ *  `transition` shows `scene`, `clipboard` copies `clipboardText`. */
+/** A friend or an official account the user added. */
+export interface Friend {
+  mid: string;
+  name: string;
+  picture: string | null;
+  kind: "dm" | "bot";
+}
+
+export interface RichMenuAction {
+  type: string;
+  label: string | null;
+  uri: string | null;
+  data: string | null;
+  text: string | null;
+  scene: string | null;
+  clipboardText: string | null;
+}
+export interface RichMenuScene {
+  images: { url: string; x: number; y: number; w: number; h: number }[];
+  areas: { x: number; y: number; w: number; h: number; action: RichMenuAction }[];
+}
 export interface RichMenu {
   label: string;
   width: number;
   height: number;
-  images: { url: string; x: number; y: number; w: number; h: number }[];
-  areas: { x: number; y: number; w: number; h: number; action: { type: string; label: string | null; uri: string | null } }[];
+  initialScene: string;
+  scenes: Record<string, RichMenuScene>;
 }
 
 /** A LIFF window as LIFF DevTools sees it. */
@@ -291,4 +392,21 @@ export interface LiffDevSession {
   openedAt: number;
   closed: boolean;
   events: LiffDevEvent[];
+}
+
+/** A flex or template datetime picker button, as the message has it. */
+export interface PickerAction {
+  data: string;
+  mode: "date" | "time" | "datetime";
+  initial: string | null;
+  max: string | null;
+  min: string | null;
+}
+
+/** How LINE would show a picker for a button: `start` and the bounds are in the mode's format. */
+export interface PickerStart {
+  show: boolean;
+  start: string;
+  min: string | null;
+  max: string | null;
 }

@@ -132,7 +132,7 @@ async function exportChat(chat: Chat, name: (mid: string) => string) {
 }
 
 /** The chat header's ⋮ menu, in LINE for Mac's order, without what LAAB
- *  cannot do (เชิญ, โหวต, ตั้งค่า, รายงานปัญหา). */
+ *  cannot do (โหวต, ตั้งค่า, รายงานปัญหา). สมาชิก invites and removes. */
 export function HeaderMenu({ chat, secure }: { chat: Chat; secure: boolean }) {
   const people = usePeople();
   const list = useChatList();
@@ -142,6 +142,7 @@ export function HeaderMenu({ chat, secure }: { chat: Chat; secure: boolean }) {
     <>
       <Item onClick={() => run(api.setMuted(chat.id, !chat.muted))}>{chat.muted ? "เปิดแจ้งเตือน" : "ปิดแจ้งเตือน"}</Item>
       <Separator />
+      {group && !chat.invited && <Item onClick={() => setUi({ sheet: { kind: "group-members", chatId: chat.id } })}>สมาชิก</Item>}
       {group && <Item onClick={() => run(api.openAuxWindow("albums", chat.id, chat.name, "albums"))}>อัลบั้ม</Item>}
       <Item onClick={() => run(api.openAuxWindow("calendar", chat.id, chat.name))}>ปฏิทิน</Item>
       <Item onClick={() => run(api.openAuxWindow("media", chat.id, chat.name, "media"))}>รูป & วิดีโอ</Item>

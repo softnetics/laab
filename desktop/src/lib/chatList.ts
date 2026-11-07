@@ -9,7 +9,9 @@ export const listPreview = (p: string) => p.replace(/^(เขา|คุณ|They|
 
 export function filterChats(list: ChatList, filter: ChatFilter, sort: ChatSort, query: string): Chat[] {
   const pinned = list.pins.main ?? [];
-  let chats = list.chats;
+  // Chats in the message request box stay out of every list but their
+  // own, as in LINE.
+  let chats = filter === "requests" ? list.chats.filter((c) => c.request) : list.chats.filter((c) => !c.request);
   if (filter === "friends") chats = chats.filter((c) => c.kind === "dm");
   else if (filter === "groups") chats = chats.filter((c) => c.kind === "group");
   else if (filter === "official") chats = chats.filter((c) => c.kind === "bot");
@@ -26,6 +28,13 @@ export function filterChats(list: ChatList, filter: ChatFilter, sort: ChatSort, 
     ...sorted.filter((c) => rank.has(c.id)).sort((a, b) => rank.get(a.id)! - rank.get(b.id)!),
     ...sorted.filter((c) => !rank.has(c.id)),
   ];
+}
+
+/** The message request box entry: how many chats wait and whether any is
+ *  unread (LINE lights a dot on the entry for a new request). */
+export function requestBox(list: ChatList): { count: number; unread: boolean } {
+  const waiting = list.chats.filter((c) => c.request);
+  return { count: waiting.length, unread: waiting.some((c) => c.unread > 0) };
 }
 
 export type ListRow =

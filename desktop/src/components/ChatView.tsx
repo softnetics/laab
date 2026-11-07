@@ -14,6 +14,7 @@ import { dismissTop, notice, ui } from "../lib/ui";
 import { Announcements } from "./Announcements";
 import { HeaderMenu } from "./ChatActions";
 import { Composer, type ComposerHandle } from "./Composer";
+import { InvitationBar, MessageRequestBar } from "./GroupSheets";
 import { RichMenu } from "./RichMenu";
 import { BellSlashIcon, ChevronIcon, CloseIcon, ExternalIcon, MoreVIcon, NoteIcon, SearchIcon, SpeakerIcon } from "./Icons";
 import { popupClass, Spinner } from "./kit";
@@ -187,7 +188,9 @@ export function ChatView({ chatId, main }: { chatId: string; main: boolean }) {
     return () => window.removeEventListener("keydown", onKey, true);
   });
 
-  // Files dropped while an upload runs wait for it, in the order they came.
+  // Files dropped on the chat are sent one by one, through the composer so
+  // a failure shows there with Retry. Files dropped while an upload runs
+  // wait for it, in the order they came.
   const uploadQueue = useRef(Promise.resolve());
   const pendingUploads = useRef(0);
   const sendDropped = useRef((_: string[]) => {});
@@ -196,7 +199,7 @@ export function ChatView({ chatId, main }: { chatId: string; main: boolean }) {
     pendingUploads.current += 1;
     setUploading(true);
     uploadQueue.current = uploadQueue.current
-      .then(() => api.sendFiles(chatId, paths))
+      .then(() => composer.current?.sendFiles(paths))
       .catch((err) => notice(errorText(err)))
       .finally(() => {
         pendingUploads.current -= 1;
@@ -204,7 +207,6 @@ export function ChatView({ chatId, main }: { chatId: string; main: boolean }) {
       });
   };
 
-  // Files dropped on the chat are sent one by one.
   useEffect(() => {
     const off = getCurrentWebview().onDragDropEvent((e) => {
       if (e.payload.type === "over" || e.payload.type === "enter") setDragging(true);
@@ -344,26 +346,31 @@ export function ChatView({ chatId, main }: { chatId: string; main: boolean }) {
         search={search.open && search.debounced.trim() ? { query: search.debounced, hits, index: search.index } : null}
       />
       {stickers && <StickerPanel chatId={chatId} onClose={() => setStickers(false)} />}
-      <Composer
-        ref={composer}
-        chatId={chatId}
-        group={group}
-        disabled={!(signedIn || session?.state === "demo")}
-        members={members}
-        loadMembers={loadMembers}
-        stickerOpen={stickers}
-        onToggleStickers={() => setStickers((v) => !v)}
-        name={name}
-        picture={picture}
-        onStep={
-          main
-            ? (step) => {
-                const next = adjacentChat(ui.state.visibleChatIds, chatId, step);
-                if (next) openChat(next);
-              }
-            : undefined
-        }
-      />
+      {chat?.request && !chat.invited && <MessageRequestBar chat={chat} />}
+      {chat?.invited ? (
+        <InvitationBar chat={chat} />
+      ) : (
+        <Composer
+          ref={composer}
+          chatId={chatId}
+          group={group}
+          disabled={!(signedIn || session?.state === "demo")}
+          members={members}
+          loadMembers={loadMembers}
+          stickerOpen={stickers}
+          onToggleStickers={() => setStickers((v) => !v)}
+          name={name}
+          picture={picture}
+          onStep={
+            main
+              ? (step) => {
+                  const next = adjacentChat(ui.state.visibleChatIds, chatId, step);
+                  if (next) openChat(next);
+                }
+              : undefined
+          }
+        />
+      )}
       {chat?.kind === "bot" && <RichMenu key={chatId} chatId={chatId} />}
       {uploading && (
         <div className="pointer-events-none absolute right-3 bottom-3 z-20 flex items-center gap-2 rounded-full bg-black/70 px-3 py-1.5 text-[12px] text-white shadow-lg">
