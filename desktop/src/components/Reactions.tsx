@@ -72,7 +72,7 @@ export function ReactButton({
   );
 }
 
-/** Under the bubble: up to three emoji and a count; click for who reacted. */
+/** Nested on the bubble's bottom corner: up to three art chips and a count. */
 export function ReactionBadge({
   list,
   name,
@@ -97,18 +97,18 @@ export function ReactionBadge({
       side="bottom"
       className="w-[240px] overflow-hidden"
       trigger={
-        <button title="ดูว่าใครกดรีแอคชัน" className="flex items-center gap-1 rounded-full">
-          <span className="flex">
+        <button
+          title="ดูว่าใครกดรีแอคชัน"
+          className="flex items-center gap-0.5 rounded-full bg-white py-[3px] pr-1.5 pl-[3px] shadow-[0_1px_4px_rgba(0,0,0,0.16)] ring-1 ring-black/6"
+        >
+          <span className="flex items-center">
             {types.map((t, i) => (
-              <span
-                key={t}
-                className={`grid h-[22px] w-[22px] place-items-center rounded-full bg-white text-[13px] ring-[1.5px] ring-chat ${i ? "-ml-1.5" : ""}`}
-              >
-                <Glyph reaction={t} size={15} />
+              <span key={t} className={`grid h-[20px] w-[20px] place-items-center leading-none ${i ? "-ml-0.5" : ""}`}>
+                <Glyph reaction={t} size={18} />
               </span>
             ))}
           </span>
-          {list.length > 1 && <span className="pr-1.5 text-[11px] text-secondary">{list.length}</span>}
+          {list.length > 1 && <span className="pr-0.5 text-[11px] leading-none text-secondary">{list.length}</span>}
         </button>
       }
     >
@@ -118,9 +118,7 @@ export function ReactionBadge({
           <div key={r.userId} className="flex items-center gap-2.5 px-3.5 py-[5px]">
             <Avatar id={r.userId} name={name(r.userId)} picture={picture(r.userId)} size={28} />
             <span className="flex-1 truncate text-[13px]">{r.userId === me ? "คุณ" : name(r.userId)}</span>
-            <span className="text-[16px]">
-              <Glyph reaction={r.reaction} size={20} />
-            </span>
+            <Glyph reaction={r.reaction} size={20} />
           </div>
         ))}
       </div>

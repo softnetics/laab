@@ -1,0 +1,180 @@
+//! Back and forward buttons on the leading edge of a LIFF window's title bar,
+//! and reload on the trailing edge. Drawn inside the page, buttons would sit
+//! over the LIFF app's own UI.
+
+use tauri::WebviewWindow;
+
+#[cfg(target_os = "macos")]
+pub fn add(window: &WebviewWindow) {
+    use crate::liff_devtools::Nav;
+    use tauri::Manager;
+
+    let Ok(ptr) = window.ns_window() else { return };
+    let addr = ptr as usize;
+    let (app, label) = (window.app_handle().clone(), window.label().to_string());
+    let action = move |nav: Nav| -> Box<dyn Fn() + Send> {
+        let (app, label) = (app.clone(), label.clone());
+        Box::new(move || {
+            let _ = crate::liff_devtools::navigate(&app, &label, nav);
+        })
+    };
+    let leading = vec![
+        Button {
+            symbol: "chevron.backward",
+            name: "ย้อนกลับ",
+            tip: "ย้อนกลับ (⌘[)",
+            action: action(Nav::Back),
+        },
+        Button {
+            symbol: "chevron.forward",
+            name: "ไปข้างหน้า",
+            tip: "ไปข้างหน้า (⌘])",
+            action: action(Nav::Forward),
+        },
+    ];
+    let trailing = vec![Button {
+        symbol: "arrow.clockwise",
+        name: "รีโหลด",
+        tip: "รีโหลด (⌘R)",
+        action: action(Nav::Reload),
+    }];
+    let _ = window.run_on_main_thread(move || {
+        use objc2_app_kit::NSLayoutAttribute;
+        install(addr, leading, NSLayoutAttribute::Left);
+        install(addr, trailing, NSLayoutAttribute::Right);
+    });
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn add(_window: &WebviewWindow) {}
+
+#[cfg(target_os = "macos")]
+struct Button {
+    /// An SF Symbol.
+    symbol: &'static str,
+    /// What VoiceOver reads.
+    name: &'static str,
+    tip: &'static str,
+    action: Box<dyn Fn() + Send>,
+}
+
+#[cfg(target_os = "macos")]
+mod mac {
+    use objc2::rc::Retained;
+    use objc2::runtime::AnyObject;
+    use objc2::{DefinedClass, MainThreadOnly, define_class, msg_send};
+    use objc2_app_kit::{NSResponder, NSTitlebarAccessoryViewController, NSViewController};
+    use objc2_foundation::{MainThreadMarker, NSObject, NSObjectProtocol};
+
+    pub struct Ivars {
+        /// Indexed by the sending button's tag.
+        pub actions: Vec<Box<dyn Fn()>>,
+    }
+
+    define_class!(
+        // SAFETY: NSTitlebarAccessoryViewController has no subclassing
+        // requirements, and this class doesn't implement Drop.
+        //
+        // The controller is its buttons' target: buttons don't retain their
+        // target, but the window retains its accessory controllers.
+        #[unsafe(super(NSTitlebarAccessoryViewController, NSViewController, NSResponder, NSObject))]
+        #[thread_kind = MainThreadOnly]
+        #[name = "LAABLiffTitlebarAccessory"]
+        #[ivars = Ivars]
+        pub struct Accessory;
+
+        impl Accessory {
+            #[unsafe(method(act:))]
+            fn act(&self, sender: Option<&AnyObject>) {
+                let Some(sender) = sender else { return };
+                // SAFETY: only the accessory's NSButtons send `act:`.
+                let tag: isize = unsafe { msg_send![sender, tag] };
+                if let Some(action) = usize::try_from(tag).ok().and_then(|i| self.ivars().actions.get(i)) {
+                    action();
+                }
+            }
+        }
+
+        unsafe impl NSObjectProtocol for Accessory {}
+    );
+
+    impl Accessory {
+        pub fn new(mtm: MainThreadMarker, actions: Vec<Box<dyn Fn()>>) -> Retained<Self> {
+            let this = Self::alloc(mtm).set_ivars(Ivars { actions });
+            // SAFETY: NSViewController's designated initializer with no nib.
+            unsafe {
+                msg_send![super(this), initWithNibName: None::<&AnyObject>, bundle: None::<&AnyObject>]
+            }
+        }
+    }
+}
+
+/// Main thread only.
+#[cfg(target_os = "macos")]
+fn install(addr: usize, buttons: Vec<Button>, side: objc2_app_kit::NSLayoutAttribute) {
+    use objc2::{MainThreadOnly, sel};
+    use objc2_app_kit::{
+        NSAutoresizingMaskOptions, NSBezelStyle, NSButton, NSColor, NSImage, NSView, NSWindow,
+    };
+    use objc2_foundation::{MainThreadMarker, NSPoint, NSRect, NSSize, NSString};
+
+    const WIDTH: f64 = 28.0;
+    const GAP: f64 = 2.0;
+    const INSET: f64 = 4.0;
+
+    let Some(mtm) = MainThreadMarker::new() else {
+        return;
+    };
+    // SAFETY: the pointer is the live NSWindow behind a Tauri window, and
+    // this runs on the main thread.
+    let window = unsafe { &*(addr as *const NSWindow) };
+    let mut images = Vec::with_capacity(buttons.len());
+    for b in &buttons {
+        let Some(image) = NSImage::imageWithSystemSymbolName_accessibilityDescription(
+            &NSString::from_str(b.symbol),
+            Some(&NSString::from_str(b.name)),
+        ) else {
+            return;
+        };
+        images.push(image);
+    }
+
+    let n = buttons.len() as f64;
+    let bar = NSView::initWithFrame(
+        NSView::alloc(mtm),
+        NSRect::new(
+            NSPoint::new(0.0, 0.0),
+            NSSize::new(INSET * 2.0 + WIDTH * n + GAP * (n - 1.0), 28.0),
+        ),
+    );
+    let tips: Vec<_> = buttons.iter().map(|b| b.tip).collect();
+    let accessory = mac::Accessory::new(
+        mtm,
+        buttons
+            .into_iter()
+            .map(|b| b.action as Box<dyn Fn()>)
+            .collect(),
+    );
+    for (i, (image, tip)) in images.iter().zip(tips).enumerate() {
+        // SAFETY: the target implements `act:`, and outlives the button.
+        let button = unsafe {
+            NSButton::buttonWithImage_target_action(image, Some(&accessory), Some(sel!(act:)), mtm)
+        };
+        button.setTag(i as isize);
+        button.setBezelStyle(NSBezelStyle::Toolbar);
+        button.setShowsBorderOnlyWhileMouseInside(true);
+        button.setContentTintColor(Some(&NSColor::secondaryLabelColor()));
+        button.setToolTip(Some(&NSString::from_str(tip)));
+        button.setFrame(NSRect::new(
+            NSPoint::new(INSET + (WIDTH + GAP) * i as f64, 2.0),
+            NSSize::new(WIDTH, 24.0),
+        ));
+        button.setAutoresizingMask(
+            NSAutoresizingMaskOptions::ViewMinYMargin | NSAutoresizingMaskOptions::ViewMaxYMargin,
+        );
+        bar.addSubview(&button);
+    }
+    accessory.setView(&bar);
+    accessory.setLayoutAttribute(side);
+    window.addTitlebarAccessoryViewController(&accessory);
+}

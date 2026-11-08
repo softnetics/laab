@@ -74,6 +74,7 @@ To build the `.app`, run `./scripts/build-desktop.sh` (it takes the version from
 - ⌥↑ and ⌥↓ switch chats, and so do ↑ and ↓ when the list has focus; a chat loads after you've rested on it for 150 ms
 - Rows for unsent messages; silent unsends stay hidden, and the cached files of unsent messages are deleted
 - Reactions: pick, change, remove, and see who reacted
+- The smile button opens stickers and an อิโมจิ (Emoji) tab with 250 basic LINE emoji; click one to send it immediately as a standalone native LINE emoji. The emoji tab also works in demo mode.
 - LINE-style call history rows and group event rows (`C_MI`)
 - A developer tool that shows a message's raw data
 - Drag one chat onto another to make a folder and name it, Discord-style; drag a chat out to take it out of the folder

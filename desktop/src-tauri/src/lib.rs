@@ -7,10 +7,12 @@ mod commands;
 mod convert;
 mod crash;
 mod demo;
+mod emoji;
 mod fold;
 mod keychain;
 mod liff;
 mod liff_devtools;
+mod liff_titlebar;
 mod line;
 mod logfile;
 mod mcp;
@@ -255,6 +257,7 @@ pub fn run() {
             commands::send_text,
             commands::new_req_seq,
             commands::send_sticker,
+            commands::send_emoji,
             commands::stickers,
             commands::sticker_pack,
             commands::send_files,
@@ -310,6 +313,7 @@ pub fn run() {
             commands::clear_cache,
             commands::announcements,
             commands::rich_menu,
+            commands::official_badge,
             commands::login_password,
             commands::unsend,
             commands::edit_message,

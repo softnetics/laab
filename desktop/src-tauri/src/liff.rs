@@ -429,6 +429,13 @@ pub fn open_window(state: &Arc<AppState>, view: &LiffView, chat: Option<String>)
                     let _ = crate::liff_devtools::open(&nav_app2, Some(&nav_label2));
                     false
                 }
+                "laab-nav" => {
+                    use crate::liff_devtools::{Nav, navigate};
+                    if let Some(nav) = u.host_str().and_then(Nav::from_host) {
+                        let _ = navigate(&nav_app2, &nav_label2, nav);
+                    }
+                    false
+                }
                 "laab-scan" => {
                     let cb = u
                         .query_pairs()
@@ -530,7 +537,8 @@ pub fn open_window(state: &Arc<AppState>, view: &LiffView, chat: Option<String>)
     if client {
         builder = builder.initialization_script(bridge(&view.info["scopes"]));
     }
-    builder.build()?;
+    let window = builder.build()?;
+    crate::liff_titlebar::add(&window);
     crate::liff_devtools::opened(&app, &label, view, chat_for_log);
     Ok(())
 }

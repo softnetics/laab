@@ -183,6 +183,12 @@ export const SpeakerIcon = (p: P) => (
     <path d="M4 9.5v5a1 1 0 0 0 1 1h3l4.4 3.7a1 1 0 0 0 1.6-.8V5.6a1 1 0 0 0-1.6-.8L8 8.5H5a1 1 0 0 0-1 1Zm12.5-1.8a1 1 0 0 1 1.4 0 6 6 0 0 1 0 8.6 1 1 0 1 1-1.4-1.4 4 4 0 0 0 0-5.8 1 1 0 0 1 0-1.4Z" />
   </svg>
 );
+export const ShieldCheckIcon = (p: P) => (
+  <svg {...base(p)}>
+    <path d="M11.3 1.7a2 2 0 0 1 1.4 0l7 2.6A2 2 0 0 1 21 6.2V11c0 5.3-3.6 9.6-8.4 11.2a2 2 0 0 1-1.2 0C6.6 20.6 3 16.3 3 11V6.2a2 2 0 0 1 1.3-1.9l7-2.6Z" />
+    <path d="m8 11.8 2.8 2.8L16.2 9" fill="none" stroke="#fff" strokeWidth={2.4} strokeLinecap="round" strokeLinejoin="round" />
+  </svg>
+);
 export const BookmarkIcon = (p: P) => (
   <svg {...base(p)} fill="none" stroke="currentColor" strokeWidth={p.strokeWidth ?? 1.9} strokeLinejoin="round">
     <path d="M6.5 3.5h11a1 1 0 0 1 1 1V20l-6.5-4.2L5.5 20V4.5a1 1 0 0 1 1-1Z" />

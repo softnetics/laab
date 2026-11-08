@@ -203,6 +203,41 @@ fn poll(app: AppHandle, label: String) {
     });
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Nav {
+    Back,
+    Forward,
+    Reload,
+}
+
+impl Nav {
+    /// The host of a `laab-nav://` link from the page's shortcuts.
+    pub fn from_host(host: &str) -> Option<Self> {
+        match host {
+            "back" => Some(Self::Back),
+            "forward" => Some(Self::Forward),
+            "reload" => Some(Self::Reload),
+            _ => None,
+        }
+    }
+}
+
+/// Go back or forward in a LIFF page's history, or reload it with the tokens
+/// already in its URL. Logged from here because the page's own buffer goes
+/// with the page before it is drained.
+pub fn navigate(app: &AppHandle, label: &str, nav: Nav) -> tauri::Result<()> {
+    let Some(w) = app.get_webview_window(label) else {
+        return Err(tauri::Error::WebviewNotFound);
+    };
+    let (text, js) = match nav {
+        Nav::Back => ("ย้อนกลับ", "history.back()"),
+        Nav::Forward => ("ไปข้างหน้า", "history.forward()"),
+        Nav::Reload => ("รีโหลด", "location.reload()"),
+    };
+    push(app, label, "nav", "info", text);
+    w.eval(js)
+}
+
 /// Run `code` in the LIFF page and log it and its result, like a console.
 pub fn eval(app: &AppHandle, label: &str, code: &str) -> tauri::Result<()> {
     let Some(w) = app.get_webview_window(label) else {
@@ -271,7 +306,9 @@ pub fn open(app: &AppHandle, focus: Option<&str>) -> tauri::Result<()> {
 
 /// Records page events: console output, uncaught errors, failed resources,
 /// fetch and XHR results, and page loads. Tokens in the URL fragment are
-/// left out. ⌥⌘L opens LIFF DevTools on this window.
+/// left out. ⌘[ and ⌘] go back and forward, and ⌘R reloads the page with the
+/// same tokens, as the title bar's buttons do; ⌥⌘L opens LIFF DevTools on
+/// this window.
 pub const CAPTURE: &str = r#"(function(){
   if (window.__laabDev) return;
   var buf = [];
@@ -378,6 +415,14 @@ pub const CAPTURE: &str = r#"(function(){
     if (e.altKey && e.metaKey && (e.key === 'l' || e.key === 'L' || e.code === 'KeyL')) {
       e.preventDefault();
       location.href = 'laab-devtools://open';
+      return;
+    }
+    if (!e.metaKey || e.altKey || e.ctrlKey || e.shiftKey) return;
+    var nav = e.code === 'BracketLeft' ? 'back' : e.code === 'BracketRight' ? 'forward'
+      : (e.key === 'r' || e.key === 'R' || e.code === 'KeyR') ? 'reload' : null;
+    if (nav) {
+      e.preventDefault();
+      location.href = 'laab-nav://' + nav;
     }
   }, true);
 })();"#;
@@ -401,6 +446,14 @@ mod tests {
             ("console", "warn", "hi")
         );
         assert!(parse_drained("null").is_empty());
+    }
+
+    #[test]
+    fn reads_navigation_links() {
+        assert_eq!(Nav::from_host("back"), Some(Nav::Back));
+        assert_eq!(Nav::from_host("forward"), Some(Nav::Forward));
+        assert_eq!(Nav::from_host("reload"), Some(Nav::Reload));
+        assert_eq!(Nav::from_host("open"), None);
     }
 
     #[test]

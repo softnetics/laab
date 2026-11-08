@@ -526,7 +526,9 @@ export const Composer = forwardRef<
           <kbd className={kbd}>⌥⏎</kbd> ส่งแบบไม่มีการแจ้งเตือน
         </span>
         <button
-          title="สติกเกอร์"
+          title="สติกเกอร์และอิโมจิ"
+          aria-label="สติกเกอร์และอิโมจิ"
+          aria-expanded={stickerOpen}
           onClick={(e) => (e.stopPropagation(), onToggleStickers())}
           className={`grid h-8 w-8 place-items-center hover:text-primary ${stickerOpen ? "text-line-green" : ""}`}
         >

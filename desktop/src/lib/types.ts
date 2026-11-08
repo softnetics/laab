@@ -345,6 +345,8 @@ export interface Friend {
   kind: "dm" | "bot";
 }
 
+export type OfficialBadge = "premium" | "verified" | "unverified";
+
 export interface RichMenuAction {
   type: string;
   label: string | null;

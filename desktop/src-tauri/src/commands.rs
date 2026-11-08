@@ -70,9 +70,25 @@ pub struct ChatList {
 
 #[tauri::command]
 pub fn chats(state: S<'_>) -> R<ChatList> {
-    let store = state.store();
+    let mut store = state.store();
+    let mut chats = store.chats().map_err(err)?;
+    // Old rows stored "(LINE emoji)" as plain text; redraw from the last message.
+    for chat in &mut chats {
+        if !chat.preview.contains("(LINE emoji)") {
+            continue;
+        }
+        let Some(last) = store.messages(&chat.id, 1).ok().and_then(|mut m| m.pop()) else {
+            continue;
+        };
+        let next = convert::preview_line(&last);
+        if next == chat.preview {
+            continue;
+        }
+        chat.preview = next;
+        let _ = store.upsert_chats(std::slice::from_ref(chat));
+    }
     Ok(ChatList {
-        chats: store.chats().map_err(err)?,
+        chats,
         workspaces: store.workspaces().map_err(err)?,
         pins: store.pins().map_err(err)?,
     })
@@ -335,6 +351,38 @@ pub async fn send_text(
     if m.reply_to.is_none() {
         m.reply_to = reply_to;
     }
+    if m.created_time <= 0.0 {
+        m.created_time = now_ms();
+    }
+    store_sent(&s, &m);
+    Ok(m)
+}
+
+#[tauri::command]
+pub async fn send_emoji(state: S<'_>, chat_id: String, emoji_id: String) -> R<Message> {
+    let s = state.inner().clone();
+    let input = crate::emoji::input(&emoji_id)?;
+    let text = input.text.clone().unwrap_or_default();
+    let metadata = input.content_metadata.clone();
+    let mut m = if s.demo {
+        local_message(&s, &chat_id, &text, vec![])
+    } else {
+        let l = s.line().await.ok_or("not_logged_in")?;
+        let sent = l
+            .client
+            .send_message(&chat_id, input)
+            .await
+            .map_err(|e| send_failed(&s, crate::usage::Action::SentText, e))?;
+        crate::usage::hit(crate::usage::Action::SentText);
+        convert::message_from_json(&line::message_json(&sent.raw), &l.me, true)
+            .unwrap_or_else(|| local_message(&s, &chat_id, &text, vec![]))
+    };
+    // Send responses can omit text/metadata. Preserve the native emoji locally.
+    m.chat_id = chat_id;
+    m.mine = true;
+    m.text = text;
+    m.content_type = "NONE".into();
+    m.metadata.extend(metadata);
     if m.created_time <= 0.0 {
         m.created_time = now_ms();
     }
@@ -1382,6 +1430,48 @@ pub async fn rich_menu(state: S<'_>, chat_id: String) -> R<Option<crate::richmen
             err(e)
         })?;
     Ok(crate::richmenu::from_chat_bar(&bar.to_json()))
+}
+
+/// An official account's badge: `premium` (green), `verified` (blue) or
+/// `unverified` (gray), from `BuddyDetail.verifiedIconType` as LINE for Mac
+/// 26.5 reads it. That is field 41, past the end of line-rs's schema, so it
+/// may come back keyed by its id.
+fn badge_of(detail: &serde_json::Value) -> &'static str {
+    let icon = [&detail["verifiedIconType"], &detail["41"]]
+        .into_iter()
+        .find_map(convert::num_of);
+    match icon {
+        Some(1.0) => "verified",
+        Some(2.0) => "premium",
+        _ => "unverified",
+    }
+}
+
+#[tauri::command]
+pub async fn official_badge(state: S<'_>, chat_id: String) -> R<Option<&'static str>> {
+    let s = state.inner().clone();
+    if s.demo {
+        return Ok(match chat_id.as_str() {
+            "b_news" => Some("premium"),
+            "b_parcel" => Some("verified"),
+            _ => None,
+        });
+    }
+    let Some(l) = s.line().await else {
+        return Ok(None);
+    };
+    let detail = l
+        .client
+        .base
+        .buddy()
+        .get_buddy_detail(line_rs::tv!({ "buddyMid": chat_id.clone() }))
+        .await
+        .map_err(|e| {
+            tracing::warn!("buddy detail {chat_id}: {e:?}");
+            err(e)
+        })?
+        .to_json();
+    Ok(Some(badge_of(&detail)))
 }
 
 // ---------------------------------------------------------------- line-rs extras

@@ -1,12 +1,144 @@
 import { useQuery } from "@tanstack/react-query";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { api, errorText, mediaUrl, q, queryClient } from "../lib/api";
+import basicEmoji from "../lib/basicEmoji.json";
 import type { Sticker } from "../lib/types";
 import { notice } from "../lib/ui";
-import { CloseIcon } from "./Icons";
+import { ClockIcon, CloseIcon } from "./Icons";
 import { Spinner } from "./kit";
 
+const EMOJI_RECENT_KEY = "laab.emojiRecent";
+const EMOJI_RECENT_MAX = 35;
+const emojiIds = Array.from({ length: basicEmoji.count }, (_, i) => String(i + 1).padStart(3, "0"));
+const emojiSrc = (id: string) =>
+  `https://stickershop.line-scdn.net/sticonshop/v1/sticon/${basicEmoji.productId}/android/${id}.png`;
+const packTabSrc = `https://stickershop.line-scdn.net/sticonshop/v1/sticon/${basicEmoji.productId}/android/tab_on.png`;
+
+function readRecent(): string[] {
+  try {
+    const raw = JSON.parse(localStorage.getItem(EMOJI_RECENT_KEY) ?? "[]");
+    if (!Array.isArray(raw)) return [];
+    return raw.filter((id): id is string => typeof id === "string" && emojiIds.includes(id)).slice(0, EMOJI_RECENT_MAX);
+  } catch {
+    return [];
+  }
+}
+
+function rememberRecent(id: string) {
+  const next = [id, ...readRecent().filter((x) => x !== id)].slice(0, EMOJI_RECENT_MAX);
+  localStorage.setItem(EMOJI_RECENT_KEY, JSON.stringify(next));
+  return next;
+}
+
 export function StickerPanel({ chatId, onClose }: { chatId: string; onClose: () => void }) {
+  const [mode, setMode] = useState<"stickers" | "emoji">("stickers");
+  return (
+    <div className="flex h-[288px] flex-col overflow-hidden border-t border-separator bg-chat">
+      <div className="flex h-10 shrink-0 items-center gap-5 border-b border-separator px-3">
+        {([ ["stickers", "สติกเกอร์"], ["emoji", "อิโมจิ"] ] as const).map(([value, label]) => {
+          const active = mode === value;
+          return (
+            <button
+              key={value}
+              aria-pressed={active}
+              onClick={() => setMode(value)}
+              className={`relative h-full px-0.5 text-[13px] focus-visible:outline-2 focus-visible:outline-line-green ${
+                active ? "font-medium text-primary" : "text-secondary hover:text-primary"
+              }`}
+            >
+              {label}
+              {active && <span className="absolute inset-x-0 bottom-0 h-[2px] rounded-full bg-primary" />}
+            </button>
+          );
+        })}
+        <button title="ปิด" aria-label="ปิด" onClick={onClose} className="ml-auto grid h-8 w-8 place-items-center rounded-md text-secondary hover:bg-field">
+          <CloseIcon size={16} />
+        </button>
+      </div>
+      {mode === "emoji" ? <EmojiPicker key={chatId} chatId={chatId} /> : <StickerPacks chatId={chatId} />}
+    </div>
+  );
+}
+
+function EmojiPicker({ chatId }: { chatId: string }) {
+  const sending = useRef(false);
+  const [pending, setPending] = useState<string | null>(null);
+  const [shelf, setShelf] = useState<"recent" | "pack">("pack");
+  const [recent, setRecent] = useState(readRecent);
+  const ids = shelf === "recent" ? recent : emojiIds;
+
+  const send = async (id: string) => {
+    if (sending.current) return;
+    sending.current = true;
+    setPending(id);
+    try {
+      await api.sendEmoji(chatId, id);
+      setRecent(rememberRecent(id));
+    } catch (e) {
+      notice(`ส่งอิโมจิไม่สำเร็จ: ${errorText(e)} กรุณาลองอีกครั้ง`);
+    } finally {
+      sending.current = false;
+      setPending(null);
+    }
+  };
+
+  return (
+    <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
+      <div className="flex h-11 shrink-0 items-center gap-2 border-b border-separator px-2.5">
+        <button
+          title="ล่าสุด"
+          aria-label="อิโมจิล่าสุด"
+          aria-pressed={shelf === "recent"}
+          onClick={() => setShelf("recent")}
+          className={`grid h-8 w-8 shrink-0 place-items-center rounded-full focus-visible:outline-2 focus-visible:outline-line-green ${
+            shelf === "recent" ? "bg-[#4B8BF5] text-white" : "bg-field text-secondary hover:text-primary"
+          }`}
+        >
+          <ClockIcon size={15} strokeWidth={2} />
+        </button>
+        <button
+          title="อิโมจิ LINE"
+          aria-label="อิโมจิ LINE"
+          aria-pressed={shelf === "pack"}
+          onClick={() => setShelf("pack")}
+          className={`grid h-8 w-8 shrink-0 place-items-center rounded-[9px] focus-visible:outline-2 focus-visible:outline-line-green ${
+            shelf === "pack" ? "bg-white shadow-[0_0_0_1px_rgba(0,0,0,0.08),0_1px_3px_rgba(0,0,0,0.12)]" : "hover:bg-field"
+          }`}
+        >
+          <img src={packTabSrc} alt="" className="h-6 w-6 object-contain" draggable={false} />
+        </button>
+      </div>
+      <div className="min-h-0 flex-1 overflow-y-auto px-3 py-2" aria-label="อิโมจิ LINE" aria-busy={pending !== null}>
+        {shelf === "recent" && recent.length === 0 ? (
+          <div className="grid h-full place-items-center px-6 text-center text-[13px] text-secondary">
+            ยังไม่มีอิโมจิล่าสุด ส่งจากชุดอิโมจิเพื่อเก็บไว้ที่นี่
+          </div>
+        ) : (
+          <div className="grid grid-cols-5 gap-x-2 gap-y-3">
+            {ids.map((id) => (
+              <button
+                key={id}
+                title={`ส่งอิโมจิ LINE ${id}`}
+                aria-label={`ส่งอิโมจิ LINE ${id}`}
+                disabled={pending !== null}
+                onClick={() => send(id)}
+                className="grid aspect-square place-items-center rounded-lg hover:bg-field focus-visible:outline-2 focus-visible:outline-line-green disabled:opacity-50"
+              >
+                {pending === id ? (
+                  <Spinner size={18} />
+                ) : (
+                  <img src={emojiSrc(id)} alt="" loading="lazy" className="h-[72%] w-[72%] object-contain" draggable={false} />
+                )}
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function StickerPacks({ chatId }: { chatId: string }) {
   const { data: packs, error, isLoading, refetch } = useQuery(q.stickers);
   const [pack, setPack] = useState<string | null>(null);
   useEffect(() => {
@@ -36,7 +168,7 @@ export function StickerPanel({ chatId, onClose }: { chatId: string; onClose: () 
     }
   };
   return (
-    <div className="flex h-[248px] flex-col overflow-hidden border-t border-separator bg-chat">
+    <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
       <div className="min-h-0 flex-1 overflow-y-auto p-2">
         {(isLoading || (lazy && opened.isLoading)) && (
           <div className="grid h-full place-items-center">
@@ -98,9 +230,6 @@ export function StickerPanel({ chatId, onClose }: { chatId: string; onClose: () 
             </button>
           ))}
         </div>
-        <button title="ปิด" onClick={onClose} className="grid h-8 w-8 place-items-center rounded-md text-secondary hover:bg-field">
-          <CloseIcon size={16} />
-        </button>
       </div>
     </div>
   );

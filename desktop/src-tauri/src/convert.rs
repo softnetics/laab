@@ -346,6 +346,9 @@ pub fn call_text(m: &Message, caller: &str) -> String {
     }
 }
 
+/// Marker the chat list turns into a sticon image: `\u{200c}sticon:product:id:ver\u{200c}`.
+pub const STICON_PREVIEW_MARK: char = '\u{200c}';
+
 /// The body of a chat-list preview or notification, without "คุณ: ".
 pub fn preview_body(m: &Message) -> String {
     if m.unsent > 0 {
@@ -376,6 +379,9 @@ pub fn preview_body(m: &Message) -> String {
         "LOCATION" => "ตำแหน่ง".into(),
         "CONTACT" => "รายชื่อติดต่อ".into(),
         _ => {
+            if let Some(rich) = sticon_only_preview(m) {
+                return rich;
+            }
             let text = m.text.trim();
             if text.is_empty() {
                 "ข้อความ".into()
@@ -384,6 +390,67 @@ pub fn preview_body(m: &Message) -> String {
             }
         }
     }
+}
+
+/// One to three LINE emoji and nothing else → markers the list draws as pictures.
+fn sticon_only_preview(m: &Message) -> Option<String> {
+    let resources = sticon_resources(m)?;
+    if resources.is_empty() || resources.len() > 3 {
+        return None;
+    }
+    let utf16_len = m.text.encode_utf16().count() as u32;
+    if utf16_len == 0 {
+        return None;
+    }
+    let mut covered = vec![false; utf16_len as usize];
+    for &(s, e, ..) in &resources {
+        if e > utf16_len || s >= e {
+            return None;
+        }
+        for i in s..e {
+            covered[i as usize] = true;
+        }
+    }
+    let only_emoji = m.text.trim() == "(LINE emoji)" || covered.iter().all(|&c| c);
+    if !only_emoji {
+        return None;
+    }
+    let mut out = String::new();
+    for &(_, _, ref product, ref id, version) in &resources {
+        out.push(STICON_PREVIEW_MARK);
+        out.push_str(&format!("sticon:{product}:{id}:{version}"));
+        out.push(STICON_PREVIEW_MARK);
+    }
+    Some(out)
+}
+
+/// `REPLACE.sticon.resources` as (S, E, productId, sticonId, version).
+fn sticon_resources(m: &Message) -> Option<Vec<(u32, u32, String, String, u64)>> {
+    let raw = m.metadata.get("REPLACE")?;
+    let parsed: Json = serde_json::from_str(raw).ok()?;
+    let list = parsed["sticon"]["resources"].as_array()?;
+    let mut out = Vec::new();
+    for r in list {
+        let s = num_of(&r["S"])? as u32;
+        let e = num_of(&r["E"])? as u32;
+        let product = str_of(&r["productId"])?;
+        let id = str_of(&r["sticonId"])?;
+        if product.is_empty()
+            || id.is_empty()
+            || !product
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+            || !id
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+        {
+            continue;
+        }
+        let version = num_of(&r["version"]).unwrap_or(1.0) as u64;
+        out.push((s, e, product, id, version.max(1)));
+    }
+    out.sort_by_key(|r| r.0);
+    Some(out)
 }
 
 pub fn preview_line(m: &Message) -> String {
@@ -437,6 +504,26 @@ mod tests {
             "contentMetadata": {"UNSENT": "true", "SILENTLY_UNSENT": "false"}});
         let m = message_from_json(&raw, "u-me", true).unwrap();
         assert_eq!((m.unsent, m.text.as_str()), (1, ""));
+    }
+
+    #[test]
+    fn preview_draws_line_emoji_as_sticon_markers() {
+        let replace = r#"{"sticon":{"resources":[{"S":0,"E":12,"productId":"670e0cce840a8236ddd4ee4c","sticonId":"120","version":1,"resourceType":"STATIC"}]}}"#;
+        let raw = json!({
+            "id": "200", "from": "u2", "to": "u-me", "contentType": 0,
+            "text": "(LINE emoji)",
+            "contentMetadata": { "REPLACE": replace, "STICON_OWNERSHIP": "[\"670e0cce840a8236ddd4ee4c\"]" }
+        });
+        let m = message_from_json(&raw, "u-me", true).unwrap();
+        let preview = preview_body(&m);
+        assert_eq!(
+            preview,
+            format!(
+                "{m}sticon:670e0cce840a8236ddd4ee4c:120:1{m}",
+                m = STICON_PREVIEW_MARK
+            )
+        );
+        assert!(preview_line(&m).starts_with("เขา: "));
     }
 
     #[test]
