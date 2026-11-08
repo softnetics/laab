@@ -1,6 +1,6 @@
 import { listen } from "@tauri-apps/api/event";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
-import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState } from "react";
+import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState, type ReactNode } from "react";
 import { api, errorText } from "../lib/api";
 import { readClipboardPng } from "../lib/clipboardImage";
 import {
@@ -48,8 +48,10 @@ export const Composer = forwardRef<
     picture?: (mid: string) => string | null;
     /** ↑/↓ in an empty field move to the chat above or below, as in LINE. */
     onStep?: (step: 1 | -1) => void;
+    /** Left of the sticker button — OA rich-menu chip, etc. */
+    toolbarExtra?: ReactNode;
   }
->(function Composer({ chatId, group, disabled, members, loadMembers, stickerOpen, onToggleStickers, name, picture, onStep }, ref) {
+>(function Composer({ chatId, group, disabled, members, loadMembers, stickerOpen, onToggleStickers, name, picture, onStep, toolbarExtra }, ref) {
   const area = useRef<HTMLTextAreaElement>(null);
   const mirror = useRef<HTMLDivElement>(null);
   const [text, setText] = useState("");
@@ -525,6 +527,7 @@ export const Composer = forwardRef<
           <span className="mx-1 text-separator">|</span>
           <kbd className={kbd}>⌥⏎</kbd> ส่งแบบไม่มีการแจ้งเตือน
         </span>
+        {toolbarExtra}
         <button
           title="สติกเกอร์และอิโมจิ"
           aria-label="สติกเกอร์และอิโมจิ"

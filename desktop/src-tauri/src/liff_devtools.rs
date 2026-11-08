@@ -103,6 +103,31 @@ pub fn opened(app: &AppHandle, label: &str, view: &LiffView, chat: Option<String
     poll(app.clone(), label.to_string());
 }
 
+/// The same window moved to another page of the same LIFF app (so back /
+/// forward still work). Refresh what DevTools shows for it.
+pub fn updated(app: &AppHandle, label: &str, view: &LiffView) {
+    let session = {
+        let mut all = SESSIONS.lock().unwrap();
+        let Some(s) = all.iter_mut().find(|s| s.label == label) else {
+            return;
+        };
+        s.liff_id = view.liff_id.clone();
+        s.mode = view.mode.clone();
+        s.reason = view.reason.clone();
+        s.url = masked(&view.url);
+        s.info = view.info.clone();
+        s.clone()
+    };
+    emit(
+        app,
+        Update {
+            label,
+            session: Some(&session),
+            events: &[],
+        },
+    );
+}
+
 pub fn push(app: &AppHandle, label: &str, kind: &str, level: &str, text: impl Into<String>) {
     add(
         app,

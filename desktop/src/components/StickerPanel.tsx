@@ -30,11 +30,16 @@ function rememberRecent(id: string) {
   return next;
 }
 
+/** Shelf pack/recent button. Active = filled field tile; idle has no chrome. */
+const shelfTile =
+  "grid h-8 w-8 shrink-0 place-items-center rounded-[9px] text-secondary hover:bg-field hover:text-primary focus-visible:outline-2 focus-visible:outline-line-green";
+const shelfActive = "bg-field text-primary hover:bg-field hover:text-primary";
+
 export function StickerPanel({ chatId, onClose }: { chatId: string; onClose: () => void }) {
   const [mode, setMode] = useState<"stickers" | "emoji">("stickers");
   return (
     <div className="flex h-[288px] flex-col overflow-hidden border-t border-separator bg-chat">
-      <div className="flex h-10 shrink-0 items-center gap-5 border-b border-separator px-3">
+      <div className="flex h-10 shrink-0 items-center gap-1 border-b border-separator px-2.5">
         {([ ["stickers", "สติกเกอร์"], ["emoji", "อิโมจิ"] ] as const).map(([value, label]) => {
           const active = mode === value;
           return (
@@ -42,12 +47,11 @@ export function StickerPanel({ chatId, onClose }: { chatId: string; onClose: () 
               key={value}
               aria-pressed={active}
               onClick={() => setMode(value)}
-              className={`relative h-full px-0.5 text-[13px] focus-visible:outline-2 focus-visible:outline-line-green ${
-                active ? "font-medium text-primary" : "text-secondary hover:text-primary"
+              className={`h-7 rounded-full px-2.5 text-[13px] focus-visible:outline-2 focus-visible:outline-line-green ${
+                active ? "bg-field font-medium text-primary" : "text-secondary hover:text-primary"
               }`}
             >
               {label}
-              {active && <span className="absolute inset-x-0 bottom-0 h-[2px] rounded-full bg-primary" />}
             </button>
           );
         })}
@@ -84,15 +88,13 @@ function EmojiPicker({ chatId }: { chatId: string }) {
 
   return (
     <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
-      <div className="flex h-11 shrink-0 items-center gap-2 border-b border-separator px-2.5">
+      <div className="flex h-11 shrink-0 items-center gap-2.5 border-b border-separator px-2.5">
         <button
           title="ล่าสุด"
           aria-label="อิโมจิล่าสุด"
           aria-pressed={shelf === "recent"}
           onClick={() => setShelf("recent")}
-          className={`grid h-8 w-8 shrink-0 place-items-center rounded-full focus-visible:outline-2 focus-visible:outline-line-green ${
-            shelf === "recent" ? "bg-[#4B8BF5] text-white" : "bg-field text-secondary hover:text-primary"
-          }`}
+          className={`${shelfTile} ${shelf === "recent" ? shelfActive : ""}`}
         >
           <ClockIcon size={15} strokeWidth={2} />
         </button>
@@ -101,9 +103,7 @@ function EmojiPicker({ chatId }: { chatId: string }) {
           aria-label="อิโมจิ LINE"
           aria-pressed={shelf === "pack"}
           onClick={() => setShelf("pack")}
-          className={`grid h-8 w-8 shrink-0 place-items-center rounded-[9px] focus-visible:outline-2 focus-visible:outline-line-green ${
-            shelf === "pack" ? "bg-white shadow-[0_0_0_1px_rgba(0,0,0,0.08),0_1px_3px_rgba(0,0,0,0.12)]" : "hover:bg-field"
-          }`}
+          className={`${shelfTile} ${shelf === "pack" ? shelfActive : ""}`}
         >
           <img src={packTabSrc} alt="" className="h-6 w-6 object-contain" draggable={false} />
         </button>
@@ -114,7 +114,7 @@ function EmojiPicker({ chatId }: { chatId: string }) {
             ยังไม่มีอิโมจิล่าสุด ส่งจากชุดอิโมจิเพื่อเก็บไว้ที่นี่
           </div>
         ) : (
-          <div className="grid grid-cols-5 gap-x-2 gap-y-3">
+          <div className="grid grid-cols-[repeat(auto-fill,minmax(40px,1fr))] gap-1">
             {ids.map((id) => (
               <button
                 key={id}
@@ -122,12 +122,12 @@ function EmojiPicker({ chatId }: { chatId: string }) {
                 aria-label={`ส่งอิโมจิ LINE ${id}`}
                 disabled={pending !== null}
                 onClick={() => send(id)}
-                className="grid aspect-square place-items-center rounded-lg hover:bg-field focus-visible:outline-2 focus-visible:outline-line-green disabled:opacity-50"
+                className="grid h-10 place-items-center rounded-md hover:bg-field focus-visible:outline-2 focus-visible:outline-line-green disabled:opacity-50"
               >
                 {pending === id ? (
-                  <Spinner size={18} />
+                  <Spinner size={16} />
                 ) : (
-                  <img src={emojiSrc(id)} alt="" loading="lazy" className="h-[72%] w-[72%] object-contain" draggable={false} />
+                  <img src={emojiSrc(id)} alt="" loading="lazy" className="h-7 w-7 object-contain" draggable={false} />
                 )}
               </button>
             ))}
@@ -169,6 +169,26 @@ function StickerPacks({ chatId }: { chatId: string }) {
   };
   return (
     <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
+      <div className="flex h-11 shrink-0 items-center border-b border-separator px-2.5">
+        <div className="flex flex-1 gap-2.5 overflow-x-auto">
+          {packs?.map((p) => (
+            <button
+              key={p.id}
+              title={p.recent ? "ล่าสุด" : p.name}
+              aria-label={p.recent ? "สติกเกอร์ล่าสุด" : p.name}
+              aria-pressed={pack === p.id}
+              onClick={() => setPack(p.id)}
+              className={`${shelfTile} ${pack === p.id ? shelfActive : ""}`}
+            >
+              {p.recent ? (
+                <ClockIcon size={15} strokeWidth={2} />
+              ) : (
+                <img src={mediaUrl.pack(p.id)} loading="lazy" className="h-6 w-6 rounded-md object-contain" alt="" draggable={false} />
+              )}
+            </button>
+          ))}
+        </div>
+      </div>
       <div className="min-h-0 flex-1 overflow-y-auto p-2">
         {(isLoading || (lazy && opened.isLoading)) && (
           <div className="grid h-full place-items-center">
@@ -211,25 +231,6 @@ function StickerPacks({ chatId }: { chatId: string }) {
             ))}
           </div>
         )}
-      </div>
-      <div className="flex h-12 items-center gap-1 border-t border-separator px-2">
-        <div className="flex flex-1 gap-1 overflow-x-auto">
-          {packs?.map((p) => (
-            <button
-              key={p.id}
-              title={p.recent ? "ล่าสุด" : p.name}
-              onClick={() => setPack(p.id)}
-              className="relative grid h-10 w-10 shrink-0 place-items-center"
-            >
-              {p.recent ? (
-                <span className="text-[11px] text-secondary">ล่าสุด</span>
-              ) : (
-                <img src={mediaUrl.pack(p.id)} loading="lazy" className="h-7 w-7 rounded-md object-contain" alt="" draggable={false} />
-              )}
-              {pack === p.id && <span className="absolute bottom-0.5 h-0.5 w-[18px] rounded bg-line-green" />}
-            </button>
-          ))}
-        </div>
       </div>
     </div>
   );

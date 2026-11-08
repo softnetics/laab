@@ -742,6 +742,51 @@ pub async fn download(
         })
 }
 
+/// `NICE`…`OMG`, or `PAID:<productId>:<emojiId>:<version>:<0|1 animated>`.
+fn parse_react_arg(name: &str) -> Result<ReactArg, String> {
+    if let Some(kind) = ReactionType::from_name(name) {
+        return Ok(ReactArg::Predefined(kind));
+    }
+    let Some(rest) = name.strip_prefix("PAID:") else {
+        return Err("bad_reaction".into());
+    };
+    let parts: Vec<&str> = rest.split(':').collect();
+    if parts.len() < 2 || parts[0].is_empty() || parts[1].is_empty() {
+        return Err("bad_reaction".into());
+    }
+    let product_id = parts[0].to_string();
+    let emoji_id = parts[1].to_string();
+    let version = parts.get(2).and_then(|v| v.parse().ok()).unwrap_or(1_i64);
+    let resource_type = if parts.get(3) == Some(&"1") { 2 } else { 1 }; // ANIMATION=2, STATIC=1
+    // Same catalog as the emoji / reaction pack picker.
+    let catalog: serde_json::Value =
+        serde_json::from_str(include_str!("../../src/lib/basicEmoji.json"))
+            .map_err(|_| "bad_reaction".to_string())?;
+    let expected = catalog["productId"].as_str().unwrap_or_default();
+    let count = catalog["count"].as_u64().unwrap_or(0);
+    let number = emoji_id.parse::<u64>().map_err(|_| "bad_reaction".to_string())?;
+    if product_id != expected || number == 0 || number > count || format!("{number:03}") != emoji_id
+    {
+        return Err("bad_reaction".into());
+    }
+    Ok(ReactArg::Paid {
+        product_id,
+        emoji_id,
+        version: version.max(1),
+        resource_type,
+    })
+}
+
+enum ReactArg {
+    Predefined(ReactionType),
+    Paid {
+        product_id: String,
+        emoji_id: String,
+        version: i64,
+        resource_type: i32,
+    },
+}
+
 /// Set (`Some`) or remove (`None`) our reaction.
 #[tauri::command]
 pub async fn react(
@@ -759,6 +804,10 @@ pub async fn react(
             .find(|r| r.user_id == me)
             .map(|r| r.reaction)
     });
+    let parsed = match reaction.as_deref() {
+        Some(name) => Some(parse_react_arg(name)?),
+        None => None,
+    };
     line::apply_reaction(&s, &message_id, &me, reaction.as_deref());
     if s.demo {
         return Ok(());
@@ -769,10 +818,43 @@ pub async fn react(
             return Err("bad_message_id".to_string());
         }
         let msg = l.talk_message(&message_id);
-        match reaction.as_deref() {
-            Some(name) => {
-                let kind = ReactionType::from_name(name).ok_or("bad_reaction".to_string())?;
-                msg.react(kind).await.map_err(err)
+        match parsed {
+            Some(ReactArg::Predefined(kind)) => msg.react(kind).await.map_err(err),
+            Some(ReactArg::Paid {
+                product_id,
+                emoji_id,
+                version,
+                resource_type,
+            }) => {
+                // line-rs's IDL ReactionType only has predefinedReactionType, so
+                // schema encode drops paidReactionType. Send field ids on the wire.
+                use line_rs::request::Parse;
+                use line_rs::thrift::TValue;
+                let id: i64 = message_id
+                    .parse()
+                    .map_err(|_| "bad_message_id".to_string())?;
+                let req_seq = l.client.base.get_reqseq("talk").await.map_err(err)?;
+                let paid = TValue::Struct(vec![
+                    (1, TValue::string(product_id)),
+                    (2, TValue::string(emoji_id)),
+                    (3, TValue::I32(resource_type)),
+                    (4, TValue::I64(version)),
+                ]);
+                let args = vec![(
+                    1,
+                    TValue::Struct(vec![
+                        (1, TValue::I32(req_seq as i32)),
+                        (2, TValue::I64(id)),
+                        (3, TValue::Struct(vec![(2, paid)])), // paidReactionType
+                    ]),
+                )];
+                l.client
+                    .base
+                    .talk()
+                    .request("react", args, Parse::Result)
+                    .await
+                    .map(|_| ())
+                    .map_err(err)
             }
             None => msg.cancel_reaction().await.map_err(err),
         }

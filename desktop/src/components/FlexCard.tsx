@@ -1,7 +1,7 @@
 import type { CSSProperties, ReactNode } from "react";
 
 // LINE flex messages drawn as cards. Cards are always light, LINE px are
-// CSS px 1:1. Unsupported: `%` sizes and `position: absolute`.
+// CSS px 1:1. Unsupported: `%` sizes.
 
 type Node = Record<string, any>;
 export type FlexAction = {
@@ -100,6 +100,8 @@ function boxStyle(n: Node, defaultPad?: number): CSSProperties {
     borderWidth: px(n.borderWidth, BORDER),
     borderStyle: n.borderWidth ? "solid" : undefined,
     borderRadius: px(n.cornerRadius),
+    // LINE's .MdBx always clips — needed for cornerRadius avatars (LON sender).
+    overflow: "hidden",
     paddingTop: px(n.paddingTop) ?? pad,
     paddingBottom: px(n.paddingBottom) ?? pad,
     paddingLeft: px(n.paddingStart) ?? pad,
@@ -113,9 +115,10 @@ function boxStyle(n: Node, defaultPad?: number): CSSProperties {
 
 function flexOf(n: Node, horizontal: boolean): CSSProperties {
   const noFlex = ["icon", "spacer", "separator"].includes(n.type);
-  // A set width (in a row) or height (in a column) is kept, as in LINE.
+  // A set width (in a row) or height (in a column) forces flex 0, as in LINE —
+  // even when the JSON also sets flex (LON's 40px avatar has flex:1 + width).
   const fixed = horizontal ? n.width != null : n.height != null;
-  const f = typeof n.flex === "number" ? n.flex : noFlex || fixed ? 0 : 1;
+  const f = fixed ? 0 : typeof n.flex === "number" ? n.flex : noFlex ? 0 : 1;
   if (!horizontal) return f > 0 && n.type === "filler" ? { flex: 1 } : fixed ? { flexShrink: 0 } : {};
   return f <= 0 ? { flex: "0 0 auto" } : { flex: `${f} 1 0%`, minWidth: 0 };
 }

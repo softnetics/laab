@@ -302,7 +302,7 @@ const outline = (p: P) => ({
 export const ClockIcon = (p: P) => (
   <svg {...outline(p)}>
     <circle cx="12" cy="12" r="8.5" />
-    <path d="M12 7.5V12l3 2" />
+    <path d="M12 7.5V12h4" />
   </svg>
 );
 export const PlaceIcon = (p: P) => (

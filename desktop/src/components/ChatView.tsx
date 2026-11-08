@@ -385,6 +385,7 @@ export function ChatView({ chatId, main }: { chatId: string; main: boolean }) {
           onToggleStickers={() => setStickers((v) => !v)}
           name={name}
           picture={picture}
+          toolbarExtra={chat?.kind === "bot" ? <RichMenu key={chatId} chatId={chatId} /> : undefined}
           onStep={
             main
               ? (step) => {
@@ -395,7 +396,6 @@ export function ChatView({ chatId, main }: { chatId: string; main: boolean }) {
           }
         />
       )}
-      {chat?.kind === "bot" && <RichMenu key={chatId} chatId={chatId} />}
       {uploading && (
         <div className="pointer-events-none absolute right-3 bottom-3 z-20 flex items-center gap-2 rounded-full bg-black/70 px-3 py-1.5 text-[12px] text-white shadow-lg">
           <Spinner size={12} />
