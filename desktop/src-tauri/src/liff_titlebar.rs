@@ -1,6 +1,6 @@
 //! Back and forward buttons on the leading edge of a LIFF window's title bar,
-//! and reload on the trailing edge. Drawn inside the page, buttons would sit
-//! over the LIFF app's own UI.
+//! pin (always on top) and reload on the trailing edge. Drawn inside the page,
+//! buttons would sit over the LIFF app's own UI.
 
 use tauri::WebviewWindow;
 
@@ -12,9 +12,20 @@ pub fn add(window: &WebviewWindow) {
     let Ok(ptr) = window.ns_window() else { return };
     let addr = ptr as usize;
     let (app, label) = (window.app_handle().clone(), window.label().to_string());
-    let action = move |nav: Nav| -> Box<dyn Fn() + Send> {
+    let pin = {
         let (app, label) = (app.clone(), label.clone());
-        Box::new(move || {
+        Box::new(move |sender: &objc2::runtime::AnyObject| {
+            let Some(w) = app.get_webview_window(&label) else { return };
+            let on = !w.is_always_on_top().unwrap_or(false);
+            if w.set_always_on_top(on).is_err() {
+                return;
+            }
+            set_pin_appearance(sender, on);
+        }) as Box<dyn Fn(&objc2::runtime::AnyObject) + Send>
+    };
+    let action = move |nav: Nav| -> Box<dyn Fn(&objc2::runtime::AnyObject) + Send> {
+        let (app, label) = (app.clone(), label.clone());
+        Box::new(move |_| {
             let _ = crate::liff_devtools::navigate(&app, &label, nav);
         })
     };
@@ -32,12 +43,22 @@ pub fn add(window: &WebviewWindow) {
             action: action(Nav::Forward),
         },
     ];
-    let trailing = vec![Button {
-        symbol: "arrow.clockwise",
-        name: "รีโหลด",
-        tip: "รีโหลด (⌘R)",
-        action: action(Nav::Reload),
-    }];
+    // Trailing: pin (window state, nearer the title) then reload (page action
+    // at the outer edge). Same WIDTH/GAP rhythm as the leading pair.
+    let trailing = vec![
+        Button {
+            symbol: "pin",
+            name: "ปักหมุด",
+            tip: "ปักหมุดให้อยู่บนสุด",
+            action: pin,
+        },
+        Button {
+            symbol: "arrow.clockwise",
+            name: "รีโหลด",
+            tip: "รีโหลด (⌘R)",
+            action: action(Nav::Reload),
+        },
+    ];
     let _ = window.run_on_main_thread(move || {
         use objc2_app_kit::NSLayoutAttribute;
         install(addr, leading, NSLayoutAttribute::Left);
@@ -55,7 +76,7 @@ struct Button {
     /// What VoiceOver reads.
     name: &'static str,
     tip: &'static str,
-    action: Box<dyn Fn() + Send>,
+    action: Box<dyn Fn(&objc2::runtime::AnyObject) + Send>,
 }
 
 #[cfg(target_os = "macos")]
@@ -68,7 +89,7 @@ mod mac {
 
     pub struct Ivars {
         /// Indexed by the sending button's tag.
-        pub actions: Vec<Box<dyn Fn()>>,
+        pub actions: Vec<Box<dyn Fn(&AnyObject)>>,
     }
 
     define_class!(
@@ -90,7 +111,7 @@ mod mac {
                 // SAFETY: only the accessory's NSButtons send `act:`.
                 let tag: isize = unsafe { msg_send![sender, tag] };
                 if let Some(action) = usize::try_from(tag).ok().and_then(|i| self.ivars().actions.get(i)) {
-                    action();
+                    action(sender);
                 }
             }
         }
@@ -99,7 +120,7 @@ mod mac {
     );
 
     impl Accessory {
-        pub fn new(mtm: MainThreadMarker, actions: Vec<Box<dyn Fn()>>) -> Retained<Self> {
+        pub fn new(mtm: MainThreadMarker, actions: Vec<Box<dyn Fn(&AnyObject)>>) -> Retained<Self> {
             let this = Self::alloc(mtm).set_ivars(Ivars { actions });
             // SAFETY: NSViewController's designated initializer with no nib.
             unsafe {
@@ -107,6 +128,38 @@ mod mac {
             }
         }
     }
+}
+
+/// Update the pin button's symbol, VoiceOver name, tip and tint for `on`.
+#[cfg(target_os = "macos")]
+fn set_pin_appearance(sender: &objc2::runtime::AnyObject, on: bool) {
+    use objc2_app_kit::{NSButton, NSColor, NSImage};
+    use objc2_foundation::{MainThreadMarker, NSString};
+
+    let Some(_mtm) = MainThreadMarker::new() else {
+        return;
+    };
+    // SAFETY: `act:` only forwards the accessory's own NSButtons.
+    let button = unsafe { &*(sender as *const _ as *const NSButton) };
+    let (symbol, name, tip) = if on {
+        ("pin.fill", "เลิกปักหมุด", "เลิกปักหมุดให้อยู่บนสุด")
+    } else {
+        ("pin", "ปักหมุด", "ปักหมุดให้อยู่บนสุด")
+    };
+    let Some(image) = NSImage::imageWithSystemSymbolName_accessibilityDescription(
+        &NSString::from_str(symbol),
+        Some(&NSString::from_str(name)),
+    ) else {
+        return;
+    };
+    button.setImage(Some(&image));
+    button.setToolTip(Some(&NSString::from_str(tip)));
+    let tint = if on {
+        NSColor::controlAccentColor()
+    } else {
+        NSColor::secondaryLabelColor()
+    };
+    button.setContentTintColor(Some(&tint));
 }
 
 /// Main thread only.
@@ -152,7 +205,7 @@ fn install(addr: usize, buttons: Vec<Button>, side: objc2_app_kit::NSLayoutAttri
         mtm,
         buttons
             .into_iter()
-            .map(|b| b.action as Box<dyn Fn()>)
+            .map(|b| b.action as Box<dyn Fn(&objc2::runtime::AnyObject)>)
             .collect(),
     );
     for (i, (image, tip)) in images.iter().zip(tips).enumerate() {
