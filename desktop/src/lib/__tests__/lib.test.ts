@@ -280,6 +280,8 @@ describe("chat list", () => {
     expect(filterChats(list, "all", "unread", "").map((c) => c.id)).toEqual(["u2", "c1", "u1"]);
     const marked: ChatList = { ...list, chats: list.chats.map((c) => (c.id === "u1" ? { ...c, markedUnread: true } : c)) };
     expect(filterChats(marked, "all", "unread", "").map((c) => c.id)).toEqual(["u2", "u1", "c1"]);
+    const fromMsg: ChatList = { ...list, chats: list.chats.map((c) => (c.id === "u1" ? { ...c, unreadFrom: "m1", unreadFromCount: 2 } : c)) };
+    expect(filterChats(fromMsg, "all", "unread", "").map((c) => c.id)).toEqual(["u2", "u1", "c1"]);
     expect(filterChats(list, "groups", "recent", "").map((c) => c.id)).toEqual(["c1"]);
     expect(listPreview("เขา: hi")).toBe("hi");
   });

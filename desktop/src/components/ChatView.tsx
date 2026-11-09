@@ -9,14 +9,15 @@ import { api, errorText, messageLimit, q, queryClient, setMessageLimit, useChatL
 import { adjacentChat, isGroup, isKeepMemo } from "../lib/chatList";
 import { findHits } from "../lib/inChatSearch";
 import { closeChat, openChat } from "../lib/nav";
-import { dismissTop, notice, ui } from "../lib/ui";
+import { dismissTop, notice, setUi, ui } from "../lib/ui";
 import { Announcements } from "./Announcements";
+import { Bookmarks } from "./Bookmarks";
 import { HeaderMenu } from "./ChatActions";
 import { Composer, type ComposerHandle } from "./Composer";
 import { DropDock, DropTray } from "./DropTray";
 import { InvitationBar, MessageRequestBar } from "./GroupSheets";
 import { RichMenu } from "./RichMenu";
-import { BellSlashIcon, ChevronIcon, CloseIcon, ExternalIcon, MoreVIcon, NoteIcon, SearchIcon, ShieldCheckIcon, SpeakerIcon } from "./Icons";
+import { BellSlashIcon, BookmarkIcon, ChevronIcon, CloseIcon, ExternalIcon, MoreVIcon, NoteIcon, SearchIcon, ShieldCheckIcon, SpeakerIcon } from "./Icons";
 import { popupClass, Spinner } from "./kit";
 import type { DroppedFile, OfficialBadge } from "../lib/types";
 import type { RowContext } from "./MessageRow";
@@ -97,10 +98,21 @@ export function ChatView({ chatId, main }: { chatId: string; main: boolean }) {
     index: 0,
   });
   const [uploading, setUploading] = useState(false);
-  // LINE's unread mark: the first message that was unread when the chat opened.
+  // Unread divider: LINE count at open, or a Discord-style unread_from anchor.
   const [unreadFrom, setUnreadFrom] = useState<string | null>(null);
+  const unreadFromRef = useRef<string | null>(null);
+  unreadFromRef.current = unreadFrom;
+  // Clear on scroll-to-bottom only when this visit opened with a persisted anchor
+  // (not when the user just marked unread while already here).
+  const openedWithUnread = useRef(false);
+  const catchingUp = useRef(false);
   const me = session?.profile?.mid ?? "";
   const signedIn = session?.state === "signed_in";
+  // The chat list changes with every message in any chat. Read it through a
+  // ref so that does not rebuild `ctx` and re-render every row here; a
+  // renamed friend shows up with the next change to this chat.
+  const listRef = useRef(list);
+  listRef.current = list;
 
   // Tell the backend what is on screen right away; fetch after the user
   // settles on a chat for 150 ms, so arrow-key browsing stays fast.
@@ -108,16 +120,23 @@ export function ChatView({ chatId, main }: { chatId: string; main: boolean }) {
     if (main) api.setFocus(chatId, document.hasFocus());
     let cancelled = false;
     setUnreadFrom(null);
+    openedWithUnread.current = false;
+    catchingUp.current = false;
     const t = setTimeout(() => {
+      // Persist across open_chat: only a stored unread_from still looks unread.
+      const hadAnchor = !!listRef.current?.chats.find((c) => c.id === chatId)?.unreadFrom;
       api
         .openChat(chatId)
         .then((first) => {
-          if (!cancelled) setUnreadFrom(first);
+          if (cancelled) return;
+          setUnreadFrom(first);
+          openedWithUnread.current = hadAnchor && !!first;
         })
         .catch(() => {});
     }, 150);
     setStickers(false);
     setSearch({ open: false, query: "", debounced: "", index: 0 });
+    setUi({ bookmarksOpen: false });
     return () => {
       cancelled = true;
       clearTimeout(t);
@@ -127,7 +146,12 @@ export function ChatView({ chatId, main }: { chatId: string; main: boolean }) {
     if (!main) return;
     const off = listen<boolean>("app-active", (e) => {
       api.setFocus(chatId, e.payload);
-      if (e.payload) api.markRead(chatId).catch(() => {});
+      // Do not wipe a Discord-style unread_from just by alt-tabbing back.
+      if (e.payload) {
+        const anchored =
+          unreadFromRef.current || listRef.current?.chats.find((c) => c.id === chatId)?.unreadFrom;
+        if (!anchored) api.markRead(chatId).catch(() => {});
+      }
     });
     return () => {
       off.then((f) => f());
@@ -140,12 +164,6 @@ export function ChatView({ chatId, main }: { chatId: string; main: boolean }) {
     if (group) loadMembers();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [chatId, group]);
-
-  // The chat list changes with every message in any chat. Read it through a
-  // ref so that does not rebuild `ctx` and re-render every row here; a
-  // renamed friend shows up with the next change to this chat.
-  const listRef = useRef(list);
-  listRef.current = list;
   const name = useCallback(
     (mid: string) => {
       if (mid === me || mid === "me") return session?.profile?.displayName || "คุณ";
@@ -162,9 +180,41 @@ export function ChatView({ chatId, main }: { chatId: string; main: boolean }) {
   const secure = useMemo(() => messages.some((m) => "e2eeVersion" in m.metadata), [messages]);
   const byId = useMemo(() => new Map(messages.map((m) => [m.id, m])), [messages]);
   const find = useCallback((id: string) => byId.get(id), [byId]);
+  const { data: bookmarks = [] } = useQuery({
+    queryKey: ["bookmarks", chatId],
+    queryFn: () => api.bookmarks(chatId),
+    enabled: !!session && (session.state === "signed_in" || session.state === "demo"),
+  });
+  const bookmarkedIds = useMemo(() => new Set(bookmarks.map((b) => b.messageId)), [bookmarks]);
+  const bookmarked = useCallback((id: string) => bookmarkedIds.has(id), [bookmarkedIds]);
+  const onMarkUnreadFrom = useCallback((messageId: string) => {
+    // Marked during this visit: keep until leave + reopen, not scroll-to-bottom.
+    openedWithUnread.current = false;
+    setUnreadFrom(messageId);
+  }, []);
+  const onCaughtUp = useCallback(() => {
+    if (!openedWithUnread.current || catchingUp.current) return;
+    catchingUp.current = true;
+    openedWithUnread.current = false;
+    setUnreadFrom(null);
+    api.markRead(chatId).catch(() => {
+      catchingUp.current = false;
+    });
+  }, [chatId]);
   const ctx: RowContext = useMemo(
-    () => ({ chatId, group, me: me || "me", signedIn: signedIn || session?.state === "demo", name, picture, loadMembers, find }),
-    [chatId, group, me, signedIn, session?.state, name, picture, loadMembers, find],
+    () => ({
+      chatId,
+      group,
+      me: me || "me",
+      signedIn: signedIn || session?.state === "demo",
+      name,
+      picture,
+      loadMembers,
+      find,
+      bookmarked,
+      onMarkUnreadFrom,
+    }),
+    [chatId, group, me, signedIn, session?.state, name, picture, loadMembers, find, bookmarked, onMarkUnreadFrom],
   );
 
   // Debounce, newest hit first.
@@ -325,6 +375,13 @@ export function ChatView({ chatId, main }: { chatId: string; main: boolean }) {
         )}
         <div className="flex-1" />
         <button
+          title="บุ๊กมาร์ก (ส่วนตัว)"
+          onClick={() => setUi({ sheet: { kind: "bookmarks" } })}
+          className="no-drag grid h-8 w-8 place-items-center text-secondary hover:text-bookmark"
+        >
+          <BookmarkIcon size={17} />
+        </button>
+        <button
           title="ค้นหาในแชท ⌘F"
           onClick={openSearch}
           className="no-drag grid h-8 w-8 place-items-center text-secondary hover:text-primary"
@@ -355,7 +412,9 @@ export function ChatView({ chatId, main }: { chatId: string; main: boolean }) {
           </Menu.Root>
         )}
       </header>
-      {group && !search.open && <Announcements chatId={chatId} name={name} />}
+      {/* ประกาศ sync via LINE (groups and DMs); bookmarks stay private on this Mac. */}
+      {!search.open && <Announcements chatId={chatId} name={name} />}
+      {!search.open && <Bookmarks chatId={chatId} />}
       {search.open && (
         // LINE for Mac: a bordered field with the count and arrows inside,
         // then close, in the announcement bar's place. Opened with ⌘F, so it
@@ -411,6 +470,7 @@ export function ChatView({ chatId, main }: { chatId: string; main: boolean }) {
         members={members}
         people={people}
         unreadFrom={unreadFrom}
+        onCaughtUp={onCaughtUp}
         search={search.open && search.debounced.trim() ? { query: search.debounced, hits, index: search.index } : null}
       />
       {stickers && <StickerPanel chatId={chatId} onClose={() => setStickers(false)} />}

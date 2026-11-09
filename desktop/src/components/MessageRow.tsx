@@ -17,7 +17,8 @@ import { openUrl } from "../lib/open";
 import { viewMessage } from "../lib/viewer";
 import { Avatar } from "./Avatar";
 import { FlexCard, parseFlex } from "./FlexCard";
-import { DocIcon, PhoneIcon, PhotoIcon, PlayIcon, VideoIcon } from "./Icons";
+import { invalidateBookmarks } from "./Bookmarks";
+import { BookmarkFilledIcon, DocIcon, PhoneIcon, PhotoIcon, PlayIcon, VideoIcon } from "./Icons";
 import { Ctx, itemClass, pressable, Separator, Spinner } from "./kit";
 import { Popover } from "./Popover";
 import { ReactButton, ReactionBadge } from "./Reactions";
@@ -36,6 +37,10 @@ export interface RowContext {
   loadMembers: () => void;
   /** A loaded message by id, for reply quotes. */
   find: (id: string) => Message | undefined;
+  /** Personal bookmarks in this chat (message ids). */
+  bookmarked: (id: string) => boolean;
+  /** Discord-style mark unread from this message (local divider + list badge). */
+  onMarkUnreadFrom: (messageId: string) => void;
 }
 
 const TAIL = 8;
@@ -58,15 +63,41 @@ function Tail({ mine, color }: { mine: boolean; color: string }) {
   );
 }
 
-function Bubble({ mine, tail, children, className = "" }: { mine: boolean; tail: boolean; children: React.ReactNode; className?: string }) {
+function Bubble({
+  mine,
+  tail,
+  bookmarked = false,
+  children,
+  className = "",
+}: {
+  mine: boolean;
+  tail: boolean;
+  bookmarked?: boolean;
+  children: React.ReactNode;
+  className?: string;
+}) {
   const color = mine ? "var(--color-outgoing)" : "var(--color-incoming)";
   return (
     <div
       className={`selectable relative max-w-[420px] rounded-[16.5px] px-[13px] py-[7px] text-[13.5px] leading-[1.4] break-words whitespace-pre-wrap ${className}`}
-      style={{ background: color, color: mine ? "var(--color-outgoing-text)" : "var(--color-primary)" }}
+      style={{
+        background: color,
+        color: mine ? "var(--color-outgoing-text)" : "var(--color-primary)",
+        // Personal cue only you see — amber edge, not announcement pin blue.
+        boxShadow: bookmarked ? `inset ${mine ? "-2.5px" : "2.5px"} 0 0 0 var(--color-bookmark)` : undefined,
+      }}
     >
       {tail && <Tail mine={mine} color={color} />}
       {children}
+      {bookmarked && (
+        <span
+          aria-hidden
+          className="pointer-events-none absolute -top-1.5 grid h-4 w-4 place-items-center rounded-full bg-menu text-bookmark shadow-[0_0_0_1px_rgba(0,0,0,0.25)]"
+          style={mine ? { left: -5 } : { right: -5 }}
+        >
+          <BookmarkFilledIcon size={9} />
+        </span>
+      )}
     </div>
   );
 }
@@ -393,6 +424,7 @@ function Content({
   current?: boolean;
 }) {
   const [mention, setMention] = useState<{ span: MentionSpan; el: HTMLElement } | null>(null);
+  const marked = ctx.bookmarked(m.id);
   switch (m.contentType) {
     case "STICKER":
       return <Sticker m={m} />;
@@ -470,7 +502,7 @@ function Content({
     return <div className="flex flex-wrap items-end gap-1 leading-none">{richText}</div>;
   }
   return (
-    <Bubble mine={m.mine} tail={tail}>
+    <Bubble mine={m.mine} tail={tail} bookmarked={marked}>
       {m.replyTo && <ReplyQuote id={m.replyTo} ctx={ctx} mine={m.mine} />}
       {richText}
       {mention && <MentionCard span={mention.span} ctx={ctx} anchor={mention.el} onClose={() => setMention(null)} />}
@@ -550,6 +582,12 @@ function rowMenu(m: Message, dev: boolean, ctx?: RowContext) {
           },
         }),
       )}
+      {live &&
+        item("ทำเครื่องหมายว่ายังไม่ได้อ่าน", () =>
+          run(
+            api.markUnread(ctx.chatId, m.id).then(() => ctx.onMarkUnreadFrom(m.id)),
+          ),
+        )}
       {live && (
         <>
           <Separator />
@@ -566,12 +604,24 @@ function rowMenu(m: Message, dev: boolean, ctx?: RowContext) {
           {text && (
             <>
               <Separator />
+              {(() => {
+                const on = ctx.bookmarked(m.id);
+                return item(on ? "เลิกบุ๊กมาร์ก" : "บุ๊กมาร์ก", () =>
+                  run(
+                    api.setBookmark(ctx.chatId, m.id, m.text, !on).then(() => invalidateBookmarks()),
+                    on ? "เลิกบุ๊กมาร์กแล้ว" : "บุ๊กมาร์กแล้ว",
+                  ),
+                );
+              })()}
               {item("ประกาศ", () =>
                 run(
-                  api
-                    .announce(ctx.chatId, m.id, m.text)
-                    .then(() => queryClient.invalidateQueries({ queryKey: ["announcements", ctx.chatId] })),
-                  "ประกาศแล้ว",
+                  api.announce(ctx.chatId, m.id, m.text).then(() => {
+                    localStorage.removeItem(`announcementDismissed:${ctx.chatId}`);
+                    return queryClient.invalidateQueries({ queryKey: ["announcements", ctx.chatId] }).then(() =>
+                      setUi({ announcementsOpen: true, bookmarksOpen: false }),
+                    );
+                  }),
+                  "ประกาศแล้ว — ดูแถบด้านบนของแชท",
                 ),
               )}
             </>
@@ -592,7 +642,10 @@ function rowMenu(m: Message, dev: boolean, ctx?: RowContext) {
 function NoticeLink({ link }: { link: NonNullable<ReturnType<typeof noticeFor>>["link"] & {} }) {
   if (link.action === "announcements") {
     return (
-      <button className="underline hover:text-primary" onClick={() => setUi({ announcementsOpen: true })}>
+      <button
+        className="underline hover:text-primary"
+        onClick={() => setUi({ announcementsOpen: true, bookmarksOpen: false })}
+      >
         {link.text}
       </button>
     );

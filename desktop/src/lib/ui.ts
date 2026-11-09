@@ -67,6 +67,7 @@ export interface UiState {
     | { kind: "add-friend" }
     | { kind: "report"; messageId: string | null }
     | { kind: "mcp" }
+    | { kind: "bookmarks" }
     | { kind: "create-group" }
     | { kind: "group-members"; chatId: string }
     | { kind: "datetime-picker"; chatId: string; messageId: string; label: string | null; action: PickerAction; start: PickerStart }
@@ -80,6 +81,8 @@ export interface UiState {
   sentAt: number;
   /** The announcement list over the chat is open. */
   announcementsOpen: boolean;
+  /** The personal bookmarks strip over the chat is expanded. */
+  bookmarksOpen: boolean;
   /** A LIFF app is waiting for the user to allow access. */
   liffConsent: { url: string; chatId: string | null } | null;
   /** shareTargetPicker request from a LIFF window. */
@@ -108,6 +111,7 @@ export const ui = createStore<UiState>({
   liffConsent: null,
   sharePicker: null,
   announcementsOpen: false,
+  bookmarksOpen: false,
   sentAt: 0,
   railPage: "chats",
   composerMode: null,

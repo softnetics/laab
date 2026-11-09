@@ -276,6 +276,8 @@ pub fn run() {
             commands::search,
             commands::draft,
             commands::set_draft,
+            commands::bookmarks,
+            commands::set_bookmark,
             commands::raw_message,
             commands::send_postback,
             commands::send_message_button,

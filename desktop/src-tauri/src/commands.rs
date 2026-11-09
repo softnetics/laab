@@ -15,7 +15,7 @@ use crate::model::{
     Workspace,
 };
 use crate::state::{AppState, now_ms};
-use crate::store::Draft;
+use crate::store::{Bookmark, Draft};
 
 type S<'a> = State<'a, Arc<AppState>>;
 type R<T> = Result<T, String>;
@@ -159,22 +159,22 @@ pub fn set_focus(state: S<'_>, chat_id: Option<String>, active: bool) {
     f.active = active;
 }
 
-/// Opening a chat: clear unread, acknowledge, then fetch fresh history,
-/// read status and members in the background. Returns the first unread
-/// message, if any, for the timeline's unread mark.
+/// Opening a chat: clear LINE unread and the chat-list mark, acknowledge,
+/// then fetch fresh history, read status and members in the background.
+/// Returns the timeline unread mark: a Discord-style `unread_from` if set
+/// (kept across reopen), else the first of LINE's unread count.
 #[tauri::command]
 pub async fn open_chat(state: S<'_>, chat_id: String) -> R<Option<String>> {
     crate::usage::hit(crate::usage::Action::OpenedChat);
     let s = state.inner().clone();
-    let unread = s
-        .store()
-        .chat(&chat_id)
-        .ok()
-        .flatten()
-        .map_or(0, |c| c.unread);
+    let row = s.store().chat(&chat_id).ok().flatten();
+    let unread = row.as_ref().map_or(0, |c| c.unread);
     let had_unread = unread > 0;
-    // Where the timeline draws "unread messages", before the count is cleared.
-    let target = s.store().first_unread(&chat_id, unread).map_err(err)?;
+    // Prefer the local Discord-style anchor; it survives this open.
+    let target = match row.and_then(|c| c.unread_from) {
+        Some(id) => Some(id),
+        None => s.store().first_unread(&chat_id, unread).map_err(err)?,
+    };
     let unmarked = s.store().set_marked_unread(&chat_id, false).map_err(err)?;
     if had_unread {
         s.store().set_unread(&chat_id, 0).map_err(err)?;
@@ -218,6 +218,7 @@ pub async fn mark_read(state: S<'_>, chat_id: String) -> R<()> {
     let s = state.inner().clone();
     let _ = s.store().set_unread(&chat_id, 0);
     let _ = s.store().set_marked_unread(&chat_id, false);
+    let _ = s.store().set_unread_from(&chat_id, None);
     s.chats_changed();
     if !s.demo {
         acknowledge(&s, &chat_id).await;
@@ -226,11 +227,29 @@ pub async fn mark_read(state: S<'_>, chat_id: String) -> R<()> {
     Ok(())
 }
 
-/// LAAB's "mark as unread": a dot in the chat list until the chat is opened
-/// here. LINE has no such state, so nothing is sent and the count is kept.
+/// LAAB's "mark as unread". With `message_id`, Discord-style unread from that
+/// message (divider + badge, survives reopen). Without, a chat-list dot that
+/// clears on open. LINE has no such state, so nothing is sent.
 #[tauri::command]
-pub fn mark_unread(state: S<'_>, chat_id: String) -> R<()> {
-    if state.store().set_marked_unread(&chat_id, true).map_err(err)? {
+pub fn mark_unread(state: S<'_>, chat_id: String, message_id: Option<String>) -> R<()> {
+    let changed = if let Some(id) = message_id {
+        let anchored = state
+            .store()
+            .set_unread_from(&chat_id, Some(&id))
+            .map_err(err)?;
+        // A message anchor replaces the plain chat-list mark.
+        let unmarked = state
+            .store()
+            .set_marked_unread(&chat_id, false)
+            .map_err(err)?;
+        anchored || unmarked
+    } else {
+        state
+            .store()
+            .set_marked_unread(&chat_id, true)
+            .map_err(err)?
+    };
+    if changed {
         state.chats_changed();
     }
     Ok(())
@@ -1039,6 +1058,30 @@ pub fn set_draft(state: S<'_>, chat_id: String, draft: Draft) -> R<()> {
     state.store().set_draft(&chat_id, &draft).map_err(err)
 }
 
+/// Personal bookmarks of text messages. Only this Mac sees them; LINE has none.
+/// Omit `chat_id` for every bookmark, newest first.
+#[tauri::command]
+pub fn bookmarks(state: S<'_>, chat_id: Option<String>) -> R<Vec<Bookmark>> {
+    state
+        .store()
+        .bookmarks(chat_id.as_deref())
+        .map_err(err)
+}
+
+#[tauri::command]
+pub fn set_bookmark(
+    state: S<'_>,
+    chat_id: String,
+    message_id: String,
+    text: String,
+    bookmarked: bool,
+) -> R<bool> {
+    state
+        .store()
+        .set_bookmark(&chat_id, &message_id, &text, bookmarked)
+        .map_err(err)
+}
+
 /// The raw LINE message, for the developer inspector.
 #[tauri::command]
 pub async fn raw_message(state: S<'_>, chat_id: String, message_id: String) -> R<String> {
@@ -1470,6 +1513,7 @@ pub struct Announcement {
 }
 
 /// Pinned announcements shown as a banner over the chat, newest first.
+/// Synced via LINE for groups, rooms and 1:1 chats.
 #[tauri::command]
 pub async fn announcements(state: S<'_>, chat_id: String) -> R<Vec<Announcement>> {
     let s = state.inner().clone();
@@ -1485,9 +1529,6 @@ pub async fn announcements(state: S<'_>, chat_id: String) -> R<Vec<Announcement>
         } else {
             vec![]
         });
-    }
-    if chat_id.starts_with('u') {
-        return Ok(vec![]);
     }
     let Some(l) = s.line().await else {
         return Ok(vec![]);

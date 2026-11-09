@@ -603,13 +603,20 @@ export function ChatRow({
             <span className="line-clamp-2 flex-1 text-[12px] leading-[1.35] text-secondary">
               <Preview text={listPreview(chat.preview)} />
             </span>
-            <Badge count={chat.unread} className={chat.muted ? "bg-secondary!" : ""} />
-            {chat.markedUnread && chat.unread <= 0 && (
-              <span
-                aria-label="ทำเครื่องหมายว่ายังไม่ได้อ่าน"
-                className={`mt-1.5 h-2.5 w-2.5 shrink-0 rounded-full ${chat.muted ? "bg-secondary" : "bg-line-green"}`}
-              />
-            )}
+            {(() => {
+              const badge = chat.unread > 0 ? chat.unread : (chat.unreadFromCount ?? 0);
+              return (
+                <>
+                  <Badge count={badge} className={chat.muted ? "bg-secondary!" : ""} />
+                  {(chat.markedUnread || chat.unreadFrom) && badge <= 0 && (
+                    <span
+                      aria-label="ทำเครื่องหมายว่ายังไม่ได้อ่าน"
+                      className={`mt-1.5 h-2.5 w-2.5 shrink-0 rounded-full ${chat.muted ? "bg-secondary" : "bg-line-green"}`}
+                    />
+                  )}
+                </>
+              );
+            })()}
           </div>
         </div>
       </div>

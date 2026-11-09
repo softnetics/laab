@@ -40,6 +40,17 @@ pub struct DraftMention {
     pub label: String,
 }
 
+/// A private bookmark of a text message. `text` is a snapshot so the list
+/// still shows something if the message has left the local cache.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct Bookmark {
+    pub chat_id: String,
+    pub message_id: String,
+    pub text: String,
+    pub created_at: f64,
+}
+
 impl Store {
     /// `key` is 64 hex characters (a raw SQLCipher key). A database written
     /// before encryption is encrypted in place first.
@@ -107,6 +118,8 @@ impl Store {
             ("messages", "undecrypted", "INTEGER NOT NULL DEFAULT 0"),
             // LAAB's own "mark as unread", display only (see `Chat::marked_unread`).
             ("chats", "marked_unread", "INTEGER NOT NULL DEFAULT 0"),
+            // Discord-style unread-from-message (local only; see `Chat::unread_from`).
+            ("chats", "unread_from", "TEXT"),
         ] {
             self.add_column_if_missing(table, column, definition)?;
         }
@@ -120,6 +133,14 @@ impl Store {
              CREATE TABLE IF NOT EXISTS users (mid TEXT PRIMARY KEY, name TEXT NOT NULL, picture TEXT, kind TEXT);
              CREATE TABLE IF NOT EXISTS reactions (message_id TEXT NOT NULL, user_mid TEXT NOT NULL, type TEXT NOT NULL, mine INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(message_id, user_mid));
              CREATE TABLE IF NOT EXISTS drafts (chat_id TEXT PRIMARY KEY, body TEXT NOT NULL, mentions TEXT);
+             -- Personal message bookmarks: LAAB-local, only this user sees them.
+             CREATE TABLE IF NOT EXISTS bookmarks (
+                 chat_id TEXT NOT NULL,
+                 message_id TEXT NOT NULL,
+                 text TEXT NOT NULL,
+                 created_at REAL NOT NULL,
+                 PRIMARY KEY(chat_id, message_id)
+             );
              CREATE TABLE IF NOT EXISTS kv (key TEXT PRIMARY KEY, value TEXT NOT NULL);
              -- line-rs storage: E2EE keys, refresh token, counters (JSON values).
              CREATE TABLE IF NOT EXISTS session (key TEXT PRIMARY KEY, value TEXT NOT NULL);
@@ -268,8 +289,17 @@ impl Store {
     }
 
     fn chats_where<P: rusqlite::Params>(&self, filter: &str, params: P) -> Result<Vec<Chat>> {
+        // `unread_from` is LAAB-local and left out of upsert_chats so sync cannot
+        // wipe it. The count is messages from others at/after that anchor.
         let mut stmt = self.db.prepare(&format!(
-            "SELECT id,name,kind,preview,activity,unread,avatar,muted,picture,member_count,invited,request,marked_unread FROM chats {filter} ORDER BY activity DESC"
+            "SELECT id,name,kind,preview,activity,unread,avatar,muted,picture,member_count,invited,request,marked_unread,unread_from,
+                CASE WHEN unread_from IS NULL THEN 0 ELSE (
+                    SELECT COUNT(*) FROM messages m
+                    WHERE m.chat_id = chats.id AND m.mine = 0 AND m.unsent = 0
+                      AND EXISTS (SELECT 1 FROM messages a WHERE a.id = chats.unread_from)
+                      AND m.created >= (SELECT created FROM messages WHERE id = chats.unread_from)
+                ) END
+             FROM chats {filter} ORDER BY activity DESC"
         ))?;
         let rows = stmt.query_map(params, |r| {
             Ok(Chat {
@@ -286,6 +316,8 @@ impl Store {
                 invited: r.get::<_, i64>(10)? != 0,
                 request: r.get::<_, i64>(11)? != 0,
                 marked_unread: r.get::<_, i64>(12)? != 0,
+                unread_from: r.get(13)?,
+                unread_from_count: r.get(14)?,
             })
         })?;
         Ok(rows.collect::<rusqlite::Result<_>>()?)
@@ -422,6 +454,30 @@ impl Store {
             "UPDATE chats SET marked_unread=? WHERE id=? AND marked_unread<>?",
             params![marked as i64, chat_id, marked as i64],
         )? > 0)
+    }
+
+    /// Discord-style unread from a message. `None` clears it. Returns whether
+    /// it changed. Not sent to LINE.
+    pub fn set_unread_from(&self, chat_id: &str, message_id: Option<&str>) -> Result<bool> {
+        let current: Option<Option<String>> = self
+            .db
+            .query_row(
+                "SELECT unread_from FROM chats WHERE id=?",
+                [chat_id],
+                |r| r.get(0),
+            )
+            .optional()?;
+        let Some(current) = current else {
+            return Ok(false);
+        };
+        if current.as_deref() == message_id {
+            return Ok(false);
+        }
+        self.db.execute(
+            "UPDATE chats SET unread_from=? WHERE id=?",
+            params![message_id, chat_id],
+        )?;
+        Ok(true)
     }
 
     pub fn set_muted(&self, chat_id: &str, muted: bool) -> Result<()> {
@@ -1027,6 +1083,56 @@ impl Store {
         Ok(())
     }
 
+    // ---------------------------------------------------------------- bookmarks
+
+    /// Newest first. `chat_id` None lists every bookmark.
+    pub fn bookmarks(&self, chat_id: Option<&str>) -> Result<Vec<Bookmark>> {
+        let map = |r: &rusqlite::Row<'_>| {
+            Ok(Bookmark {
+                chat_id: r.get(0)?,
+                message_id: r.get(1)?,
+                text: r.get(2)?,
+                created_at: r.get(3)?,
+            })
+        };
+        Ok(match chat_id {
+            Some(chat) => {
+                let mut stmt = self.db.prepare(
+                    "SELECT chat_id, message_id, text, created_at FROM bookmarks WHERE chat_id=? ORDER BY created_at DESC",
+                )?;
+                stmt.query_map([chat], map)?.filter_map(|r| r.ok()).collect()
+            }
+            None => {
+                let mut stmt = self.db.prepare(
+                    "SELECT chat_id, message_id, text, created_at FROM bookmarks ORDER BY created_at DESC",
+                )?;
+                stmt.query_map([], map)?.filter_map(|r| r.ok()).collect()
+            }
+        })
+    }
+
+    /// Add or remove a personal bookmark. Returns whether the row exists after.
+    pub fn set_bookmark(&self, chat_id: &str, message_id: &str, text: &str, bookmarked: bool) -> Result<bool> {
+        if bookmarked {
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs_f64() * 1000.0)
+                .unwrap_or(0.0);
+            self.db.execute(
+                "INSERT INTO bookmarks(chat_id, message_id, text, created_at) VALUES (?,?,?,?)
+                 ON CONFLICT(chat_id, message_id) DO UPDATE SET text=excluded.text",
+                params![chat_id, message_id, text, now],
+            )?;
+            Ok(true)
+        } else {
+            self.db.execute(
+                "DELETE FROM bookmarks WHERE chat_id=? AND message_id=?",
+                params![chat_id, message_id],
+            )?;
+            Ok(false)
+        }
+    }
+
     // ---------------------------------------------------------------- folders
 
     pub fn workspaces(&self) -> Result<Vec<Workspace>> {
@@ -1527,6 +1633,38 @@ mod tests {
     }
 
     #[test]
+    fn unread_from_survives_sync_and_counts_from_the_anchor() {
+        let mut s = Store::memory().unwrap();
+        let mut c = chat("u1", "a");
+        c.unread = 0;
+        s.upsert_chats(&[c.clone()]).unwrap();
+        let mut mine = msg("2", "u1", "mine", 2.0);
+        mine.mine = true;
+        s.upsert_messages(&[
+            msg("1", "u1", "first", 1.0),
+            mine,
+            msg("3", "u1", "second", 3.0),
+            msg("4", "u1", "third", 4.0),
+        ])
+        .unwrap();
+        assert!(s.set_unread_from("u1", Some("3")).unwrap());
+        assert!(!s.set_unread_from("u1", Some("3")).unwrap());
+        let row = s.chat("u1").unwrap().unwrap();
+        assert_eq!(row.unread_from.as_deref(), Some("3"));
+        assert_eq!(row.unread_from_count, 2);
+        // Sync must not wipe the local anchor.
+        c.unread = 5;
+        s.upsert_chats(&[c]).unwrap();
+        let row = s.chat("u1").unwrap().unwrap();
+        assert_eq!(row.unread_from.as_deref(), Some("3"));
+        assert_eq!(row.unread_from_count, 2);
+        assert!(s.set_unread_from("u1", None).unwrap());
+        let row = s.chat("u1").unwrap().unwrap();
+        assert!(row.unread_from.is_none());
+        assert_eq!(row.unread_from_count, 0);
+    }
+
+    #[test]
     fn unsent_messages_never_come_back() {
         let mut s = Store::memory().unwrap();
         s.upsert_messages(&[msg("1", "u1", "secret text", 1.0)])
@@ -1667,4 +1805,23 @@ mod tests {
         s.set_draft("c1", &Draft::default()).unwrap();
         assert_eq!(s.draft("c1").unwrap(), None);
     }
+
+    #[test]
+    fn bookmarks_are_personal_and_listable() {
+        let s = Store::memory().unwrap();
+        assert!(s.set_bookmark("u1", "m1", "hello", true).unwrap());
+        assert!(s.set_bookmark("u1", "m2", "later", true).unwrap());
+        assert!(s.set_bookmark("c2", "m3", "other chat", true).unwrap());
+        let in_chat = s.bookmarks(Some("u1")).unwrap();
+        assert_eq!(in_chat.len(), 2);
+        assert_eq!(in_chat[0].message_id, "m2");
+        assert_eq!(in_chat[0].text, "later");
+        assert_eq!(s.bookmarks(None).unwrap().len(), 3);
+        assert!(!s.set_bookmark("u1", "m1", "hello", false).unwrap());
+        assert_eq!(s.bookmarks(Some("u1")).unwrap().len(), 1);
+        // Re-bookmark keeps the newer snapshot text.
+        assert!(s.set_bookmark("u1", "m2", "later edited", true).unwrap());
+        assert_eq!(s.bookmarks(Some("u1")).unwrap()[0].text, "later edited");
+    }
+
 }

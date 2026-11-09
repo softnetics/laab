@@ -95,8 +95,8 @@ export function adjacentChat(ids: string[], current: string | null, step: 1 | -1
   return j < 0 || j >= ids.length ? null : ids[j];
 }
 
-/** Unread on LINE, or marked unread in LAAB. */
-export const looksUnread = (c: Chat) => c.unread > 0 || !!c.markedUnread;
+/** Unread on LINE, or marked unread in LAAB (dot or Discord-style from a message). */
+export const looksUnread = (c: Chat) => c.unread > 0 || !!c.markedUnread || !!c.unreadFrom;
 
 export const unreadLabel = (n: number) => (n > 999 ? "999+" : String(n));
 

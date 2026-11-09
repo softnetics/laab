@@ -11,6 +11,7 @@ import type {
   CalendarEventInput,
   Album,
   AnalyticsStatus,
+  Bookmark,
   McpActivity,
   McpSettings,
   McpSetup,
@@ -76,7 +77,9 @@ export const api = {
   setFocus: (chatId: string | null, active: boolean) => invoke<void>("set_focus", { chatId, active }),
   openChat: (chatId: string) => invoke<string | null>("open_chat", { chatId }),
   markRead: (chatId: string) => invoke<void>("mark_read", { chatId }),
-  markUnread: (chatId: string) => invoke<void>("mark_unread", { chatId }),
+  /** Chat-list mark when `messageId` is omitted; Discord-style from a message when set. */
+  markUnread: (chatId: string, messageId?: string) =>
+    invoke<void>("mark_unread", { chatId, messageId: messageId ?? null }),
   refresh: (full = true) => invoke<void>("refresh", { full }),
   reloadChat: (chatId: string) => invoke<void>("reload_chat", { chatId }),
   /** A reqSeq for one message, sent again with each retry of it. */
@@ -116,6 +119,10 @@ export const api = {
   search: (query: string, kinds: SearchKind[]) => invoke<SearchHit[]>("search", { query, kinds }),
   draft: (chatId: string) => invoke<Draft | null>("draft", { chatId }),
   setDraft: (chatId: string, draft: Draft) => invoke<void>("set_draft", { chatId, draft }),
+  /** Personal bookmarks. Omit `chatId` for every chat, newest first. */
+  bookmarks: (chatId?: string | null) => invoke<Bookmark[]>("bookmarks", { chatId: chatId ?? null }),
+  setBookmark: (chatId: string, messageId: string, text: string, bookmarked: boolean) =>
+    invoke<boolean>("set_bookmark", { chatId, messageId, text, bookmarked }),
   rawMessage: (chatId: string, messageId: string) => invoke<string>("raw_message", { chatId, messageId }),
   /** A bot's postback button. `messageId` is null for rich-menu areas, whose `data` is the whole linepostback URL. */
   sendPostback: (chatId: string, messageId: string | null, data: string, displayText: string | null, text: string | null = null) =>

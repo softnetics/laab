@@ -13,7 +13,10 @@
   --color-incoming: light-dark(#edeef0, #555555);
   --color-outgoing: #67dd71;
   --color-outgoing-text: #111a11;
-  --color-date-chip: light-dark(#f0f1f3, #262729);
+  --color-date-chip: light-dark(
+    color-mix(in srgb, #f0f1f3 70%, transparent),
+    color-mix(in srgb, #262729 48%, transparent)
+  );
   --color-primary: light-dark(#111111, #e6e6e6);
   --color-secondary: light-dark(#8a8c90, #8e9093);
   --color-rail-icon: light-dark(#8a8c90, #777777);
@@ -21,6 +24,8 @@
   --color-line-green: #06c755;
   --color-badge-red: #ff334b;
   --color-pin: #6489e5;
+  /* Personal bookmarks — warm, distinct from announcement pin blue. */
+  --color-bookmark: light-dark(#b57a14, #e0b24a);
   --color-oa-verified: #2f6fde;
   --color-mention: light-dark(#1f5fd1, #a9ccff);
   --color-popover: light-dark(#ffffff, #3a3c3d);
