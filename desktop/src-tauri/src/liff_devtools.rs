@@ -103,6 +103,31 @@ pub fn opened(app: &AppHandle, label: &str, view: &LiffView, chat: Option<String
     poll(app.clone(), label.to_string());
 }
 
+/// The same window moved to another page of the same LIFF app (so back /
+/// forward still work). Refresh what DevTools shows for it.
+pub fn updated(app: &AppHandle, label: &str, view: &LiffView) {
+    let session = {
+        let mut all = SESSIONS.lock().unwrap();
+        let Some(s) = all.iter_mut().find(|s| s.label == label) else {
+            return;
+        };
+        s.liff_id = view.liff_id.clone();
+        s.mode = view.mode.clone();
+        s.reason = view.reason.clone();
+        s.url = masked(&view.url);
+        s.info = view.info.clone();
+        s.clone()
+    };
+    emit(
+        app,
+        Update {
+            label,
+            session: Some(&session),
+            events: &[],
+        },
+    );
+}
+
 pub fn push(app: &AppHandle, label: &str, kind: &str, level: &str, text: impl Into<String>) {
     add(
         app,
@@ -192,8 +217,11 @@ fn poll(app: AppHandle, label: String) {
             tokio::time::sleep(POLL).await;
             let Some(w) = app.get_webview_window(&label) else {
                 set_closed(&app, &label);
+                crate::liff_titlebar::forget(&app, &label);
                 return;
             };
+            // Pages that change their history in place (pushState) load nothing.
+            crate::liff_titlebar::refresh(&w);
             let (app2, label2) = (app.clone(), label.clone());
             let _ = w.eval_with_callback(
                 "window.__laabDev ? window.__laabDev.drain() : '[]'",
@@ -201,6 +229,41 @@ fn poll(app: AppHandle, label: String) {
             );
         }
     });
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Nav {
+    Back,
+    Forward,
+    Reload,
+}
+
+impl Nav {
+    /// The host of a `laab-nav://` link from the page's shortcuts.
+    pub fn from_host(host: &str) -> Option<Self> {
+        match host {
+            "back" => Some(Self::Back),
+            "forward" => Some(Self::Forward),
+            "reload" => Some(Self::Reload),
+            _ => None,
+        }
+    }
+}
+
+/// Go back or forward in a LIFF page's history, or reload it with the tokens
+/// already in its URL. Logged from here because the page's own buffer goes
+/// with the page before it is drained.
+pub fn navigate(app: &AppHandle, label: &str, nav: Nav) -> tauri::Result<()> {
+    let Some(w) = app.get_webview_window(label) else {
+        return Err(tauri::Error::WebviewNotFound);
+    };
+    let (text, js) = match nav {
+        Nav::Back => ("ย้อนกลับ", "history.back()"),
+        Nav::Forward => ("ไปข้างหน้า", "history.forward()"),
+        Nav::Reload => ("รีโหลด", "location.reload()"),
+    };
+    push(app, label, "nav", "info", text);
+    w.eval(js)
 }
 
 /// Run `code` in the LIFF page and log it and its result, like a console.
@@ -271,7 +334,9 @@ pub fn open(app: &AppHandle, focus: Option<&str>) -> tauri::Result<()> {
 
 /// Records page events: console output, uncaught errors, failed resources,
 /// fetch and XHR results, and page loads. Tokens in the URL fragment are
-/// left out. ⌥⌘L opens LIFF DevTools on this window.
+/// left out. ⌘[ and ⌘] go back and forward, and ⌘R reloads the page with the
+/// same tokens, as the title bar's buttons do; ⌥⌘L opens LIFF DevTools on
+/// this window.
 pub const CAPTURE: &str = r#"(function(){
   if (window.__laabDev) return;
   var buf = [];
@@ -378,6 +443,14 @@ pub const CAPTURE: &str = r#"(function(){
     if (e.altKey && e.metaKey && (e.key === 'l' || e.key === 'L' || e.code === 'KeyL')) {
       e.preventDefault();
       location.href = 'laab-devtools://open';
+      return;
+    }
+    if (!e.metaKey || e.altKey || e.ctrlKey || e.shiftKey) return;
+    var nav = e.code === 'BracketLeft' ? 'back' : e.code === 'BracketRight' ? 'forward'
+      : (e.key === 'r' || e.key === 'R' || e.code === 'KeyR') ? 'reload' : null;
+    if (nav) {
+      e.preventDefault();
+      location.href = 'laab-nav://' + nav;
     }
   }, true);
 })();"#;
@@ -401,6 +474,14 @@ mod tests {
             ("console", "warn", "hi")
         );
         assert!(parse_drained("null").is_empty());
+    }
+
+    #[test]
+    fn reads_navigation_links() {
+        assert_eq!(Nav::from_host("back"), Some(Nav::Back));
+        assert_eq!(Nav::from_host("forward"), Some(Nav::Forward));
+        assert_eq!(Nav::from_host("reload"), Some(Nav::Reload));
+        assert_eq!(Nav::from_host("open"), None);
     }
 
     #[test]

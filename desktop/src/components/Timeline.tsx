@@ -49,6 +49,20 @@ export function Timeline({
   const scroller = useRef<HTMLDivElement>(null);
   const focusId = useUi((s) => s.focusMessageId);
   const rows = useMemo(() => buildRows(messages, ctx.name), [messages, ctx.name]);
+  // Each day starts with its date chip, as in LINE. While scrolling, a
+  // floating copy at the top also names the day under the top edge, then
+  // fades.
+  const days = useMemo(() => {
+    const groups: { id: string; label: string; rows: typeof rows }[] = [];
+    for (const r of rows) {
+      if (r.dayStart || !groups.length) {
+        groups.push({ id: r.message.id, label: dayHeader(r.message.createdTime), rows: [r] });
+      } else {
+        groups[groups.length - 1]!.rows.push(r);
+      }
+    }
+    return groups;
+  }, [rows]);
   // #9: place read marks once per render, not once per row.
   const marks = useMemo(() => {
     const cursors = { ...reads };
@@ -68,6 +82,32 @@ export function Timeline({
   const autoUntil = useRef(0);
   const inner = useRef<HTMLDivElement>(null);
   const [away, setAway] = useState(false);
+  const [dateLabel, setDateLabel] = useState("");
+  const [dateShown, setDateShown] = useState(false);
+  const dateHide = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const syncDateChip = () => {
+    const el = scroller.current;
+    if (!el) return;
+    const top = el.getBoundingClientRect().top;
+    let label = "";
+    for (const section of el.querySelectorAll<HTMLElement>("[data-day-label]")) {
+      if (section.getBoundingClientRect().top <= top + 12) label = section.dataset.dayLabel ?? "";
+      else break;
+    }
+    if (label) setDateLabel(label);
+  };
+  const showDate = () => {
+    syncDateChip();
+    setDateShown(true);
+    if (dateHide.current) clearTimeout(dateHide.current);
+    dateHide.current = setTimeout(() => setDateShown(false), 700);
+  };
+  useEffect(
+    () => () => {
+      if (dateHide.current) clearTimeout(dateHide.current);
+    },
+    [],
+  );
   const toBottom = () => {
     const el = scroller.current;
     if (!el) return;
@@ -90,6 +130,8 @@ export function Timeline({
   }, [lastId, lastMine, focusId]);
   useLayoutEffect(() => {
     pinned.current = true;
+    setDateShown(false);
+    setDateLabel("");
     if (!focusId) toBottom();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ctx.chatId]);
@@ -125,6 +167,9 @@ export function Timeline({
     else if (Date.now() > autoUntil.current) pinned.current = false;
     setAway(fromBottom > 400);
     if (el.scrollTop < 300) loadOlder();
+    // Skip our own scrolls (pin-to-bottom, load-older, jump) so the chip
+    // does not flash on every incoming message.
+    if (Date.now() > autoUntil.current) showDate();
   };
   // A message that arrives while scrolled up shows as a strip over the
   // composer, as in LINE ("O Finally Human…").
@@ -218,41 +263,55 @@ export function Timeline({
               </button>
             </div>
           )}
-          {rows.map((r) => (
-            <div key={r.message.id}>
-              {r.dayStart && (
+          {days.map((day) => (
+            <section key={day.id} data-day-label={day.label}>
+              {day.rows[0]?.dayStart && (
                 <div className="flex justify-center pt-[18px]">
-                  <span className="chip-text rounded-full bg-date-chip px-3 py-[5px] text-[12px] leading-[15px]">
-                    {dayHeader(r.message.createdTime)}
-                  </span>
+                  <span className="chip-text rounded-full bg-date-chip px-3 py-[5px] text-[12px] leading-[15px]">{day.label}</span>
                 </div>
               )}
-              {unreadFrom && (r.message.id === unreadFrom || r.photos?.some((p) => p.id === unreadFrom)) && (
-                <div data-unread-mark className="flex items-center gap-3 pt-[18px] text-[12px] text-secondary">
-                  <span className="h-px flex-1 bg-current opacity-30" />
-                  ข้อความที่ยังไม่ได้อ่าน
-                  <span className="h-px flex-1 bg-current opacity-30" />
+              {day.rows.map((r) => (
+                <div key={r.message.id}>
+                  {unreadFrom && (r.message.id === unreadFrom || r.photos?.some((p) => p.id === unreadFrom)) && (
+                    <div data-unread-mark className="flex items-center gap-3 pt-[18px] text-[12px] text-secondary">
+                      <span className="h-px flex-1 bg-current opacity-30" />
+                      ข้อความที่ยังไม่ได้อ่าน
+                      <span className="h-px flex-1 bg-current opacity-30" />
+                    </div>
+                  )}
+                  {r.notice ? (
+                    <NoticeRow m={r.message} ctx={ctx} />
+                  ) : (
+                    <MessageRow
+                      m={r.message}
+                      ctx={ctx}
+                      runStart={r.runStart}
+                      photos={r.photos}
+                      readers={(() => {
+                        const id = (r.photos?.[r.photos.length - 1] ?? r.message).id;
+                        return marks[id] ? readerList(marks[id], ctx.name, people, members) : NO_READERS;
+                      })()}
+                      highlight={search && hitSet.has(r.message.id) ? ranges(r.message.text, search.query) : undefined}
+                      current={r.message.id === currentHit}
+                    />
+                  )}
                 </div>
-              )}
-              {r.notice ? (
-                <NoticeRow m={r.message} ctx={ctx} />
-              ) : (
-                <MessageRow
-                  m={r.message}
-                  ctx={ctx}
-                  runStart={r.runStart}
-                  photos={r.photos}
-                  readers={(() => {
-                    const id = (r.photos?.[r.photos.length - 1] ?? r.message).id;
-                    return marks[id] ? readerList(marks[id], ctx.name, people, members) : NO_READERS;
-                  })()}
-                  highlight={search && hitSet.has(r.message.id) ? ranges(r.message.text, search.query) : undefined}
-                  current={r.message.id === currentHit}
-                />
-              )}
-            </div>
+              ))}
+            </section>
           ))}
         </div>
+      </div>
+      <div
+        aria-hidden={!dateShown}
+        className={`pointer-events-none absolute inset-x-0 top-2 z-10 flex justify-center transition-opacity duration-200 ease-out ${
+          dateShown ? "opacity-100" : "opacity-0"
+        }`}
+      >
+        {dateLabel && (
+          <span className="chip-text rounded-full bg-date-chip px-3 py-[5px] text-[12px] leading-[15px] shadow-[0_1px_2px_rgba(0,0,0,0.12)]">
+            {dateLabel}
+          </span>
+        )}
       </div>
       {older.state === "loading" && (
         <div className="pointer-events-none absolute inset-x-0 top-3 flex justify-center">

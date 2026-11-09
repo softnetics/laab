@@ -16,7 +16,7 @@ import { notice, pushDismiss } from "../lib/ui";
 
 const ease = [0.32, 0.72, 0, 1] as const;
 
-/** Renders right under the composer, in a zero-height anchor. */
+/** Toolbar chip left of the sticker button; returns null when the OA has no menu. */
 export function RichMenu({ chatId }: { chatId: string }) {
   const state = useSession()?.state;
   const { data: menu } = useQuery({
@@ -42,12 +42,11 @@ export function RichMenu({ chatId }: { chatId: string }) {
   }, [open]);
   if (!menu) return null;
   return (
-    <div ref={root} className="relative z-20 h-0">
-      {/* In the toolbar row, left of the sticker button. */}
+    <div ref={root} className="relative">
       <button
-        onClick={() => setOpen(!open)}
+        onClick={(e) => (e.stopPropagation(), setOpen(!open))}
         aria-expanded={open}
-        className={`absolute right-[52px] bottom-[6px] flex h-8 items-center gap-1.5 rounded-full pr-2.5 pl-3 text-[12.5px] transition-[color,background-color,scale] duration-150 ease-out active:scale-[0.96] ${
+        className={`flex h-8 items-center gap-1.5 rounded-full pr-2.5 pl-3 text-[12.5px] transition-[color,background-color,scale] duration-150 ease-out active:scale-[0.96] ${
           open ? "bg-line-green/15 text-line-green" : "text-secondary hover:bg-field hover:text-primary"
         }`}
       >
@@ -62,8 +61,8 @@ export function RichMenu({ chatId }: { chatId: string }) {
             exit={reduce ? { opacity: 0, transition: { duration: 0 } } : { opacity: 0, scale: 0.98, y: 4, transition: { duration: 0.14, ease: "easeIn" } }}
             transition={{ duration: 0.2, ease }}
             // No taller than 40% of the window.
-            style={{ transformOrigin: "bottom right", width: `min(calc(100% - 24px), calc(40vh * ${menu.width / menu.height}))` }}
-            className="absolute right-3 bottom-[46px] overflow-hidden rounded-[14px] bg-popover p-1.5 shadow-[0_0_0_1px_rgba(255,255,255,0.08),0_12px_32px_rgba(0,0,0,0.35),0_2px_8px_rgba(0,0,0,0.2)]"
+            style={{ transformOrigin: "bottom right", width: `min(calc(100vw - 48px), calc(40vh * ${menu.width / menu.height}))` }}
+            className="absolute right-0 bottom-[calc(100%+8px)] z-30 overflow-hidden rounded-[14px] bg-popover p-1.5 shadow-[0_0_0_1px_rgba(255,255,255,0.08),0_12px_32px_rgba(0,0,0,0.35),0_2px_8px_rgba(0,0,0,0.2)]"
           >
             <div className="overflow-hidden rounded-[8px]">
               <Canvas menu={menu} chatId={chatId} onTap={() => setOpen(false)} />

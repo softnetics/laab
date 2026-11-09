@@ -70,9 +70,25 @@ pub struct ChatList {
 
 #[tauri::command]
 pub fn chats(state: S<'_>) -> R<ChatList> {
-    let store = state.store();
+    let mut store = state.store();
+    let mut chats = store.chats().map_err(err)?;
+    // Old rows stored "(LINE emoji)" as plain text; redraw from the last message.
+    for chat in &mut chats {
+        if !chat.preview.contains("(LINE emoji)") {
+            continue;
+        }
+        let Some(last) = store.messages(&chat.id, 1).ok().and_then(|mut m| m.pop()) else {
+            continue;
+        };
+        let next = convert::preview_line(&last);
+        if next == chat.preview {
+            continue;
+        }
+        chat.preview = next;
+        let _ = store.upsert_chats(std::slice::from_ref(chat));
+    }
     Ok(ChatList {
-        chats: store.chats().map_err(err)?,
+        chats,
         workspaces: store.workspaces().map_err(err)?,
         pins: store.pins().map_err(err)?,
     })
@@ -335,6 +351,38 @@ pub async fn send_text(
     if m.reply_to.is_none() {
         m.reply_to = reply_to;
     }
+    if m.created_time <= 0.0 {
+        m.created_time = now_ms();
+    }
+    store_sent(&s, &m);
+    Ok(m)
+}
+
+#[tauri::command]
+pub async fn send_emoji(state: S<'_>, chat_id: String, emoji_id: String) -> R<Message> {
+    let s = state.inner().clone();
+    let input = crate::emoji::input(&emoji_id)?;
+    let text = input.text.clone().unwrap_or_default();
+    let metadata = input.content_metadata.clone();
+    let mut m = if s.demo {
+        local_message(&s, &chat_id, &text, vec![])
+    } else {
+        let l = s.line().await.ok_or("not_logged_in")?;
+        let sent = l
+            .client
+            .send_message(&chat_id, input)
+            .await
+            .map_err(|e| send_failed(&s, crate::usage::Action::SentText, e))?;
+        crate::usage::hit(crate::usage::Action::SentText);
+        convert::message_from_json(&line::message_json(&sent.raw), &l.me, true)
+            .unwrap_or_else(|| local_message(&s, &chat_id, &text, vec![]))
+    };
+    // Send responses can omit text/metadata. Preserve the native emoji locally.
+    m.chat_id = chat_id;
+    m.mine = true;
+    m.text = text;
+    m.content_type = "NONE".into();
+    m.metadata.extend(metadata);
     if m.created_time <= 0.0 {
         m.created_time = now_ms();
     }
@@ -694,6 +742,51 @@ pub async fn download(
         })
 }
 
+/// `NICE`…`OMG`, or `PAID:<productId>:<emojiId>:<version>:<0|1 animated>`.
+fn parse_react_arg(name: &str) -> Result<ReactArg, String> {
+    if let Some(kind) = ReactionType::from_name(name) {
+        return Ok(ReactArg::Predefined(kind));
+    }
+    let Some(rest) = name.strip_prefix("PAID:") else {
+        return Err("bad_reaction".into());
+    };
+    let parts: Vec<&str> = rest.split(':').collect();
+    if parts.len() < 2 || parts[0].is_empty() || parts[1].is_empty() {
+        return Err("bad_reaction".into());
+    }
+    let product_id = parts[0].to_string();
+    let emoji_id = parts[1].to_string();
+    let version = parts.get(2).and_then(|v| v.parse().ok()).unwrap_or(1_i64);
+    let resource_type = if parts.get(3) == Some(&"1") { 2 } else { 1 }; // ANIMATION=2, STATIC=1
+    // Same catalog as the emoji / reaction pack picker.
+    let catalog: serde_json::Value =
+        serde_json::from_str(include_str!("../../src/lib/basicEmoji.json"))
+            .map_err(|_| "bad_reaction".to_string())?;
+    let expected = catalog["productId"].as_str().unwrap_or_default();
+    let count = catalog["count"].as_u64().unwrap_or(0);
+    let number = emoji_id.parse::<u64>().map_err(|_| "bad_reaction".to_string())?;
+    if product_id != expected || number == 0 || number > count || format!("{number:03}") != emoji_id
+    {
+        return Err("bad_reaction".into());
+    }
+    Ok(ReactArg::Paid {
+        product_id,
+        emoji_id,
+        version: version.max(1),
+        resource_type,
+    })
+}
+
+enum ReactArg {
+    Predefined(ReactionType),
+    Paid {
+        product_id: String,
+        emoji_id: String,
+        version: i64,
+        resource_type: i32,
+    },
+}
+
 /// Set (`Some`) or remove (`None`) our reaction.
 #[tauri::command]
 pub async fn react(
@@ -711,6 +804,10 @@ pub async fn react(
             .find(|r| r.user_id == me)
             .map(|r| r.reaction)
     });
+    let parsed = match reaction.as_deref() {
+        Some(name) => Some(parse_react_arg(name)?),
+        None => None,
+    };
     line::apply_reaction(&s, &message_id, &me, reaction.as_deref());
     if s.demo {
         return Ok(());
@@ -721,10 +818,43 @@ pub async fn react(
             return Err("bad_message_id".to_string());
         }
         let msg = l.talk_message(&message_id);
-        match reaction.as_deref() {
-            Some(name) => {
-                let kind = ReactionType::from_name(name).ok_or("bad_reaction".to_string())?;
-                msg.react(kind).await.map_err(err)
+        match parsed {
+            Some(ReactArg::Predefined(kind)) => msg.react(kind).await.map_err(err),
+            Some(ReactArg::Paid {
+                product_id,
+                emoji_id,
+                version,
+                resource_type,
+            }) => {
+                // line-rs's IDL ReactionType only has predefinedReactionType, so
+                // schema encode drops paidReactionType. Send field ids on the wire.
+                use line_rs::request::Parse;
+                use line_rs::thrift::TValue;
+                let id: i64 = message_id
+                    .parse()
+                    .map_err(|_| "bad_message_id".to_string())?;
+                let req_seq = l.client.base.get_reqseq("talk").await.map_err(err)?;
+                let paid = TValue::Struct(vec![
+                    (1, TValue::string(product_id)),
+                    (2, TValue::string(emoji_id)),
+                    (3, TValue::I32(resource_type)),
+                    (4, TValue::I64(version)),
+                ]);
+                let args = vec![(
+                    1,
+                    TValue::Struct(vec![
+                        (1, TValue::I32(req_seq as i32)),
+                        (2, TValue::I64(id)),
+                        (3, TValue::Struct(vec![(2, paid)])), // paidReactionType
+                    ]),
+                )];
+                l.client
+                    .base
+                    .talk()
+                    .request("react", args, Parse::Result)
+                    .await
+                    .map(|_| ())
+                    .map_err(err)
             }
             None => msg.cancel_reaction().await.map_err(err),
         }
@@ -1382,6 +1512,48 @@ pub async fn rich_menu(state: S<'_>, chat_id: String) -> R<Option<crate::richmen
             err(e)
         })?;
     Ok(crate::richmenu::from_chat_bar(&bar.to_json()))
+}
+
+/// An official account's badge: `premium` (green), `verified` (blue) or
+/// `unverified` (gray), from `BuddyDetail.verifiedIconType` (field 41;
+/// 1 = verified, 2 = premium). That field sits past the end of line-rs's
+/// schema, so it may come back keyed by its id.
+fn badge_of(detail: &serde_json::Value) -> &'static str {
+    let icon = [&detail["verifiedIconType"], &detail["41"]]
+        .into_iter()
+        .find_map(convert::num_of);
+    match icon {
+        Some(1.0) => "verified",
+        Some(2.0) => "premium",
+        _ => "unverified",
+    }
+}
+
+#[tauri::command]
+pub async fn official_badge(state: S<'_>, chat_id: String) -> R<Option<&'static str>> {
+    let s = state.inner().clone();
+    if s.demo {
+        return Ok(match chat_id.as_str() {
+            "b_news" => Some("premium"),
+            "b_parcel" => Some("verified"),
+            _ => None,
+        });
+    }
+    let Some(l) = s.line().await else {
+        return Ok(None);
+    };
+    let detail = l
+        .client
+        .base
+        .buddy()
+        .get_buddy_detail(line_rs::tv!({ "buddyMid": chat_id.clone() }))
+        .await
+        .map_err(|e| {
+            tracing::warn!("buddy detail {chat_id}: {e:?}");
+            err(e)
+        })?
+        .to_json();
+    Ok(Some(badge_of(&detail)))
 }
 
 // ---------------------------------------------------------------- line-rs extras

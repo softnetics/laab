@@ -1,7 +1,7 @@
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { Menu } from "@base-ui/react/menu";
-import { useEffect, useMemo, useRef, useState } from "react";
-import { api, errorText, useChatList, useSession } from "../lib/api";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { api, errorText, mediaUrl, useChatList, useSession } from "../lib/api";
 import { clickEndsDrag, isRecent, markRecent, moving, pressChat, useChatDrag } from "../lib/chatDrag";
 import { filterChats, folderName, folderOf, groupRows, isKeepMemo, type ListRow, listPreview, looksUnread, requestBox } from "../lib/chatList";
 import { openChat } from "../lib/nav";
@@ -345,15 +345,39 @@ function Highlight({ text, query }: { text: string; query: string }) {
   );
 }
 
-/** Calls read "📞 เวลาโทร : 01:25"; LINE draws the phone as a gray outline. */
+/** `\u200c sticon:product:id:ver \u200c` from the backend preview for LINE emoji. */
+const STICON_PREVIEW = /\u200csticon:([^:\u200c]+):([^:\u200c]+):(\d+)\u200c/g;
+
+/** Calls read "📞 เวลาโทร : 01:25"; LINE draws the phone as a gray outline.
+ *  LINE emoji in the preview are pictures, not "(LINE emoji)". */
 function Preview({ text }: { text: string }) {
-  if (!text.startsWith("📞 ") && !text.startsWith("🎥 ")) return <>{text}</>;
-  return (
-    <>
-      <PhoneOutlineIcon size={11} className="mr-1 inline -translate-y-px" />
-      {text.slice(3)}
-    </>
-  );
+  if (text.startsWith("📞 ") || text.startsWith("🎥 ")) {
+    return (
+      <>
+        <PhoneOutlineIcon size={11} className="mr-1 inline -translate-y-px" />
+        {text.slice(3)}
+      </>
+    );
+  }
+  const nodes: ReactNode[] = [];
+  let last = 0;
+  for (const m of text.matchAll(STICON_PREVIEW)) {
+    const at = m.index ?? 0;
+    if (at > last) nodes.push(text.slice(last, at));
+    nodes.push(
+      <img
+        key={`${m[1]}-${m[2]}-${at}`}
+        src={mediaUrl.sticon(m[1], m[2], Number(m[3]) || 1)}
+        alt=""
+        className="inline-block h-[1.2em] w-[1.2em] translate-y-[-0.05em] object-contain"
+        draggable={false}
+      />,
+    );
+    last = at + m[0].length;
+  }
+  if (!nodes.length) return <>{text}</>;
+  if (last < text.length) nodes.push(text.slice(last));
+  return <>{nodes}</>;
 }
 
 /** Ungroup a folder; its chats go back to the plain list. */

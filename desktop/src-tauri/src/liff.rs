@@ -9,6 +9,7 @@ use line_rs::client::liff::{self as lliff, ConsentPage, LiffDeviceSetting, LiffV
 use serde::{Deserialize, Serialize};
 use serde_json::Value as Json;
 use tauri::{Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
+use tauri::webview::NewWindowResponse;
 
 use crate::state::AppState;
 
@@ -242,6 +243,18 @@ pub async fn issue(
     chat: Option<String>,
     consent: bool,
 ) -> Result<LiffView> {
+    issue_as(state, url, chat, consent, false).await
+}
+
+/// [`issue`], saying whether this LIFF app replaces another one in its
+/// window (`subsequentLiff`).
+async fn issue_as(
+    state: &Arc<AppState>,
+    url: &str,
+    chat: Option<String>,
+    consent: bool,
+    subsequent: bool,
+) -> Result<LiffView> {
     let url_requested = url;
     let link = parse_link(url).ok_or_else(|| anyhow!("invalid_liff_id"))?;
     let web = |reason: &str| LiffView {
@@ -254,7 +267,10 @@ pub async fn issue(
     let Some(line) = state.line().await else {
         return Ok(web("ยังไม่ได้เข้าสู่ระบบ"));
     };
-    let opts = view_options(url, &link, chat);
+    let opts = LiffViewOptions {
+        subsequent_liff: subsequent,
+        ..view_options(url, &link, chat)
+    };
     let liff = line.client.liff();
     let view = match liff.issue_view(&opts).await {
         Ok(v) => v,
@@ -324,6 +340,36 @@ pub async fn issue(
 /// Bridge commands LAAB answers; `liff.isApiAvailable` and `liff.init`
 /// read this list (`features`).
 const FEATURES: &[&str] = &["closeWindow", "openWindow", "getAdvertisingId", "scanCode"];
+
+/// LIFF pages (Chattizen, …) put `target="_blank"` on every outbound link.
+/// WKWebView's `createWebView` often gets `about:blank` for those, so an
+/// `on_new_window` Deny still looks like nothing happened. Send them through
+/// `laab-open://` instead, which `on_navigation` already opens.
+const OPEN_BLANK_LINKS: &str = r#"(function(){
+  if (window.__laabOpenBlank) return;
+  window.__laabOpenBlank = true;
+  function open(url) {
+    if (!url) return;
+    location.href = 'laab-open://open?url=' + encodeURIComponent(url);
+  }
+  document.addEventListener('click', function(e) {
+    if (e.defaultPrevented) return;
+    var a = e.target && e.target.closest && e.target.closest('a[href]');
+    if (!a) return;
+    var href = a.getAttribute('href') || '';
+    if (!href || href.charAt(0) === '#' || href.indexOf('javascript:') === 0) return;
+    var blank = String(a.target || '').toLowerCase() === '_blank' || e.metaKey || e.ctrlKey;
+    if (!blank) return;
+    e.preventDefault();
+    e.stopPropagation();
+    open(a.href || href);
+  }, true);
+  var orig = window.open;
+  window.open = function(url) {
+    if (url) { open(String(url)); return null; }
+    return orig ? orig.apply(this, arguments) : null;
+  };
+})();"#;
 
 /// The `window._liff` bridge, with the app's granted `scopes`. A command
 /// LAAB can't do answers `CLIENT_UNSUPPORTED_OPERATION`, so the app can
@@ -405,6 +451,17 @@ struct PickerRequest {
 
 /// Open a LIFF view in its own window.
 pub fn open_window(state: &Arc<AppState>, view: &LiffView, chat: Option<String>) -> Result<()> {
+    open_window_at(state, view, chat, None)
+}
+
+/// [`open_window`], with the frame (position and size) of the window it
+/// replaces, if any.
+fn open_window_at(
+    state: &Arc<AppState>,
+    view: &LiffView,
+    chat: Option<String>,
+    frame: Option<(tauri::PhysicalPosition<i32>, tauri::PhysicalSize<u32>)>,
+) -> Result<()> {
     let app = state.app.clone();
     let label = format!("liff-{}", crate::state::now_ms() as u64);
     let url: tauri::Url = view.url.parse()?;
@@ -416,17 +473,52 @@ pub fn open_window(state: &Arc<AppState>, view: &LiffView, chat: Option<String>)
     let log = move |level: &str, text: String| {
         crate::liff_devtools::push(&nav_app, &nav_label, "nav", level, text)
     };
+    // target="_blank" / window.open: WKWebView denies these with no handler, so
+    // a LIFF page's "open another LIFF" link (Chattizen always sets target=_blank
+    // on rich-text links) did nothing. Route them the same way as a click.
+    let (new_state, new_chat, new_app, new_label) =
+        (state.clone(), chat.clone(), app.clone(), label.clone());
     let mut builder = WebviewWindowBuilder::new(&app, &label, WebviewUrl::External(url))
         .title("LIFF")
         .inner_size(420.0, 760.0)
         .min_inner_size(320.0, 420.0)
         .user_agent(&user_agent(client))
+        .on_page_load(|w, payload| {
+            if payload.event() == tauri::webview::PageLoadEvent::Finished {
+                crate::liff_titlebar::refresh(&w);
+            }
+        })
+        .on_new_window(move |u, _features| {
+            let s = u.as_str();
+            let bare = s.split('#').next().unwrap_or(s);
+            // about:blank is WKWebView's placeholder for target=_blank; the
+            // OPEN_BLANK_LINKS script should have rewritten the click already.
+            if bare.is_empty() || bare == "about:blank" {
+                return NewWindowResponse::Deny;
+            }
+            crate::liff_devtools::push(
+                &new_app,
+                &new_label,
+                "nav",
+                "info",
+                format!("หน้าต่างใหม่ → {bare}"),
+            );
+            open_outbound(&new_state, s, new_chat.clone(), Some(new_label.clone()));
+            NewWindowResponse::Deny
+        })
         .on_navigation(move |u| {
             let s = u.as_str();
             let bare = s.split('#').next().unwrap_or(s).to_string();
             match u.scheme() {
                 "laab-devtools" => {
                     let _ = crate::liff_devtools::open(&nav_app2, Some(&nav_label2));
+                    false
+                }
+                "laab-nav" => {
+                    use crate::liff_devtools::{Nav, navigate};
+                    if let Some(nav) = u.host_str().and_then(Nav::from_host) {
+                        let _ = navigate(&nav_app2, &nav_label2, nav);
+                    }
                     false
                 }
                 "laab-scan" => {
@@ -464,7 +556,7 @@ pub fn open_window(state: &Arc<AppState>, view: &LiffView, chat: Option<String>)
                         .map(|(_, v)| v.to_string())
                         .unwrap_or_default();
                     log("info", format!("liff.openWindow → {target}"));
-                    open_external_or_liff(&nav_state, &target, chat.clone());
+                    open_outbound(&nav_state, &target, chat.clone(), Some(nav_label2.clone()));
                     false
                 }
                 "line" if u.host_str() == Some("picker") => {
@@ -491,22 +583,24 @@ pub fn open_window(state: &Arc<AppState>, view: &LiffView, chat: Option<String>)
                 }
                 "line" => {
                     log("info", format!("เปิด {bare}"));
-                    if parse_link(s).is_some() {
-                        open_external_or_liff(&nav_state, s, chat.clone());
-                    } else {
-                        open_line_link(&nav_state, s, chat.clone());
-                    }
+                    open_outbound(&nav_state, s, chat.clone(), Some(nav_label2.clone()));
                     false
                 }
                 "http" | "https" => {
-                    // A different LIFF app gets fresh tokens.
+                    // Any liff.line.me link needs a fresh issueLiffView —
+                    // loading the redirector in-place drops the tokens. Same
+                    // LIFF app stays in this window so back/forward work.
                     match parse_link(s) {
-                        Some(link) if link.id != current && client => {
-                            log("info", format!("LIFF อื่น เปิดหน้าต่างใหม่ {bare}"));
-                            open_external_or_liff(&nav_state, s, chat.clone());
+                        Some(_) if client => {
+                            log("info", format!("เปิด LIFF → {bare}"));
+                            open_outbound(
+                                &nav_state,
+                                s,
+                                chat.clone(),
+                                Some(nav_label2.clone()),
+                            );
                             false
                         }
-                        // LINE opens its own https://line.me/R/… links itself.
                         None if is_line_app_link(s) => {
                             log("info", format!("เปิด {bare}"));
                             open_line_link(&nav_state, s, chat.clone());
@@ -526,11 +620,18 @@ pub fn open_window(state: &Arc<AppState>, view: &LiffView, chat: Option<String>)
                 }
             }
         });
-    builder = builder.initialization_script(crate::liff_devtools::CAPTURE);
+    builder = builder
+        .initialization_script(crate::liff_devtools::CAPTURE)
+        .initialization_script(OPEN_BLANK_LINKS);
     if client {
         builder = builder.initialization_script(bridge(&view.info["scopes"]));
     }
-    builder.build()?;
+    let window = builder.build()?;
+    if let Some((position, size)) = frame {
+        let _ = window.set_size(size);
+        let _ = window.set_position(position);
+    }
+    crate::liff_titlebar::add(&window);
     crate::liff_devtools::opened(&app, &label, view, chat_for_log);
     Ok(())
 }
@@ -559,27 +660,16 @@ fn open_line_link(state: &Arc<AppState>, url: &str, chat: Option<String>) {
     let _ = state.app.emit_to("main", "liff-open-url", serde_json::json!({ "url": url, "chatId": chat }));
 }
 
-/// LIFF links open as LIFF windows; anything else goes to the browser.
-pub fn open_external_or_liff(state: &Arc<AppState>, url: &str, chat: Option<String>) {
+/// What a LIFF page does when it leaves for a URL: another page of the same
+/// LIFF app in this window (so back/forward work), a new window for a
+/// different LIFF, a LINE deep link in the main window, or the system
+/// browser. Used for `liff.openWindow`, `target="_blank"` / `window.open`,
+/// and `line://…`.
+fn open_outbound(state: &Arc<AppState>, url: &str, chat: Option<String>, window: Option<String>) {
     if parse_link(url).is_some() {
-        let s = state.clone();
-        let url = url.to_string();
-        tauri::async_runtime::spawn(async move {
-            let view = match issue(&s, &url, chat.clone(), false).await {
-                Ok(v) => v,
-                Err(e) => {
-                    let _ = s.app.emit_to(
-                        "main",
-                        "liff-consent",
-                        serde_json::json!({"url": url, "chatId": chat, "error": e.to_string()}),
-                    );
-                    return;
-                }
-            };
-            if let Err(e) = open_window(&s, &view, chat) {
-                s.status(format!("เปิด LIFF ไม่สำเร็จ: {e}"));
-            }
-        });
+        open_liff(state, url, chat, window);
+    } else if is_line_app_link(url) || url.to_ascii_lowercase().starts_with("line:") {
+        open_line_link(state, url, chat);
     } else if url.starts_with("http://")
         || url.starts_with("https://")
         || url.starts_with("mailto:")
@@ -587,6 +677,85 @@ pub fn open_external_or_liff(state: &Arc<AppState>, url: &str, chat: Option<Stri
     {
         let _ = tauri_plugin_opener::open_url(url, None::<&str>);
     }
+}
+
+/// LIFF links open as LIFF windows; anything else goes to the browser.
+pub fn open_external_or_liff(state: &Arc<AppState>, url: &str, chat: Option<String>) {
+    if parse_link(url).is_some() {
+        open_liff(state, url, chat, None);
+    } else if url.starts_with("http://")
+        || url.starts_with("https://")
+        || url.starts_with("mailto:")
+        || url.starts_with("tel:")
+    {
+        let _ = tauri_plugin_opener::open_url(url, None::<&str>);
+    }
+}
+
+/// Issue tokens and show the LIFF. A link from inside a LIFF window stays in
+/// that window, as in LINE: the same LIFF app navigates in place, so the
+/// title-bar back/forward buttons work; another LIFF app replaces the window
+/// (same frame) and is issued as `subsequentLiff`. It gets a window of its
+/// own because the `_liff` bridge holds the app's scopes from when the window
+/// was built.
+fn open_liff(state: &Arc<AppState>, url: &str, chat: Option<String>, window: Option<String>) {
+    let s = state.clone();
+    let url = url.to_string();
+    tauri::async_runtime::spawn(async move {
+        let from = window.filter(|label| s.app.get_webview_window(label).is_some());
+        let from_id = from
+            .as_deref()
+            .and_then(crate::liff_devtools::session)
+            .map(|sess| sess.liff_id);
+        let subsequent = match (&from_id, parse_link(&url)) {
+            (Some(id), Some(link)) => *id != link.id,
+            _ => false,
+        };
+        let view = match issue_as(&s, &url, chat.clone(), false, subsequent).await {
+            Ok(v) => v,
+            Err(e) => {
+                let _ = s.app.emit_to(
+                    "main",
+                    "liff-consent",
+                    serde_json::json!({"url": url, "chatId": chat, "error": e.to_string()}),
+                );
+                return;
+            }
+        };
+        let old = from.as_deref().and_then(|label| s.app.get_webview_window(label));
+        let Some(old) = old else {
+            if let Err(e) = open_window(&s, &view, chat) {
+                s.status(format!("เปิด LIFF ไม่สำเร็จ: {e}"));
+            }
+            return;
+        };
+        let label = old.label().to_string();
+        if from_id.as_deref() == Some(view.liff_id.as_str()) {
+            let u = match view.url.parse::<tauri::Url>() {
+                Ok(u) => u,
+                Err(e) => return s.status(format!("เปิด LIFF ไม่สำเร็จ: {e}")),
+            };
+            crate::liff_devtools::push(
+                &s.app,
+                &label,
+                "nav",
+                "info",
+                format!("ไปที่หน้า LIFF {}", u.as_str().split('#').next().unwrap_or(u.as_str())),
+            );
+            crate::liff_devtools::updated(&s.app, &label, &view);
+            if let Err(e) = old.navigate(u) {
+                s.status(format!("เปิด LIFF ไม่สำเร็จ: {e}"));
+            }
+            return;
+        }
+        let frame = old.outer_position().ok().zip(old.inner_size().ok());
+        match open_window_at(&s, &view, chat, frame) {
+            Ok(()) => {
+                let _ = old.close();
+            }
+            Err(e) => s.status(format!("เปิด LIFF ไม่สำเร็จ: {e}")),
+        }
+    });
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -714,6 +883,13 @@ mod tests {
         assert!(js.contains("CLIENT_UNSUPPORTED_OPERATION"));
         assert!(!js.contains("__FEATURES__") && !js.contains("__SCOPES__"));
         assert!(bridge(&Json::Null).contains("scopes: [],"));
+    }
+
+    #[test]
+    fn blank_target_links_go_through_laab_open() {
+        assert!(OPEN_BLANK_LINKS.contains("laab-open://open?url="));
+        assert!(OPEN_BLANK_LINKS.contains("_blank"));
+        assert!(OPEN_BLANK_LINKS.contains("window.open"));
     }
 
     #[test]

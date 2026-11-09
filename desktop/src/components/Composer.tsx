@@ -1,6 +1,6 @@
 import { listen } from "@tauri-apps/api/event";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
-import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState } from "react";
+import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState, type ReactNode } from "react";
 import { api, errorText } from "../lib/api";
 import { readClipboardPng } from "../lib/clipboardImage";
 import {
@@ -23,6 +23,19 @@ import { CloseIcon, PaperclipIcon, SmileIcon, WarningIcon } from "./Icons";
 const LINE_HEIGHT = 20;
 const MAX_LINES = 6;
 const kbd = "rounded border border-separator px-1 py-px font-sans text-[10.5px] text-secondary";
+
+type PendingImage = { id: number; bytes: Uint8Array; name: string; preview: string };
+
+let pendingImageSeq = 0;
+const revokePending = (images: PendingImage[]) => {
+  for (const image of images) URL.revokeObjectURL(image.preview);
+};
+const stagePending = (bytes: Uint8Array, name: string, type: string): PendingImage => ({
+  id: ++pendingImageSeq,
+  bytes,
+  name,
+  preview: URL.createObjectURL(new Blob([new Uint8Array(bytes).buffer as ArrayBuffer], { type })),
+});
 
 export interface ComposerHandle {
   focus: () => void;
@@ -48,8 +61,10 @@ export const Composer = forwardRef<
     picture?: (mid: string) => string | null;
     /** ↑/↓ in an empty field move to the chat above or below, as in LINE. */
     onStep?: (step: 1 | -1) => void;
+    /** Left of the sticker button — OA rich-menu chip, etc. */
+    toolbarExtra?: ReactNode;
   }
->(function Composer({ chatId, group, disabled, members, loadMembers, stickerOpen, onToggleStickers, name, picture, onStep }, ref) {
+>(function Composer({ chatId, group, disabled, members, loadMembers, stickerOpen, onToggleStickers, name, picture, onStep, toolbarExtra }, ref) {
   const area = useRef<HTMLTextAreaElement>(null);
   const mirror = useRef<HTMLDivElement>(null);
   const [text, setText] = useState("");
@@ -58,10 +73,27 @@ export const Composer = forwardRef<
   const [pickIndex, setPickIndex] = useState(0);
   const [dismissedAt, setDismissedAt] = useState<string | null>(null);
   const [sending, setSending] = useState(false);
-  const [pendingImage, setPendingImage] = useState<{ bytes: Uint8Array; name: string; preview: string } | null>(null);
-  useEffect(() => () => {
-    if (pendingImage) URL.revokeObjectURL(pendingImage.preview);
-  }, [pendingImage]);
+  // Pasted images stage here until send; each paste adds, it does not replace.
+  const [pendingImages, setPendingImages] = useState<PendingImage[]>([]);
+  const pendingImagesRef = useRef(pendingImages);
+  pendingImagesRef.current = pendingImages;
+  useEffect(
+    () => () => {
+      revokePending(pendingImagesRef.current);
+    },
+    [],
+  );
+  const clearPendingImages = () => {
+    revokePending(pendingImagesRef.current);
+    setPendingImages([]);
+  };
+  const removePendingImage = (id: number) => {
+    setPendingImages((images) => {
+      const gone = images.find((image) => image.id === id);
+      if (gone) URL.revokeObjectURL(gone.preview);
+      return images.filter((image) => image.id !== id);
+    });
+  };
   // A send that failed stays above the box until it is retried, closed, or
   // something else goes out: a passing status line is easy to miss.
   const [failure, setFailure] = useState<{ title: string; detail: string; retry: (() => void) | null } | null>(null);
@@ -97,6 +129,7 @@ export const Composer = forwardRef<
     setFailure(null);
     setText("");
     setMentions([]);
+    clearPendingImages();
     api.draft(chatId).then((d) => {
       if (!live || !d) return;
       setText(d.text);
@@ -114,6 +147,8 @@ export const Composer = forwardRef<
       live = false;
       off.then((f) => f());
     };
+    // clearPendingImages reads the latest staged images via a ref.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [chatId]);
   const saveTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   useEffect(() => {
@@ -202,17 +237,29 @@ export const Composer = forwardRef<
   // a way of sending one message, not a mode, so it can't be mistaken for
   // muting the chat.
   const send = async (silent = false) => {
-    if (pendingImage && !sending && !disabled) {
-      const image = pendingImage;
+    if (pendingImages.length && !sending && !disabled) {
+      const images = pendingImages;
       const caption = text.replace(/\s+$/, "");
       const captionMentions = targets(caption, mentions);
       setSending(true);
       setText("");
       setMentions([]);
       try {
-        await api.sendImageBytes(chatId, image.bytes, image.name);
-        URL.revokeObjectURL(image.preview);
-        setPendingImage(null);
+        const sent = new Set<number>();
+        let error: unknown = null;
+        for (const image of images) {
+          if (error) break;
+          try {
+            await api.sendImageBytes(chatId, image.bytes, image.name);
+            URL.revokeObjectURL(image.preview);
+            sent.add(image.id);
+          } catch (e) {
+            error = e;
+          }
+        }
+        // Drop only the ones that went out; keep anything pasted while sending.
+        setPendingImages((now) => now.filter((i) => !sent.has(i.id)));
+        if (error) throw error;
         if (caption.trim()) {
           if (mode?.kind === "edit") await api.editMessage(chatId, mode.message.id, caption);
           else await api.sendText(chatId, caption, captionMentions, mode?.kind === "reply" ? mode.message.id : null, null, silent);
@@ -286,20 +333,27 @@ export const Composer = forwardRef<
   const onPaste = (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
     if (disabled || mode?.kind === "edit") return;
     const data = e.clipboardData;
-    const file = Array.from(data.files).find((f) => f.type.startsWith("image/"));
-    const hasImage = !!file || Array.from(data.items).some((item) => item.kind === "file" && item.type.startsWith("image/")) || Array.from(data.types).some((type) => type.startsWith("image/"));
+    const files = Array.from(data.files).filter((f) => f.type.startsWith("image/"));
+    const hasImage =
+      files.length > 0 ||
+      Array.from(data.items).some((item) => item.kind === "file" && item.type.startsWith("image/")) ||
+      Array.from(data.types).some((type) => type.startsWith("image/"));
     // Office apps and web pages put a picture of copied text beside the text
     // itself: paste the text, and stage an image only when there is none.
-    if (!hasImage || (!file && data.getData("text/plain"))) return;
+    if (!hasImage || (!files.length && data.getData("text/plain"))) return;
     e.preventDefault();
     const stage = async () => {
-      const bytes = file ? new Uint8Array(await file.arrayBuffer()) : await readClipboardPng();
-      if (!bytes) return;
-      const name = file?.name || "paste.png";
-      setPendingImage((old) => {
-        if (old) URL.revokeObjectURL(old.preview);
-        return { bytes, name, preview: URL.createObjectURL(new Blob([new Uint8Array(bytes).buffer as ArrayBuffer], { type: file?.type || "image/png" })) };
-      });
+      const next: PendingImage[] = [];
+      if (files.length) {
+        for (const file of files) {
+          next.push(stagePending(new Uint8Array(await file.arrayBuffer()), file.name || "paste.png", file.type || "image/png"));
+        }
+      } else {
+        const bytes = await readClipboardPng();
+        if (!bytes) return;
+        next.push(stagePending(bytes, "paste.png", "image/png"));
+      }
+      setPendingImages((old) => [...old, ...next]);
     };
     stage().catch((err) => setFailure({ title: "วางรูปไม่สำเร็จ", detail: errorText(err), retry: null }));
   };
@@ -308,7 +362,7 @@ export const Composer = forwardRef<
     if (e.nativeEvent.isComposing || e.keyCode === 229) return;
     const plain = !e.metaKey && !e.ctrlKey && !e.altKey && !e.shiftKey;
     const silent = e.altKey && !e.metaKey && !e.ctrlKey && !e.shiftKey;
-    if (pendingImage && !(pickerOpen && candidates.length) && e.key === "Enter" && (plain || silent || (e.metaKey && !e.shiftKey))) {
+    if (pendingImages.length && !(pickerOpen && candidates.length) && e.key === "Enter" && (plain || silent || (e.metaKey && !e.shiftKey))) {
       e.preventDefault();
       void send(silent);
       return;
@@ -454,23 +508,28 @@ export const Composer = forwardRef<
           </button>
         </div>
       )}
-      {pendingImage && (
-        <div className="mb-2 flex items-center gap-2 rounded-lg bg-field p-2">
-          <img src={pendingImage.preview} alt="รูปที่วาง" className="max-h-20 max-w-28 rounded object-contain" />
-          <span className="min-w-0 flex-1 truncate text-[12px] text-secondary">{pendingImage.name}</span>
-          <button
-            type="button"
-            title="เอารูปออก"
-            onClick={() => {
-              URL.revokeObjectURL(pendingImage.preview);
-              setPendingImage(null);
-            }}
-            className="px-2 text-secondary hover:text-primary"
-          >
+      {pendingImages.length > 0 && (
+        <div className="mb-2 flex items-center gap-2 rounded-lg bg-field p-2" onClick={(e) => e.stopPropagation()}>
+          <div className="flex min-w-0 flex-1 items-center gap-2 overflow-x-auto">
+            {pendingImages.map((image) => (
+              <div key={image.id} className="relative shrink-0">
+                <img src={image.preview} alt={image.name} title={image.name} className="max-h-20 max-w-28 rounded object-contain" />
+                <button
+                  type="button"
+                  title="เอารูปออก"
+                  onClick={() => removePendingImage(image.id)}
+                  className="absolute top-0.5 right-0.5 grid h-5 w-5 place-items-center rounded-full bg-black/55 text-white hover:bg-black/75"
+                >
+                  <CloseIcon size={12} />
+                </button>
+              </div>
+            ))}
+          </div>
+          <button type="button" title="เอารูปออกทั้งหมด" onClick={clearPendingImages} className="shrink-0 px-2 text-secondary hover:text-primary">
             ลบ
           </button>
-          <button type="button" onClick={(e) => send(e.altKey)} disabled={sending} className="rounded bg-line-green px-3 py-1 text-[12px] text-white disabled:opacity-50">
-            ส่งรูป
+          <button type="button" onClick={(e) => send(e.altKey)} disabled={sending} className="shrink-0 rounded bg-line-green px-3 py-1 text-[12px] text-white disabled:opacity-50">
+            {pendingImages.length > 1 ? `ส่ง ${pendingImages.length} รูป` : "ส่งรูป"}
           </button>
         </div>
       )}
@@ -518,15 +577,18 @@ export const Composer = forwardRef<
         <span
           aria-hidden
           className={`mr-2 flex min-w-0 items-center gap-1.5 overflow-hidden text-[11px] whitespace-nowrap text-secondary transition-opacity duration-150 ${
-            (text.trim() || pendingImage) && mode?.kind !== "edit" ? "opacity-100" : "opacity-0"
+            (text.trim() || pendingImages.length) && mode?.kind !== "edit" ? "opacity-100" : "opacity-0"
           }`}
         >
           <kbd className={kbd}>⏎</kbd> ส่ง
           <span className="mx-1 text-separator">|</span>
           <kbd className={kbd}>⌥⏎</kbd> ส่งแบบไม่มีการแจ้งเตือน
         </span>
+        {toolbarExtra}
         <button
-          title="สติกเกอร์"
+          title="สติกเกอร์และอิโมจิ"
+          aria-label="สติกเกอร์และอิโมจิ"
+          aria-expanded={stickerOpen}
           onClick={(e) => (e.stopPropagation(), onToggleStickers())}
           className={`grid h-8 w-8 place-items-center hover:text-primary ${stickerOpen ? "text-line-green" : ""}`}
         >

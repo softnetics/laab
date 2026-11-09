@@ -16,11 +16,24 @@ import { HeaderMenu } from "./ChatActions";
 import { Composer, type ComposerHandle } from "./Composer";
 import { InvitationBar, MessageRequestBar } from "./GroupSheets";
 import { RichMenu } from "./RichMenu";
-import { BellSlashIcon, ChevronIcon, CloseIcon, ExternalIcon, MoreVIcon, NoteIcon, SearchIcon, SpeakerIcon } from "./Icons";
+import { BellSlashIcon, ChevronIcon, CloseIcon, ExternalIcon, MoreVIcon, NoteIcon, SearchIcon, ShieldCheckIcon, SpeakerIcon } from "./Icons";
 import { popupClass, Spinner } from "./kit";
+import type { OfficialBadge } from "../lib/types";
 import type { RowContext } from "./MessageRow";
 import { StickerPanel } from "./StickerPanel";
 import { type Older, Timeline } from "./Timeline";
+
+// LINE Thailand's names and colors for official account badges.
+const badgeLabel: Record<OfficialBadge, string> = {
+  premium: "บัญชีพรีเมียม",
+  verified: "บัญชีรับรอง",
+  unverified: "บัญชีทั่วไป (ยังไม่รับรอง)",
+};
+const badgeColor: Record<OfficialBadge, string> = {
+  premium: "text-line-green",
+  verified: "text-oa-verified",
+  unverified: "text-secondary",
+};
 
 /** Something else (a menu or dialog) is open and owns Escape. */
 const overlayOpen = () => !!document.querySelector('[role="menu"], [role="dialog"][data-open], [role="alertdialog"]');
@@ -229,12 +242,23 @@ export function ChatView({ chatId, main }: { chatId: string; main: boolean }) {
   }, [main, chat]);
 
   const title = chat?.name ?? chatId;
+  const { data: badge } = useQuery({
+    queryKey: ["officialBadge", chatId],
+    queryFn: () => api.officialBadge(chatId),
+    staleTime: 60 * 60_000,
+    enabled: chat?.kind === "bot" && (signedIn || session?.state === "demo"),
+  });
   return (
     <div className="relative flex h-full flex-col bg-chat">
       {/* LINE for Mac: the header sits under a title-bar strip, level with
           the chat list's search box. */}
       <div className="drag h-[56px] shrink-0" data-tauri-drag-region />
       <header className="drag flex h-[56px] shrink-0 items-center gap-1.5 px-4" data-tauri-drag-region>
+        {badge && chat?.kind === "bot" && (
+          <span title={badgeLabel[badge]} className={`no-drag shrink-0 ${badgeColor[badge]}`}>
+            <ShieldCheckIcon size={18} aria-label={badgeLabel[badge]} />
+          </span>
+        )}
         <h2 className="truncate text-[15px] font-semibold">{isKeepMemo({ id: chatId }, me) ? "Keep Memo" : title}</h2>
         {group && chat?.memberCount ? <span className="text-[15px] font-semibold">({chat.memberCount})</span> : null}
         {chat && (
@@ -361,6 +385,7 @@ export function ChatView({ chatId, main }: { chatId: string; main: boolean }) {
           onToggleStickers={() => setStickers((v) => !v)}
           name={name}
           picture={picture}
+          toolbarExtra={chat?.kind === "bot" ? <RichMenu key={chatId} chatId={chatId} /> : undefined}
           onStep={
             main
               ? (step) => {
@@ -371,7 +396,6 @@ export function ChatView({ chatId, main }: { chatId: string; main: boolean }) {
           }
         />
       )}
-      {chat?.kind === "bot" && <RichMenu key={chatId} chatId={chatId} />}
       {uploading && (
         <div className="pointer-events-none absolute right-3 bottom-3 z-20 flex items-center gap-2 rounded-full bg-black/70 px-3 py-1.5 text-[12px] text-white shadow-lg">
           <Spinner size={12} />

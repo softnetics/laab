@@ -671,6 +671,7 @@ export const MessageRow = memo(function MessageRow({
       </div>
     </div>
   );
+  const hasReactions = m.reactions.length > 0;
   const bubble = (
     // min-w-0: a reply quote is one truncated line, and without it the
     // bubble keeps that whole line's width and pushes the row past the view.
@@ -709,8 +710,8 @@ export const MessageRow = memo(function MessageRow({
           {translation}
         </div>
       )}
-      {m.reactions.length > 0 && (
-        <div className="absolute top-full right-0 z-10 mt-1">
+      {hasReactions && (
+        <div className={`absolute top-full z-10 mt-0.5 ${m.mine ? "left-2" : "right-2"}`}>
           <ReactionBadge list={m.reactions} name={ctx.name} picture={ctx.picture} me={ctx.me} />
         </div>
       )}
@@ -721,7 +722,7 @@ export const MessageRow = memo(function MessageRow({
       data-message={m.id}
       onMouseEnter={() => setHover(true)}
       onMouseLeave={() => setHover(false)}
-      className={`flex gap-2 ${m.mine ? "items-end" : "items-start"} ${runStart ? "pt-3.5" : "pt-1.5"} ${m.reactions.length ? "pb-7" : ""} ${m.mine ? "justify-end pl-12" : "pr-12"}`}
+      className={`flex gap-2 ${m.mine ? "items-end" : "items-start"} ${runStart ? "pt-3.5" : "pt-1.5"} ${hasReactions ? "pb-7" : ""} ${m.mine ? "justify-end pl-12" : "pr-12"}`}
     >
       {m.mine ? (
         <>

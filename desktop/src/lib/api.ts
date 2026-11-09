@@ -24,6 +24,7 @@ import type {
   MentionSpan,
   Message,
   NoteDetail,
+  OfficialBadge,
   PickerAction,
   PickerStart,
   NotePost,
@@ -88,6 +89,7 @@ export const api = {
   ) => sent(invoke<Message>("send_text", { chatId, text, mentions, replyTo, reqSeq, silent })),
   /** `silent`: without a notification on the others' devices. */
   sendSticker: (chatId: string, sticker: Sticker, silent = false) => sent(invoke<void>("send_sticker", { chatId, sticker, silent })),
+  sendEmoji: (chatId: string, emojiId: string) => sent(invoke<Message>("send_emoji", { chatId, emojiId })),
   /** The recent stickers and every owned package, without their stickers. */
   stickers: () => invoke<StickerPack[]>("stickers"),
   /** One package with all its stickers. */
@@ -143,6 +145,7 @@ export const api = {
   announcements: (chatId: string) =>
     invoke<{ seq: string; text: string; link: string | null; creator: string | null; createdTime: number }[]>("announcements", { chatId }),
   richMenu: (chatId: string) => invoke<RichMenu | null>("rich_menu", { chatId }),
+  officialBadge: (chatId: string) => invoke<OfficialBadge | null>("official_badge", { chatId }),
   loginPassword: (identifier: string, password: string) => invoke<void>("login_password", { identifier, password }),
   unsend: (messageId: string) => invoke<void>("unsend", { messageId }),
   editMessage: (chatId: string, messageId: string, text: string, mentions: MentionSpan[] = []) =>
