@@ -100,7 +100,7 @@ function boxStyle(n: Node, defaultPad?: number): CSSProperties {
     borderWidth: px(n.borderWidth, BORDER),
     borderStyle: n.borderWidth ? "solid" : undefined,
     borderRadius: px(n.cornerRadius),
-    // LINE's .MdBx always clips — needed for cornerRadius avatars (LON sender).
+    // Boxes clip their content so rounded avatars stay round.
     overflow: "hidden",
     paddingTop: px(n.paddingTop) ?? pad,
     paddingBottom: px(n.paddingBottom) ?? pad,
@@ -115,8 +115,8 @@ function boxStyle(n: Node, defaultPad?: number): CSSProperties {
 
 function flexOf(n: Node, horizontal: boolean): CSSProperties {
   const noFlex = ["icon", "spacer", "separator"].includes(n.type);
-  // A set width (in a row) or height (in a column) forces flex 0, as in LINE —
-  // even when the JSON also sets flex (LON's 40px avatar has flex:1 + width).
+  // A set width (in a row) or height (in a column) forces flex 0, even when
+  // the JSON also sets flex — otherwise a fixed-size avatar would stretch.
   const fixed = horizontal ? n.width != null : n.height != null;
   const f = fixed ? 0 : typeof n.flex === "number" ? n.flex : noFlex ? 0 : 1;
   if (!horizontal) return f > 0 && n.type === "filler" ? { flex: 1 } : fixed ? { flexShrink: 0 } : {};

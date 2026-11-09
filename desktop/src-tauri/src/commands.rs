@@ -1515,9 +1515,9 @@ pub async fn rich_menu(state: S<'_>, chat_id: String) -> R<Option<crate::richmen
 }
 
 /// An official account's badge: `premium` (green), `verified` (blue) or
-/// `unverified` (gray), from `BuddyDetail.verifiedIconType` as LINE for Mac
-/// 26.5 reads it. That is field 41, past the end of line-rs's schema, so it
-/// may come back keyed by its id.
+/// `unverified` (gray), from `BuddyDetail.verifiedIconType` (field 41;
+/// 1 = verified, 2 = premium). That field sits past the end of line-rs's
+/// schema, so it may come back keyed by its id.
 fn badge_of(detail: &serde_json::Value) -> &'static str {
     let icon = [&detail["verifiedIconType"], &detail["41"]]
         .into_iter()
