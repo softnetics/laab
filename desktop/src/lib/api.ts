@@ -19,6 +19,7 @@ import type {
   ChatMember,
   ContactProfile,
   Draft,
+  DroppedFile,
   Friend,
   LinkPreview,
   MentionSpan,
@@ -95,6 +96,8 @@ export const api = {
   /** One package with all its stickers. */
   stickerPack: (id: string, name: string, version: string | null) => invoke<StickerPack>("sticker_pack", { id, name, version }),
   /** Sends each file, going on past failures; resolves to the ones that failed. */
+  /** Name, size and kind of files dragged onto a chat. */
+  droppedFiles: (paths: string[]) => invoke<DroppedFile[]>("dropped_files", { paths }),
   sendFiles: (chatId: string, paths: string[], silent = false) =>
     sent(invoke<{ path: string; error: string }[]>("send_files", { chatId, paths, silent })),
   sendImageBytes: (chatId: string, bytes: Uint8Array, fileName: string) =>
@@ -311,6 +314,8 @@ export const mediaUrl = {
   message: (chatId: string, id: string, preview = true) =>
     `${MEDIA}/message/${encodeURIComponent(chatId)}/${encodeURIComponent(id)}${preview ? "?preview=1" : ""}`,
   local: (path: string) => `${MEDIA}/local?path=${encodeURIComponent(path)}`,
+  /** A file dragged onto a chat, after `droppedFiles` saw it. */
+  dropped: (path: string) => `${MEDIA}/dropped?path=${encodeURIComponent(path)}`,
   /** A LINE emoji (sticon), with `anim` its animation. */
   sticon: (productId: string, sticonId: string, version: number, anim = false) =>
     `${MEDIA}/sticon/${encodeURIComponent(productId)}/${encodeURIComponent(sticonId)}?v=${version}${anim ? "&anim=1" : ""}`,

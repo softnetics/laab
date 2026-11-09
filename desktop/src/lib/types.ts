@@ -412,3 +412,11 @@ export interface PickerStart {
   min: string | null;
   max: string | null;
 }
+
+/** A file dragged onto a chat (`dropped_files`). */
+export interface DroppedFile {
+  path: string;
+  name: string;
+  size: number;
+  kind: "image" | "video" | "file";
+}

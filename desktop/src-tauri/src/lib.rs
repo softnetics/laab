@@ -261,6 +261,7 @@ pub fn run() {
             commands::stickers,
             commands::sticker_pack,
             commands::send_files,
+            commands::dropped_files,
             commands::send_image_bytes,
             commands::download,
             commands::message_bytes,

@@ -4,7 +4,6 @@ import { useHotkey } from "@tanstack/react-hotkeys";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { AnimatePresence, motion } from "motion/react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, errorText, messageLimit, q, queryClient, setMessageLimit, useChatList, usePeople, useSession } from "../lib/api";
 import { adjacentChat, isGroup, isKeepMemo } from "../lib/chatList";
@@ -14,11 +13,12 @@ import { dismissTop, notice, ui } from "../lib/ui";
 import { Announcements } from "./Announcements";
 import { HeaderMenu } from "./ChatActions";
 import { Composer, type ComposerHandle } from "./Composer";
+import { DropDock, DropTray } from "./DropTray";
 import { InvitationBar, MessageRequestBar } from "./GroupSheets";
 import { RichMenu } from "./RichMenu";
 import { BellSlashIcon, ChevronIcon, CloseIcon, ExternalIcon, MoreVIcon, NoteIcon, SearchIcon, ShieldCheckIcon, SpeakerIcon } from "./Icons";
 import { popupClass, Spinner } from "./kit";
-import type { OfficialBadge } from "../lib/types";
+import type { DroppedFile, OfficialBadge } from "../lib/types";
 import type { RowContext } from "./MessageRow";
 import { StickerPanel } from "./StickerPanel";
 import { type Older, Timeline } from "./Timeline";
@@ -87,7 +87,6 @@ export function ChatView({ chatId, main }: { chatId: string; main: boolean }) {
     debounced: "",
     index: 0,
   });
-  const [dragging, setDragging] = useState(false);
   const [uploading, setUploading] = useState(false);
   // LINE's unread mark: the first message that was unread when the chat opened.
   const [unreadFrom, setUnreadFrom] = useState<string | null>(null);
@@ -202,7 +201,7 @@ export function ChatView({ chatId, main }: { chatId: string; main: boolean }) {
   });
 
   // Files dropped on the chat are sent one by one, through the composer so
-  // a failure shows there with Retry. Files dropped while an upload runs
+  // a failure shows there with Retry. Files sent while an upload runs
   // wait for it, in the order they came.
   const uploadQueue = useRef(Promise.resolve());
   const pendingUploads = useRef(0);
@@ -220,13 +219,38 @@ export function ChatView({ chatId, main }: { chatId: string; main: boolean }) {
       });
   };
 
+  // Dragged files show in a dock on the message box; dropped ones wait in a
+  // tray above it until they are sent, so a file dropped on the wrong chat
+  // is not sent. Files dropped while the tray is open join it.
+  const [dragCount, setDragCount] = useState<number | null>(null);
+  const [dragFiles, setDragFiles] = useState<DroppedFile[] | null>(null);
+  const [tray, setTray] = useState<DroppedFile[]>([]);
+  const dragSeq = useRef(0);
+  const clearTray = useCallback(() => setTray([]), []);
+  const removeFromTray = useCallback((path: string) => setTray((t) => t.filter((f) => f.path !== path)), []);
+  useEffect(() => setTray([]), [chatId]);
+
   useEffect(() => {
     const off = getCurrentWebview().onDragDropEvent((e) => {
-      if (e.payload.type === "over" || e.payload.type === "enter") setDragging(true);
-      else if (e.payload.type === "leave") setDragging(false);
-      else if (e.payload.type === "drop") {
-        setDragging(false);
-        sendDropped.current(e.payload.paths);
+      const p = e.payload;
+      if (p.type === "enter") {
+        const seq = ++dragSeq.current;
+        setDragCount(p.paths.length);
+        setDragFiles(null);
+        api
+          .droppedFiles(p.paths)
+          .then((files) => seq === dragSeq.current && setDragFiles(files))
+          .catch(() => {});
+      } else if (p.type === "leave") {
+        dragSeq.current++;
+        setDragCount(null);
+      } else if (p.type === "drop") {
+        dragSeq.current++;
+        setDragCount(null);
+        api
+          .droppedFiles(p.paths)
+          .then((files) => setTray((t) => [...t, ...files.filter((f) => !t.some((x) => x.path === f.path))]))
+          .catch((err) => notice(errorText(err)));
       }
     });
     return () => {
@@ -374,27 +398,39 @@ export function ChatView({ chatId, main }: { chatId: string; main: boolean }) {
       {chat?.invited ? (
         <InvitationBar chat={chat} />
       ) : (
-        <Composer
-          ref={composer}
-          chatId={chatId}
-          group={group}
-          disabled={!(signedIn || session?.state === "demo")}
-          members={members}
-          loadMembers={loadMembers}
-          stickerOpen={stickers}
-          onToggleStickers={() => setStickers((v) => !v)}
-          name={name}
-          picture={picture}
-          toolbarExtra={chat?.kind === "bot" ? <RichMenu key={chatId} chatId={chatId} /> : undefined}
-          onStep={
-            main
-              ? (step) => {
-                  const next = adjacentChat(ui.state.visibleChatIds, chatId, step);
-                  if (next) openChat(next);
-                }
-              : undefined
-          }
-        />
+        <div className="relative">
+          <DropDock count={dragCount} files={dragFiles} />
+          <DropTray
+            files={tray}
+            onSend={() => {
+              sendDropped.current(tray.map((f) => f.path));
+              setTray([]);
+            }}
+            onCancel={clearTray}
+            onRemove={removeFromTray}
+          />
+          <Composer
+            ref={composer}
+            chatId={chatId}
+            group={group}
+            disabled={!(signedIn || session?.state === "demo")}
+            members={members}
+            loadMembers={loadMembers}
+            stickerOpen={stickers}
+            onToggleStickers={() => setStickers((v) => !v)}
+            name={name}
+            picture={picture}
+            toolbarExtra={chat?.kind === "bot" ? <RichMenu key={chatId} chatId={chatId} /> : undefined}
+            onStep={
+              main
+                ? (step) => {
+                    const next = adjacentChat(ui.state.visibleChatIds, chatId, step);
+                    if (next) openChat(next);
+                  }
+                : undefined
+            }
+          />
+        </div>
       )}
       {uploading && (
         <div className="pointer-events-none absolute right-3 bottom-3 z-20 flex items-center gap-2 rounded-full bg-black/70 px-3 py-1.5 text-[12px] text-white shadow-lg">
@@ -402,17 +438,6 @@ export function ChatView({ chatId, main }: { chatId: string; main: boolean }) {
           <span>กำลังส่งไฟล์…</span>
         </div>
       )}
-      <AnimatePresence>
-        {dragging && (
-          <motion.div
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            transition={{ duration: 0.15 }}
-            className="pointer-events-none absolute inset-1.5 rounded-xl border-[3px] border-line-green bg-line-green/5"
-          />
-        )}
-      </AnimatePresence>
     </div>
   );
 }
