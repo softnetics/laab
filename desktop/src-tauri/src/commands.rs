@@ -2160,15 +2160,33 @@ pub fn open_viewer(app: tauri::AppHandle, state: S<'_>, payload: serde_json::Val
         let _ = w.unminimize();
         return w.set_focus().map_err(err);
     }
-    WebviewWindowBuilder::new(&app, "viewer", WebviewUrl::App("index.html#/viewer".into()))
+    let w = WebviewWindowBuilder::new(&app, "viewer", WebviewUrl::App("index.html#/viewer".into()))
         // The page retitles it with the chat's name, as LINE does.
         .title("รูปภาพ")
         .inner_size(900.0, 760.0)
         .min_inner_size(480.0, 360.0)
-        .theme(Some(tauri::Theme::Dark))
         .build()
         .map_err(err)?;
+    #[cfg(target_os = "macos")]
+    dark_title_bar(&w);
     Ok(())
+}
+
+/// Give the viewer a dark title bar, to match its page. Not with the
+/// builder's `theme`: on macOS that sets the whole app's appearance, and
+/// the main window turned dark with it.
+#[cfg(target_os = "macos")]
+fn dark_title_bar(w: &tauri::WebviewWindow) {
+    let Ok(addr) = w.ns_window().map(|p| p as usize) else {
+        return;
+    };
+    let _ = w.run_on_main_thread(move || {
+        use objc2_app_kit::{NSAppearance, NSAppearanceCustomization, NSAppearanceNameDarkAqua, NSWindow};
+        // SAFETY: the address is the viewer's live NSWindow, used on the
+        // main thread; the name is an AppKit constant.
+        let (window, name) = unsafe { (&*(addr as *const NSWindow), NSAppearanceNameDarkAqua) };
+        window.setAppearance(NSAppearance::appearanceNamed(name).as_deref());
+    });
 }
 
 /// The viewer's "›" next to the date: show that message in the main window.
