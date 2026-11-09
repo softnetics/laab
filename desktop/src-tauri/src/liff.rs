@@ -243,6 +243,18 @@ pub async fn issue(
     chat: Option<String>,
     consent: bool,
 ) -> Result<LiffView> {
+    issue_as(state, url, chat, consent, false).await
+}
+
+/// [`issue`], saying whether this LIFF app replaces another one in its
+/// window (`subsequentLiff`).
+async fn issue_as(
+    state: &Arc<AppState>,
+    url: &str,
+    chat: Option<String>,
+    consent: bool,
+    subsequent: bool,
+) -> Result<LiffView> {
     let url_requested = url;
     let link = parse_link(url).ok_or_else(|| anyhow!("invalid_liff_id"))?;
     let web = |reason: &str| LiffView {
@@ -255,7 +267,10 @@ pub async fn issue(
     let Some(line) = state.line().await else {
         return Ok(web("ยังไม่ได้เข้าสู่ระบบ"));
     };
-    let opts = view_options(url, &link, chat);
+    let opts = LiffViewOptions {
+        subsequent_liff: subsequent,
+        ..view_options(url, &link, chat)
+    };
     let liff = line.client.liff();
     let view = match liff.issue_view(&opts).await {
         Ok(v) => v,
@@ -436,6 +451,17 @@ struct PickerRequest {
 
 /// Open a LIFF view in its own window.
 pub fn open_window(state: &Arc<AppState>, view: &LiffView, chat: Option<String>) -> Result<()> {
+    open_window_at(state, view, chat, None)
+}
+
+/// [`open_window`], with the frame (position and size) of the window it
+/// replaces, if any.
+fn open_window_at(
+    state: &Arc<AppState>,
+    view: &LiffView,
+    chat: Option<String>,
+    frame: Option<(tauri::PhysicalPosition<i32>, tauri::PhysicalSize<u32>)>,
+) -> Result<()> {
     let app = state.app.clone();
     let label = format!("liff-{}", crate::state::now_ms() as u64);
     let url: tauri::Url = view.url.parse()?;
@@ -596,6 +622,10 @@ pub fn open_window(state: &Arc<AppState>, view: &LiffView, chat: Option<String>)
         builder = builder.initialization_script(bridge(&view.info["scopes"]));
     }
     let window = builder.build()?;
+    if let Some((position, size)) = frame {
+        let _ = window.set_size(size);
+        let _ = window.set_position(position);
+    }
     crate::liff_titlebar::add(&window);
     crate::liff_devtools::opened(&app, &label, view, chat_for_log);
     Ok(())
@@ -657,14 +687,26 @@ pub fn open_external_or_liff(state: &Arc<AppState>, url: &str, chat: Option<Stri
     }
 }
 
-/// Issue tokens and show the LIFF. When `window` is a live window of the
-/// same LIFF id, navigate it in place so the title-bar back/forward buttons
-/// can return to the previous page (LINE's stacked-page behaviour).
+/// Issue tokens and show the LIFF. A link from inside a LIFF window stays in
+/// that window, as in LINE: the same LIFF app navigates in place, so the
+/// title-bar back/forward buttons work; another LIFF app replaces the window
+/// (same frame) and is issued as `subsequentLiff`. It gets a window of its
+/// own because the `_liff` bridge holds the app's scopes from when the window
+/// was built.
 fn open_liff(state: &Arc<AppState>, url: &str, chat: Option<String>, window: Option<String>) {
     let s = state.clone();
     let url = url.to_string();
     tauri::async_runtime::spawn(async move {
-        let view = match issue(&s, &url, chat.clone(), false).await {
+        let from = window.filter(|label| s.app.get_webview_window(label).is_some());
+        let from_id = from
+            .as_deref()
+            .and_then(crate::liff_devtools::session)
+            .map(|sess| sess.liff_id);
+        let subsequent = match (&from_id, parse_link(&url)) {
+            (Some(id), Some(link)) => *id != link.id,
+            _ => false,
+        };
+        let view = match issue_as(&s, &url, chat.clone(), false, subsequent).await {
             Ok(v) => v,
             Err(e) => {
                 let _ = s.app.emit_to(
@@ -675,39 +717,38 @@ fn open_liff(state: &Arc<AppState>, url: &str, chat: Option<String>, window: Opt
                 return;
             }
         };
-        if let Some(label) = window.as_deref() {
-            let same = crate::liff_devtools::session(label)
-                .is_some_and(|sess| sess.liff_id == view.liff_id);
-            if same {
-                if let Some(w) = s.app.get_webview_window(label) {
-                    match view.url.parse::<tauri::Url>() {
-                        Ok(u) => {
-                            crate::liff_devtools::push(
-                                &s.app,
-                                label,
-                                "nav",
-                                "info",
-                                format!(
-                                    "ไปที่หน้า LIFF {}",
-                                    u.as_str().split('#').next().unwrap_or(u.as_str())
-                                ),
-                            );
-                            crate::liff_devtools::updated(&s.app, label, &view);
-                            if let Err(e) = w.navigate(u) {
-                                s.status(format!("เปิด LIFF ไม่สำเร็จ: {e}"));
-                            }
-                            return;
-                        }
-                        Err(e) => {
-                            s.status(format!("เปิด LIFF ไม่สำเร็จ: {e}"));
-                            return;
-                        }
-                    }
-                }
+        let old = from.as_deref().and_then(|label| s.app.get_webview_window(label));
+        let Some(old) = old else {
+            if let Err(e) = open_window(&s, &view, chat) {
+                s.status(format!("เปิด LIFF ไม่สำเร็จ: {e}"));
             }
+            return;
+        };
+        let label = old.label().to_string();
+        if from_id.as_deref() == Some(view.liff_id.as_str()) {
+            let u = match view.url.parse::<tauri::Url>() {
+                Ok(u) => u,
+                Err(e) => return s.status(format!("เปิด LIFF ไม่สำเร็จ: {e}")),
+            };
+            crate::liff_devtools::push(
+                &s.app,
+                &label,
+                "nav",
+                "info",
+                format!("ไปที่หน้า LIFF {}", u.as_str().split('#').next().unwrap_or(u.as_str())),
+            );
+            crate::liff_devtools::updated(&s.app, &label, &view);
+            if let Err(e) = old.navigate(u) {
+                s.status(format!("เปิด LIFF ไม่สำเร็จ: {e}"));
+            }
+            return;
         }
-        if let Err(e) = open_window(&s, &view, chat) {
-            s.status(format!("เปิด LIFF ไม่สำเร็จ: {e}"));
+        let frame = old.outer_position().ok().zip(old.inner_size().ok());
+        match open_window_at(&s, &view, chat, frame) {
+            Ok(()) => {
+                let _ = old.close();
+            }
+            Err(e) => s.status(format!("เปิด LIFF ไม่สำเร็จ: {e}")),
         }
     });
 }
