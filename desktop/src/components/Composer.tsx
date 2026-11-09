@@ -245,22 +245,20 @@ export const Composer = forwardRef<
       setText("");
       setMentions([]);
       try {
-        const left: PendingImage[] = [];
+        const sent = new Set<number>();
         let error: unknown = null;
         for (const image of images) {
-          if (error) {
-            left.push(image);
-            continue;
-          }
+          if (error) break;
           try {
             await api.sendImageBytes(chatId, image.bytes, image.name);
             URL.revokeObjectURL(image.preview);
+            sent.add(image.id);
           } catch (e) {
             error = e;
-            left.push(image);
           }
         }
-        setPendingImages(left);
+        // Drop only the ones that went out; keep anything pasted while sending.
+        setPendingImages((now) => now.filter((i) => !sent.has(i.id)));
         if (error) throw error;
         if (caption.trim()) {
           if (mode?.kind === "edit") await api.editMessage(chatId, mode.message.id, caption);
