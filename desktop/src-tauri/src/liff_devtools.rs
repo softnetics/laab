@@ -217,8 +217,11 @@ fn poll(app: AppHandle, label: String) {
             tokio::time::sleep(POLL).await;
             let Some(w) = app.get_webview_window(&label) else {
                 set_closed(&app, &label);
+                crate::liff_titlebar::forget(&app, &label);
                 return;
             };
+            // Pages that change their history in place (pushState) load nothing.
+            crate::liff_titlebar::refresh(&w);
             let (app2, label2) = (app.clone(), label.clone());
             let _ = w.eval_with_callback(
                 "window.__laabDev ? window.__laabDev.drain() : '[]'",

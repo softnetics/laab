@@ -483,6 +483,11 @@ fn open_window_at(
         .inner_size(420.0, 760.0)
         .min_inner_size(320.0, 420.0)
         .user_agent(&user_agent(client))
+        .on_page_load(|w, payload| {
+            if payload.event() == tauri::webview::PageLoadEvent::Finished {
+                crate::liff_titlebar::refresh(&w);
+            }
+        })
         .on_new_window(move |u, _features| {
             let s = u.as_str();
             let bare = s.split('#').next().unwrap_or(s);

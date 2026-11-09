@@ -12,6 +12,7 @@ pub fn add(window: &WebviewWindow) {
     let Ok(ptr) = window.ns_window() else { return };
     let addr = ptr as usize;
     let (app, label) = (window.app_handle().clone(), window.label().to_string());
+    let nav_label = label.clone();
     let pin = {
         let (app, label) = (app.clone(), label.clone());
         Box::new(move |sender: &objc2::runtime::AnyObject| {
@@ -61,13 +62,88 @@ pub fn add(window: &WebviewWindow) {
     ];
     let _ = window.run_on_main_thread(move || {
         use objc2_app_kit::NSLayoutAttribute;
-        install(addr, leading, NSLayoutAttribute::Left);
+        // A new window has nowhere to go back or forward to yet.
+        if let [back, forward] = install(addr, leading, NSLayoutAttribute::Left).as_slice() {
+            set_enabled(back, false);
+            set_enabled(forward, false);
+            NAV_BUTTONS.with(|all| {
+                all.borrow_mut().insert(nav_label, (back.clone(), forward.clone()));
+            });
+        }
         install(addr, trailing, NSLayoutAttribute::Right);
     });
 }
 
 #[cfg(not(target_os = "macos"))]
 pub fn add(_window: &WebviewWindow) {}
+
+#[cfg(target_os = "macos")]
+thread_local! {
+    /// Each LIFF window's back and forward buttons, by window label. Main
+    /// thread only, like the buttons.
+    static NAV_BUTTONS: std::cell::RefCell<
+        std::collections::HashMap<
+            String,
+            (objc2::rc::Retained<objc2_app_kit::NSButton>, objc2::rc::Retained<objc2_app_kit::NSButton>),
+        >,
+    > = Default::default();
+}
+
+/// Enable back and forward only when the page's history has somewhere to
+/// go, as the web view itself reports it.
+#[cfg(target_os = "macos")]
+pub fn refresh(window: &WebviewWindow) {
+    let label = window.label().to_string();
+    // `with_webview` runs on the main thread.
+    let _ = window.with_webview(move |webview| {
+        let view = webview.inner() as *const objc2::runtime::AnyObject;
+        if view.is_null() {
+            return;
+        }
+        // SAFETY: on macOS the platform webview is a live WKWebView, and
+        // canGoBack / canGoForward take no arguments and return BOOL.
+        let (back, forward): (bool, bool) = unsafe {
+            let view = &*view;
+            (objc2::msg_send![view, canGoBack], objc2::msg_send![view, canGoForward])
+        };
+        NAV_BUTTONS.with(|all| {
+            if let Some((b, f)) = all.borrow().get(&label) {
+                set_enabled(b, back);
+                set_enabled(f, forward);
+            }
+        });
+    });
+}
+
+/// A disabled button is drawn fainter: its tint is set by hand, so AppKit
+/// would not dim it.
+#[cfg(target_os = "macos")]
+fn set_enabled(button: &objc2_app_kit::NSButton, on: bool) {
+    use objc2_app_kit::NSColor;
+    if button.isEnabled() == on {
+        return;
+    }
+    button.setEnabled(on);
+    let tint = if on { NSColor::secondaryLabelColor() } else { NSColor::tertiaryLabelColor() };
+    button.setContentTintColor(Some(&tint));
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn refresh(_window: &WebviewWindow) {}
+
+/// Drop a closed window's buttons.
+#[cfg(target_os = "macos")]
+pub fn forget(app: &tauri::AppHandle, label: &str) {
+    let label = label.to_string();
+    let _ = app.run_on_main_thread(move || {
+        NAV_BUTTONS.with(|all| {
+            all.borrow_mut().remove(&label);
+        });
+    });
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn forget(_app: &tauri::AppHandle, _label: &str) {}
 
 #[cfg(target_os = "macos")]
 struct Button {
@@ -162,9 +238,13 @@ fn set_pin_appearance(sender: &objc2::runtime::AnyObject, on: bool) {
     button.setContentTintColor(Some(&tint));
 }
 
-/// Main thread only.
+/// Main thread only. Returns the buttons, in order.
 #[cfg(target_os = "macos")]
-fn install(addr: usize, buttons: Vec<Button>, side: objc2_app_kit::NSLayoutAttribute) {
+fn install(
+    addr: usize,
+    buttons: Vec<Button>,
+    side: objc2_app_kit::NSLayoutAttribute,
+) -> Vec<objc2::rc::Retained<objc2_app_kit::NSButton>> {
     use objc2::{MainThreadOnly, sel};
     use objc2_app_kit::{
         NSAutoresizingMaskOptions, NSBezelStyle, NSButton, NSColor, NSImage, NSView, NSWindow,
@@ -176,7 +256,7 @@ fn install(addr: usize, buttons: Vec<Button>, side: objc2_app_kit::NSLayoutAttri
     const INSET: f64 = 4.0;
 
     let Some(mtm) = MainThreadMarker::new() else {
-        return;
+        return Vec::new();
     };
     // SAFETY: the pointer is the live NSWindow behind a Tauri window, and
     // this runs on the main thread.
@@ -187,7 +267,7 @@ fn install(addr: usize, buttons: Vec<Button>, side: objc2_app_kit::NSLayoutAttri
             &NSString::from_str(b.symbol),
             Some(&NSString::from_str(b.name)),
         ) else {
-            return;
+            return Vec::new();
         };
         images.push(image);
     }
@@ -208,6 +288,7 @@ fn install(addr: usize, buttons: Vec<Button>, side: objc2_app_kit::NSLayoutAttri
             .map(|b| b.action as Box<dyn Fn(&objc2::runtime::AnyObject)>)
             .collect(),
     );
+    let mut made = Vec::with_capacity(images.len());
     for (i, (image, tip)) in images.iter().zip(tips).enumerate() {
         // SAFETY: the target implements `act:`, and outlives the button.
         let button = unsafe {
@@ -226,8 +307,10 @@ fn install(addr: usize, buttons: Vec<Button>, side: objc2_app_kit::NSLayoutAttri
             NSAutoresizingMaskOptions::ViewMinYMargin | NSAutoresizingMaskOptions::ViewMaxYMargin,
         );
         bar.addSubview(&button);
+        made.push(button);
     }
     accessory.setView(&bar);
     accessory.setLayoutAttribute(side);
     window.addTitlebarAccessoryViewController(&accessory);
+    made
 }
