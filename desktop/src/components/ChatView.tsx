@@ -71,6 +71,15 @@ export function ChatView({ chatId, main }: { chatId: string; main: boolean }) {
   const session = useSession();
   const people = usePeople();
   const group = isGroup({ id: chatId, kind: chat?.kind ?? "" });
+  // A friend added a moment ago has no chat in the list yet: name the chat
+  // from their profile, as the profile card did.
+  const knownName = (chat && chat.name !== chat.id ? chat.name : undefined) ?? people[chatId]?.name;
+  const { data: profile } = useQuery({
+    queryKey: ["profile", chatId],
+    queryFn: () => api.contactProfile(chatId),
+    enabled: !knownName && chatId.startsWith("u"),
+    staleTime: 60_000,
+  });
   const { data: messages = [], error: loadError, isPending: loadingMessages } = useQuery(q.messages(chatId));
   const older = useOlder(chatId, messages.length);
   const { data: reads = {} } = useQuery(q.reads(chatId));
@@ -276,7 +285,7 @@ export function ChatView({ chatId, main }: { chatId: string; main: boolean }) {
         .catch(() => {});
   }, [main, chat]);
 
-  const title = chat?.name ?? chatId;
+  const title = knownName ?? profile?.name ?? chatId;
   const { data: badge } = useQuery({
     queryKey: ["officialBadge", chatId],
     queryFn: () => api.officialBadge(chatId),
