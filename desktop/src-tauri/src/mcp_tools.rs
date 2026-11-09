@@ -205,7 +205,11 @@ fn defs() -> Vec<Def> {
         d("delete_chat_history", Account, "Delete chat history", "Delete a chat's history from the user's account. It can't be brought back.", json!({ "chat_id": s(CHAT) }), &["chat_id"], false, true),
         d("leave_group", Account, "Leave a group", "Leave a group or room.", json!({ "chat_id": s(CHAT) }), &["chat_id"], false, true),
         d("set_blocked", Account, "Block someone", "Block or unblock a person.", json!({ "mid": s("Their mid (`u…`)."), "blocked": b("true to block.") }), &["mid", "blocked"], false, true),
-        d("add_friend", Account, "Add a friend", "Add someone as a friend (find them with find_contact).", json!({ "mid": s("Their mid.") }), &["mid"], false, false),
+        d("add_friend", Account, "Add a friend", "Add someone as a friend (find them with find_contact).", json!({
+            "mid": s("Their mid."),
+            "via": { "type": "object", "description": "`via` from find_contact." },
+            "chat_id": s("Or a group or room they are in, when they were not found with find_contact."),
+        }), &["mid"], false, false),
         d("respond_to_invitation", Account, "Answer a group invitation", "Join a group the user was invited to (list_chats shows it with invited: true), or decline.", json!({ "chat_id": s(CHAT), "accept": b("true to join, false to decline.") }), &["chat_id", "accept"], false, false),
         d("join_group_by_link", Account, "Join a group", "Join a group by its invite link.", json!({ "url": s("The invite link.") }), &["url"], false, false),
     ]
@@ -1476,7 +1480,12 @@ async fn run(ctx: &Ctx, name: &str, args: &Value, trace: &mut Trace) -> R<Vec<Va
         "add_friend" => {
             let mid = arg_str(args, "mid")?;
             gate(ctx, trace, Account, &[dir.scope(&mid)], format!("เพิ่ม {} เป็นเพื่อน", dir.quoted(&mid))).await?;
-            commands::add_friend(st(), mid).await?;
+            let via = match (args.get("via").filter(|v| !v.is_null()), opt_str(args, "chat_id")) {
+                (Some(v), _) => serde_json::from_value(v.clone()).map_err(|e| format!("via: {e}"))?,
+                (None, Some(chat_id)) => crate::actions::FoundVia::Chat { chat_id, message_id: None },
+                (None, None) => return Err("give `via` from find_contact, or `chat_id` of a group they are in".into()),
+            };
+            commands::add_friend(st(), mid, via).await?;
             done("friend added")
         }
         "respond_to_invitation" => {

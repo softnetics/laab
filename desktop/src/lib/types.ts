@@ -420,3 +420,12 @@ export interface DroppedFile {
   size: number;
   kind: "image" | "video" | "file";
 }
+
+/** Where the user found someone they may add as a friend; LINE refuses an
+ *  add without it. */
+export type FoundVia =
+  | { kind: "searchId"; searchId: string }
+  | { kind: "ticket"; ticket: string }
+  | { kind: "chat"; chatId: string; messageId?: string }
+  | { kind: "mention"; chatId: string; messageId: string }
+  | { kind: "sharedContact"; chatId: string; messageId: string; senderId: string };

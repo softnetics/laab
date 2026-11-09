@@ -18,11 +18,11 @@ use line_rs::client::calendar::{
 use line_rs::link::LineLink;
 use line_rs::rest::translate::TranslateText;
 use line_rs::service::moa::{DownloadPhotoOptions, GetAlbumsOptions, GetPhotosOptions};
-use line_rs::service::relation::AddFriendByMidOptions;
+use line_rs::service::relation::{AddFriendByMidOptions, AddFriendVia};
 use line_rs::thrift::Value;
 use line_rs::timeline::{CreatePost, ListPost, PostMedia};
 use line_rs::tv;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value as Json;
 
 use crate::convert::{self, num_of, str_of};
@@ -426,6 +426,59 @@ pub struct FoundContact {
     pub mid: String,
     pub name: String,
     pub picture: Option<String>,
+    /// How they were found, for [`add_friend`].
+    pub via: Option<FoundVia>,
+}
+
+/// Where the user found someone they may add as a friend. LINE wants to
+/// know, and refuses an add without it (`MALFORMED_REQUEST`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase", rename_all_fields = "camelCase")]
+pub enum FoundVia {
+    /// Searched by LINE ID.
+    SearchId { search_id: String },
+    /// A profile link or QR code.
+    Ticket { ticket: String },
+    /// A member of the chat, or the sender of `message_id` in it.
+    Chat { chat_id: String, message_id: Option<String> },
+    /// Mentioned in a message.
+    Mention { chat_id: String, message_id: String },
+    /// A contact someone shared in a chat.
+    SharedContact { chat_id: String, message_id: String, sender_id: String },
+}
+
+impl FoundVia {
+    fn into_line(self) -> AddFriendVia {
+        match self {
+            Self::SearchId { search_id } => AddFriendVia::SearchId(search_id),
+            Self::Ticket { ticket } => AddFriendVia::UserTicket(ticket),
+            // In a 1:1 chat they are a stranger who wrote to the user.
+            Self::Chat {
+                chat_id,
+                message_id: Some(message_id),
+            } if chat_id.starts_with('u') => AddFriendVia::StrangerMessage {
+                message_id,
+                chat_mid: chat_id,
+            },
+            Self::Chat { chat_id, .. } => AddFriendVia::GroupMemberList { chat_mid: chat_id },
+            Self::Mention {
+                chat_id,
+                message_id,
+            } => AddFriendVia::MentionInChat {
+                chat_mid: chat_id,
+                message_id,
+            },
+            Self::SharedContact {
+                chat_id,
+                message_id,
+                sender_id,
+            } => AddFriendVia::ShareContact {
+                message_id,
+                chat_mid: chat_id,
+                sender_mid: sender_id,
+            },
+        }
+    }
 }
 
 /// A `GetContactV3Response`, or the legacy `Contact` (bare or under
@@ -437,6 +490,7 @@ fn found_contact(json: &Json) -> Option<FoundContact> {
             name: str_of(&detail["profileName"]).unwrap_or_else(|| mid.clone()),
             picture: str_of(&detail["picturePath"]),
             mid,
+            via: None,
         });
     }
     let c = if json["contact"].is_null() { json } else { &json["contact"] };
@@ -445,6 +499,7 @@ fn found_contact(json: &Json) -> Option<FoundContact> {
         name: str_of(&c["displayName"]).unwrap_or_else(|| mid.clone()),
         picture: str_of(&c["picturePath"]),
         mid,
+        via: None,
     })
 }
 
@@ -457,6 +512,16 @@ pub async fn find_contact(state: &Arc<AppState>, query: &str) -> Result<FoundCon
     let query = query.trim();
     let relation = l.client.base.relation();
     let link = LineLink::parse(query);
+    let via = match &link {
+        Some(LineLink::Profile(ProfileRef::Ticket(t))) => Some(FoundVia::Ticket { ticket: t.clone() }),
+        Some(LineLink::Profile(ProfileRef::UserId(id))) => Some(FoundVia::SearchId { search_id: id.clone() }),
+        Some(LineLink::Profile(ProfileRef::OfficialAccount(id))) => Some(FoundVia::SearchId {
+            search_id: format!("@{}", id.trim_start_matches('@')),
+        }),
+        Some(_) => None,
+        None => Some(FoundVia::SearchId { search_id: query.to_string() }),
+    };
+    let found = |c: FoundContact| FoundContact { via: via.clone(), ..c };
     let v3 = match &link {
         Some(LineLink::Profile(ProfileRef::Ticket(t))) => relation.find_contact_by_ticket_v3(t).await,
         Some(LineLink::Profile(ProfileRef::UserId(id))) => {
@@ -473,8 +538,8 @@ pub async fn find_contact(state: &Arc<AppState>, query: &str) -> Result<FoundCon
     };
     match v3 {
         Ok(v) => {
-            if let Some(found) = found_contact(&v.to_json()) {
-                return Ok(found);
+            if let Some(c) = found_contact(&v.to_json()) {
+                return Ok(found(c));
             }
         }
         Err(e) => tracing::warn!("findContactBySearchIdOrTicketV3: {e}"),
@@ -490,7 +555,9 @@ pub async fn find_contact(state: &Arc<AppState>, query: &str) -> Result<FoundCon
                 .await?
         }
     };
-    found_contact(&raw.to_json()).ok_or_else(|| anyhow!("ไม่พบผู้ใช้"))
+    found_contact(&raw.to_json())
+        .map(found)
+        .ok_or_else(|| anyhow!("ไม่พบผู้ใช้"))
 }
 
 #[derive(Serialize)]
@@ -633,11 +700,10 @@ pub async fn cover_file(state: &Arc<AppState>, path: &str) -> Result<std::path::
     crate::media::home_obs_file(state, &base, oid, &dest).await
 }
 
-pub async fn add_friend(state: &Arc<AppState>, mid: &str) -> Result<()> {
+/// Add `mid` as a friend, found as `via` says.
+pub async fn add_friend(state: &Arc<AppState>, mid: &str, via: FoundVia) -> Result<()> {
     let l = line(state).await?;
-    let mut options = AddFriendByMidOptions::new(mid);
-    // Found through search by ID, not a group member list.
-    options.tracking_meta_type = 3;
+    let options = AddFriendByMidOptions::new(mid, via.into_line());
     l.client.base.relation().add_friend_by_mid(options).await?;
     let s = state.clone();
     tokio::spawn(async move {
@@ -1826,6 +1892,42 @@ pub async fn delete_album(state: &Arc<AppState>, chat_id: &str, album_id: &str) 
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn found_via_from_the_ui_names_where_they_were_found() {
+        let via = |v: Json| serde_json::from_value::<FoundVia>(v).unwrap().into_line();
+        assert_eq!(
+            via(json!({"kind": "searchId", "searchId": "alice"})),
+            AddFriendVia::SearchId("alice".into())
+        );
+        assert_eq!(via(json!({"kind": "ticket", "ticket": "t1"})), AddFriendVia::UserTicket("t1".into()));
+        // A sender's picture: a group member, or a stranger in a 1:1 chat.
+        assert_eq!(
+            via(json!({"kind": "chat", "chatId": "c1", "messageId": "m1"})),
+            AddFriendVia::GroupMemberList { chat_mid: "c1".into() }
+        );
+        assert_eq!(
+            via(json!({"kind": "chat", "chatId": "u1", "messageId": "m1"})),
+            AddFriendVia::StrangerMessage { message_id: "m1".into(), chat_mid: "u1".into() }
+        );
+        assert_eq!(
+            via(json!({"kind": "chat", "chatId": "r1"})),
+            AddFriendVia::GroupMemberList { chat_mid: "r1".into() }
+        );
+        assert_eq!(
+            via(json!({"kind": "mention", "chatId": "c1", "messageId": "m1"})),
+            AddFriendVia::MentionInChat { chat_mid: "c1".into(), message_id: "m1".into() }
+        );
+        assert_eq!(
+            via(json!({"kind": "sharedContact", "chatId": "c1", "messageId": "m1", "senderId": "u2"})),
+            AddFriendVia::ShareContact { message_id: "m1".into(), chat_mid: "c1".into(), sender_mid: "u2".into() }
+        );
+        // find_contact hands it to the UI in the same shape.
+        assert_eq!(
+            serde_json::to_value(FoundVia::SearchId { search_id: "alice".into() }).unwrap(),
+            json!({"kind": "searchId", "searchId": "alice"})
+        );
+    }
 
     fn stored(meta: Value) -> Value {
         let mut raw = tv!({"id": "777", "to": "u-friend"});

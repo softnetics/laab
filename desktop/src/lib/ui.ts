@@ -1,6 +1,6 @@
 import { createStore, useStore } from "@tanstack/react-store";
 import type { Forwarding } from "../components/ForwardSheet";
-import type { Message, PickerAction, PickerStart, Workspace } from "./types";
+import type { FoundVia, Message, PickerAction, PickerStart, Workspace } from "./types";
 
 /** `requests`: LINE's message request box, which the other lists leave out. */
 export type ChatFilter = "all" | "friends" | "groups" | "official" | "requests" | `folder:${string}`;
@@ -71,8 +71,9 @@ export interface UiState {
     | { kind: "group-members"; chatId: string }
     | { kind: "datetime-picker"; chatId: string; messageId: string; label: string | null; action: PickerAction; start: PickerStart }
     | null;
-  /** Someone's profile card; name and picture show while it loads. */
-  profile: { mid: string; name?: string; picture?: string | null } | null;
+  /** Someone's profile card; name and picture show while it loads. `via`
+   *  is where they were found, for adding them as a friend. */
+  profile: { mid: string; name?: string; picture?: string | null; via?: FoundVia } | null;
   /** What the column next to the left bar shows: chats, friends, add friend. */
   railPage: "chats" | "friends" | "add";
   /** When this app last sent a message; that message scrolls the chat down. */

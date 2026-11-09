@@ -1754,9 +1754,9 @@ pub async fn contact_profile(state: S<'_>, mid: String) -> R<crate::actions::Con
 }
 
 #[tauri::command]
-pub async fn add_friend(state: S<'_>, mid: String) -> R<()> {
+pub async fn add_friend(state: S<'_>, mid: String, via: crate::actions::FoundVia) -> R<()> {
     let s = live!(state);
-    crate::actions::add_friend(&s, &mid)
+    crate::actions::add_friend(&s, &mid, via)
         .await
         .map_err(|e| format!("เพิ่มเพื่อนไม่สำเร็จ: {e}"))
 }

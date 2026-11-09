@@ -337,7 +337,7 @@ function PostNotice({ m, tail, chatId }: { m: Message; tail: boolean; chatId: st
 
 /** A shared contact: LINE's card with picture, name and a chevron. Opens
  *  the profile sheet. */
-function ContactCard({ m }: { m: Message }) {
+function ContactCard({ m, ctx }: { m: Message; ctx: RowContext }) {
   const mid = m.metadata.mid ?? "";
   const { data } = useQuery({
     queryKey: ["profile", mid],
@@ -350,7 +350,13 @@ function ContactCard({ m }: { m: Message }) {
   return (
     <div
       className="flex max-w-[300px] items-center gap-2.5 rounded-[16.5px] bg-incoming py-2.5 pr-3.5 pl-2.5 text-primary"
-      {...pressable(() => mid && setUi({ profile: { mid, name, picture } }))}
+      {...pressable(
+        () =>
+          mid &&
+          setUi({
+            profile: { mid, name, picture, via: { kind: "sharedContact", chatId: ctx.chatId, messageId: m.id, senderId: m.mine ? ctx.me : (m.senderId ?? ctx.chatId) } },
+          }),
+      )}
     >
       <Avatar id={mid || m.id} name={name} picture={picture} size={40} />
       <span className="min-w-0 truncate text-[14px]">{name}</span>
@@ -421,7 +427,7 @@ function Content({
         </Bubble>
       );
     case "CONTACT":
-      return <ContactCard m={m} />;
+      return <ContactCard m={m} ctx={ctx} />;
     case "POSTNOTIFICATION":
       return <PostNotice m={m} tail={tail} chatId={ctx.chatId} />;
     case "AUDIO":
@@ -454,7 +460,7 @@ function Content({
         sticons={emoji}
         onMention={(span, el) =>
           span.mid && !span.all
-            ? setUi({ profile: { mid: span.mid, name: ctx.name(span.mid), picture: ctx.picture(span.mid) } })
+            ? setUi({ profile: { mid: span.mid, name: ctx.name(span.mid), picture: ctx.picture(span.mid), via: { kind: "mention", chatId: ctx.chatId, messageId: m.id } } })
             : setMention({ span, el })
         }
       />
@@ -736,7 +742,9 @@ export const MessageRow = memo(function MessageRow({
               <button
                 aria-label={`โปรไฟล์ของ ${ctx.name(m.senderId)}`}
                 className="block rounded-full"
-                onClick={() => setUi({ profile: { mid: m.senderId!, name: ctx.name(m.senderId!), picture: ctx.picture(m.senderId!) } })}
+                onClick={() =>
+                  setUi({ profile: { mid: m.senderId!, name: ctx.name(m.senderId!), picture: ctx.picture(m.senderId!), via: { kind: "chat", chatId: ctx.chatId, messageId: m.id } } })
+                }
               >
                 <Avatar id={m.senderId} name={ctx.name(m.senderId)} picture={ctx.picture(m.senderId)} size={38} />
               </button>

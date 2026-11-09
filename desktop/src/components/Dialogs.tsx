@@ -8,7 +8,7 @@ import { Spinner } from "./kit";
 import { McpSheet } from "./McpSheet";
 import { DatePicker, TimeField } from "./DateTimePicker";
 import { joinPicker, outOfRange, pickerLabel, splitPicker } from "../lib/datetimePicker";
-import type { PickerAction, PickerStart } from "../lib/types";
+import type { FoundVia, PickerAction, PickerStart } from "../lib/types";
 import { buttonClass, Sheet } from "./Sheet";
 
 const inputClass = "selectable h-9 rounded-md bg-field px-3 text-[14px] outline-none placeholder:text-secondary";
@@ -60,7 +60,7 @@ export function ConfirmDialog() {
 /** Add a friend by LINE ID or link, or join a group by its invite link. */
 function AddFriend() {
   const [query, setQuery] = useState("");
-  const [found, setFound] = useState<{ mid: string; name: string; picture: string | null } | null>(null);
+  const [found, setFound] = useState<{ mid: string; name: string; picture: string | null; via: FoundVia | null } | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const groupLink = /line\.me\/R\/ti\/g\/|line:\/\/ti\/g\//i.test(query);
@@ -85,10 +85,10 @@ function AddFriend() {
     }
   };
   const add = async () => {
-    if (!found) return;
+    if (!found?.via) return;
     setBusy(true);
     try {
-      await api.addFriend(found.mid);
+      await api.addFriend(found.mid, found.via);
       notice(`เพิ่ม ${found.name} เป็นเพื่อนแล้ว`);
       setUi({ sheet: null });
     } catch (e) {
