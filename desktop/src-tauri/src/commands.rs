@@ -2160,6 +2160,7 @@ pub fn open_viewer(app: tauri::AppHandle, state: S<'_>, payload: serde_json::Val
         let _ = w.unminimize();
         return w.set_focus().map_err(err);
     }
+    #[cfg_attr(not(target_os = "macos"), allow(unused_variables))]
     let w = WebviewWindowBuilder::new(&app, "viewer", WebviewUrl::App("index.html#/viewer".into()))
         // The page retitles it with the chat's name, as LINE does.
         .title("รูปภาพ")
@@ -2177,15 +2178,17 @@ pub fn open_viewer(app: tauri::AppHandle, state: S<'_>, payload: serde_json::Val
 /// the main window turned dark with it.
 #[cfg(target_os = "macos")]
 fn dark_title_bar(w: &tauri::WebviewWindow) {
-    let Ok(addr) = w.ns_window().map(|p| p as usize) else {
-        return;
-    };
+    let window = w.clone();
     let _ = w.run_on_main_thread(move || {
         use objc2_app_kit::{NSAppearance, NSAppearanceCustomization, NSAppearanceNameDarkAqua, NSWindow};
-        // SAFETY: the address is the viewer's live NSWindow, used on the
-        // main thread; the name is an AppKit constant.
-        let (window, name) = unsafe { (&*(addr as *const NSWindow), NSAppearanceNameDarkAqua) };
-        window.setAppearance(NSAppearance::appearanceNamed(name).as_deref());
+        // Looked up here, so a window closed meanwhile is not touched.
+        let Ok(ptr) = window.ns_window() else {
+            return;
+        };
+        // SAFETY: the viewer's NSWindow, alive while `window` is held, used
+        // on the main thread; the name is an AppKit constant.
+        let (ns, name) = unsafe { (&*(ptr as *const NSWindow), NSAppearanceNameDarkAqua) };
+        ns.setAppearance(NSAppearance::appearanceNamed(name).as_deref());
     });
 }
 
