@@ -27,6 +27,8 @@ pub struct AppState {
     pub members_loaded: Mutex<HashMap<String, f64>>,
     /// What the photo/video viewer window shows: `{ items, index }`.
     pub viewer: Mutex<serde_json::Value>,
+    /// Files dragged onto a chat, which `media://…/dropped` may show.
+    pub dropped: Mutex<HashSet<std::path::PathBuf>>,
     /// The last events loaded for each calendar window (a chat id, or `all`)
     /// and when, so a window opens on them while it loads fresh ones.
     pub calendars: Mutex<HashMap<String, (f64, crate::actions::AllCalendars)>>,
@@ -71,6 +73,7 @@ impl AppState {
             notified: Mutex::new(HashSet::new()),
             members_loaded: Mutex::new(HashMap::new()),
             viewer: Mutex::new(serde_json::Value::Null),
+            dropped: Mutex::default(),
             calendars: Mutex::new(HashMap::new()),
         })
     }

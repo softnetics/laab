@@ -509,6 +509,46 @@ fn file_kind(path: &str) -> ObjType {
     media_kind(&ext)
 }
 
+/// A file dragged onto a chat, as the tray above the message box shows it.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DroppedFile {
+    pub path: String,
+    pub name: String,
+    pub size: u64,
+    /// `image`, `video` or `file`.
+    pub kind: &'static str,
+}
+
+/// Name, size and kind of files dragged onto a chat; folders and files that
+/// can't be read are left out. Their pictures may then be shown through
+/// `media://…/dropped`.
+#[tauri::command]
+pub fn dropped_files(state: S<'_>, paths: Vec<String>) -> Vec<DroppedFile> {
+    let mut allowed = state.dropped.lock().unwrap_or_else(|e| e.into_inner());
+    if allowed.len() > 500 {
+        allowed.clear();
+    }
+    paths
+        .into_iter()
+        .filter_map(|path| {
+            let meta = std::fs::metadata(&path).ok().filter(|m| m.is_file())?;
+            let kind = match file_kind(&path) {
+                ObjType::Image | ObjType::Gif => "image",
+                ObjType::Video => "video",
+                _ => "file",
+            };
+            allowed.insert(std::path::PathBuf::from(&path));
+            Some(DroppedFile {
+                name: file_name(&path).to_string(),
+                size: meta.len(),
+                kind,
+                path,
+            })
+        })
+        .collect()
+}
+
 /// One step of sending a pick: a file alone, or photos as one group.
 #[derive(Debug, PartialEq)]
 enum SendStep {

@@ -187,6 +187,41 @@ pub fn byte_range(header: &str, len: u64) -> Option<(u64, u64)> {
     (start <= end && end < len).then_some((start, end))
 }
 
+/// The picture of a file dragged onto a chat, for the tray's thumbnail. Only
+/// paths `dropped_files` was given, only images, read as they are: the
+/// user's file is not touched and nothing is written beside it.
+async fn dropped(state: &Arc<AppState>, path: String) -> Response<Vec<u8>> {
+    let path = PathBuf::from(path);
+    let allowed = state
+        .dropped
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .contains(&path);
+    let missing = || respond(StatusCode::NOT_FOUND, Vec::new(), "text/plain");
+    if !allowed {
+        return missing();
+    }
+    tokio::task::spawn_blocking(move || {
+        let meta = std::fs::metadata(&path).ok()?;
+        if meta.len() > 50 * 1024 * 1024 {
+            return None;
+        }
+        let data = std::fs::read(&path).ok()?;
+        let mime = sniff_mime(&data[..data.len().min(16)], &path);
+        mime.starts_with("image/").then(|| {
+            // Only LAAB's own pages may read the user's files, and not from cache.
+            let mut res = respond(StatusCode::OK, data, mime);
+            res.headers_mut().remove(header::ACCESS_CONTROL_ALLOW_ORIGIN);
+            res.headers_mut().insert(header::CACHE_CONTROL, "no-store".parse().unwrap());
+            res
+        })
+    })
+    .await
+    .ok()
+    .flatten()
+    .unwrap_or_else(missing)
+}
+
 pub(crate) fn file_response(path: &Path, range: Option<&str>) -> Option<Response<Vec<u8>>> {
     let mut file = crate::vault::CacheFile::open(path)
         .inspect_err(|e| tracing::warn!("{e:#}"))
@@ -238,6 +273,11 @@ pub async fn handle(state: Arc<AppState>, req: Request<Vec<u8>>) -> Response<Vec
         && let Some(res) = stream_video(&state, chat, id, range).await
     {
         return res;
+    }
+    if let [kind] = parts.as_slice()
+        && kind == "dropped"
+    {
+        return dropped(&state, query(&req, "path").unwrap_or_default()).await;
     }
     let result = match parts
         .iter()
