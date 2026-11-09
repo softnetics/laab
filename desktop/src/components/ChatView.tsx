@@ -191,6 +191,7 @@ export function ChatView({ chatId, main }: { chatId: string; main: boolean }) {
       }
       if (overlayOpen()) return;
       e.preventDefault();
+      if (tray.length) return letTrayGo();
       if (composer.current?.dismissPicker()) return;
       if (search.open) return closeSearch();
       if (stickers) return setStickers(false);
@@ -226,13 +227,20 @@ export function ChatView({ chatId, main }: { chatId: string; main: boolean }) {
   const [dragFiles, setDragFiles] = useState<DroppedFile[] | null>(null);
   const [tray, setTray] = useState<DroppedFile[]>([]);
   const dragSeq = useRef(0);
-  const clearTray = useCallback(() => setTray([]), []);
+  const letTrayGo = useCallback(() => {
+    setTray([]);
+    composer.current?.focus();
+  }, []);
+  const invited = useRef(false);
+  invited.current = !!chat?.invited;
   const removeFromTray = useCallback((path: string) => setTray((t) => t.filter((f) => f.path !== path)), []);
   useEffect(() => setTray([]), [chatId]);
 
   useEffect(() => {
     const off = getCurrentWebview().onDragDropEvent((e) => {
       const p = e.payload;
+      // An invitation has no message box to attach to.
+      if (invited.current) return;
       if (p.type === "enter") {
         const seq = ++dragSeq.current;
         setDragCount(p.paths.length);
@@ -249,7 +257,10 @@ export function ChatView({ chatId, main }: { chatId: string; main: boolean }) {
         setDragCount(null);
         api
           .droppedFiles(p.paths)
-          .then((files) => setTray((t) => [...t, ...files.filter((f) => !t.some((x) => x.path === f.path))]))
+          .then((files) => {
+            if (!files.length && p.paths.length) notice("ส่งได้เฉพาะไฟล์ ส่งโฟลเดอร์ไม่ได้");
+            setTray((t) => [...t, ...files.filter((f) => !t.some((x) => x.path === f.path))]);
+          })
           .catch((err) => notice(errorText(err)));
       }
     });
@@ -404,9 +415,9 @@ export function ChatView({ chatId, main }: { chatId: string; main: boolean }) {
             files={tray}
             onSend={() => {
               sendDropped.current(tray.map((f) => f.path));
-              setTray([]);
+              letTrayGo();
             }}
-            onCancel={clearTray}
+            onCancel={letTrayGo}
             onRemove={removeFromTray}
           />
           <Composer

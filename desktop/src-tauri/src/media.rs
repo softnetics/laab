@@ -208,7 +208,13 @@ async fn dropped(state: &Arc<AppState>, path: String) -> Response<Vec<u8>> {
         }
         let data = std::fs::read(&path).ok()?;
         let mime = sniff_mime(&data[..data.len().min(16)], &path);
-        mime.starts_with("image/").then(|| respond(StatusCode::OK, data, mime))
+        mime.starts_with("image/").then(|| {
+            // Only LAAB's own pages may read the user's files, and not from cache.
+            let mut res = respond(StatusCode::OK, data, mime);
+            res.headers_mut().remove(header::ACCESS_CONTROL_ALLOW_ORIGIN);
+            res.headers_mut().insert(header::CACHE_CONTROL, "no-store".parse().unwrap());
+            res
+        })
     })
     .await
     .ok()

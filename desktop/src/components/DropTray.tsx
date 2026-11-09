@@ -2,7 +2,6 @@ import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import { useEffect, useRef, useState } from "react";
 import { mediaUrl } from "../lib/api";
 import type { DroppedFile } from "../lib/types";
-import { pushDismiss } from "../lib/ui";
 import { CloseIcon, DocIcon, PaperclipIcon, PlayIcon } from "./Icons";
 
 const EASE = [0.32, 0.72, 0, 1] as const;
@@ -63,6 +62,8 @@ function FileThumb({ file, size, radius }: { file: DroppedFile; size: number; ra
  *  details arrive. Sits in a `relative` wrapper around the composer. */
 export function DropDock({ count, files }: { count: number | null; files: DroppedFile[] | null }) {
   const reduce = useReducedMotion();
+  // Folders are left out once the files are known.
+  const n = files ? files.length : (count ?? 0);
   return (
     <AnimatePresence>
       {count !== null && (
@@ -86,7 +87,7 @@ export function DropDock({ count, files }: { count: number | null; files: Droppe
           )}
           <span className="flex-1" />
           <span className={`text-[13px] font-semibold ${GREEN_TEXT}`}>
-            {count > 0 ? `ปล่อยเพื่อแนบ ${count} ไฟล์` : "ปล่อยเพื่อแนบไฟล์"}
+            {n > 0 ? `ปล่อยเพื่อแนบ ${n} ไฟล์` : "ปล่อยเพื่อแนบไฟล์"}
             {files && files.length > 0 && <span className="font-normal opacity-70 tabular-nums"> · {totalSize(files)}</span>}
           </span>
         </motion.div>
@@ -96,8 +97,8 @@ export function DropDock({ count, files }: { count: number | null; files: Droppe
 }
 
 /** Dropped files waiting above the message box until they are sent or let
- *  go, so a file dropped on the wrong chat is not sent. Return sends, Escape
- *  lets them go. */
+ *  go, so a file dropped on the wrong chat is not sent. Return sends; the
+ *  chat's Escape handling lets them go. */
 export function DropTray({
   files,
   onSend,
@@ -113,10 +114,8 @@ export function DropTray({
   const send = useRef<HTMLButtonElement>(null);
   const open = files.length > 0;
   useEffect(() => {
-    if (!open) return;
-    send.current?.focus();
-    return pushDismiss(onCancel);
-  }, [open, onCancel]);
+    if (open) send.current?.focus();
+  }, [open]);
   return (
     <AnimatePresence>
       {open && (

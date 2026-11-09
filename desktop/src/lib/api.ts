@@ -96,10 +96,10 @@ export const api = {
   /** One package with all its stickers. */
   stickerPack: (id: string, name: string, version: string | null) => invoke<StickerPack>("sticker_pack", { id, name, version }),
   /** Sends each file, going on past failures; resolves to the ones that failed. */
-  /** Name, size and kind of files dragged onto a chat. */
-  droppedFiles: (paths: string[]) => invoke<DroppedFile[]>("dropped_files", { paths }),
   sendFiles: (chatId: string, paths: string[], silent = false) =>
     sent(invoke<{ path: string; error: string }[]>("send_files", { chatId, paths, silent })),
+  /** Name, size and kind of files dragged onto a chat. */
+  droppedFiles: (paths: string[]) => invoke<DroppedFile[]>("dropped_files", { paths }),
   sendImageBytes: (chatId: string, bytes: Uint8Array, fileName: string) =>
     sent(invoke<void>("send_image_bytes", bytes, { headers: { "chat-id": chatId, "file-name": encodeURIComponent(fileName) } })),
   messageBytes: (chatId: string, messageId: string) => invoke<ArrayBuffer>("message_bytes", { chatId, messageId }),
