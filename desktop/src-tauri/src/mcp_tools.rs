@@ -1479,12 +1479,16 @@ async fn run(ctx: &Ctx, name: &str, args: &Value, trace: &mut Trace) -> R<Vec<Va
         }
         "add_friend" => {
             let mid = arg_str(args, "mid")?;
-            gate(ctx, trace, Account, &[dir.scope(&mid)], format!("เพิ่ม {} เป็นเพื่อน", dir.quoted(&mid))).await?;
+            // Checked before asking the user, so a bad call is not approved for nothing.
             let via = match (args.get("via").filter(|v| !v.is_null()), opt_str(args, "chat_id")) {
                 (Some(v), _) => serde_json::from_value(v.clone()).map_err(|e| format!("via: {e}"))?,
-                (None, Some(chat_id)) => crate::actions::FoundVia::Chat { chat_id, message_id: None },
+                (None, Some(chat_id)) if chat_id.starts_with('c') || chat_id.starts_with('r') => {
+                    crate::actions::FoundVia::Chat { chat_id, message_id: None }
+                }
+                (None, Some(_)) => return Err("chat_id must be a group or room (`c…` or `r…`)".into()),
                 (None, None) => return Err("give `via` from find_contact, or `chat_id` of a group they are in".into()),
             };
+            gate(ctx, trace, Account, &[dir.scope(&mid)], format!("เพิ่ม {} เป็นเพื่อน", dir.quoted(&mid))).await?;
             commands::add_friend(st(), mid, via).await?;
             done("friend added")
         }
