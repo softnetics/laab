@@ -49,8 +49,9 @@ export function Timeline({
   const scroller = useRef<HTMLDivElement>(null);
   const focusId = useUi((s) => s.focusMessageId);
   const rows = useMemo(() => buildRows(messages, ctx.name), [messages, ctx.name]);
-  // Days drive a floating chip (not in-flow): it tracks the day under the
-  // top edge while scrolling, then fades so an idle chat stays clean.
+  // Each day starts with its date chip, as in LINE. While scrolling, a
+  // floating copy at the top also names the day under the top edge, then
+  // fades.
   const days = useMemo(() => {
     const groups: { id: string; label: string; rows: typeof rows }[] = [];
     for (const r of rows) {
@@ -263,7 +264,12 @@ export function Timeline({
             </div>
           )}
           {days.map((day) => (
-            <section key={day.id} data-day-label={day.label} className="pt-[18px]">
+            <section key={day.id} data-day-label={day.label}>
+              {day.rows[0]?.dayStart && (
+                <div className="flex justify-center pt-[18px]">
+                  <span className="chip-text rounded-full bg-date-chip px-3 py-[5px] text-[12px] leading-[15px]">{day.label}</span>
+                </div>
+              )}
               {day.rows.map((r) => (
                 <div key={r.message.id}>
                   {unreadFrom && (r.message.id === unreadFrom || r.photos?.some((p) => p.id === unreadFrom)) && (
