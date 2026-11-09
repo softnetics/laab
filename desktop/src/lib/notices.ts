@@ -98,6 +98,7 @@ export function readChatEvent(m: Message): ChatEventInfo | null {
  *  - `C_MI`, `A_MI`: <actor> added <a, b>
  *  - `A_MC`: <actor> created the group (LINE lists every first member, but
  *    the event names only one, so LAAB doesn't list them)
+ *  - `C_MJ`: <actor> joined
  *  - `C_ML`: <actor> left
  *  - `C_MA`: <actor> pinned an announcement
  *  Anything else gets a generic line. */
@@ -111,6 +112,8 @@ export function chatEventText(e: ChatEventInfo, name: (mid: string) => string): 
       break;
     case "A_MC":
       return `${name(actor)} สร้างกลุ่มนี้`;
+    case "C_MJ":
+      return `${name(actor)} เข้าร่วมกลุ่ม`;
     case "C_ML":
       return `${name(actor)} ออกจากกลุ่ม`;
     case "C_MA":
