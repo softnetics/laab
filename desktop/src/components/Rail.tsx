@@ -3,6 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 import { useState } from "react";
 import { setAnalytics } from "../lib/analytics";
 import { api, errorText, q, queryClient, useChatList, useSession } from "../lib/api";
+import { unreadBadgeCount } from "../lib/chatList";
 import { openChat } from "../lib/nav";
 import { notice, setUi, useUi } from "../lib/ui";
 import { ALL_CALENDARS } from "../lib/calendar";
@@ -44,7 +45,7 @@ export function Rail() {
   const session = useSession();
   const page = useUi((s) => s.railPage);
   const dev = useUi((s) => s.developerMode);
-  const unread = (list?.chats ?? []).reduce((n, c) => n + Math.max(0, c.unread), 0);
+  const unread = (list?.chats ?? []).reduce((n, c) => n + unreadBadgeCount(c), 0);
   const signedIn = session?.state === "signed_in";
   const me = session?.profile?.mid;
   const sync = () => api.refresh(true).catch((e) => notice(errorText(e)));

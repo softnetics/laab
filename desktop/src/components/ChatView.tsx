@@ -105,6 +105,8 @@ export function ChatView({ chatId, main }: { chatId: string; main: boolean }) {
   // Clear on scroll-to-bottom only when this visit opened with a persisted anchor
   // (not when the user just marked unread while already here).
   const openedWithUnread = useRef(false);
+  // Jump the timeline to the divider only for a persisted reopen anchor.
+  const [jumpToUnread, setJumpToUnread] = useState(false);
   const catchingUp = useRef(false);
   const me = session?.profile?.mid ?? "";
   const signedIn = session?.state === "signed_in";
@@ -121,16 +123,17 @@ export function ChatView({ chatId, main }: { chatId: string; main: boolean }) {
     let cancelled = false;
     setUnreadFrom(null);
     openedWithUnread.current = false;
+    setJumpToUnread(false);
     catchingUp.current = false;
     const t = setTimeout(() => {
-      // Persist across open_chat: only a stored unread_from still looks unread.
-      const hadAnchor = !!listRef.current?.chats.find((c) => c.id === chatId)?.unreadFrom;
       api
         .openChat(chatId)
-        .then((first) => {
+        .then((r) => {
           if (cancelled) return;
-          setUnreadFrom(first);
-          openedWithUnread.current = hadAnchor && !!first;
+          setUnreadFrom(r.unreadFrom);
+          // Only a stored Discord-style anchor clears on catch-up (not LINE's first-unread).
+          openedWithUnread.current = r.fromAnchor && !!r.unreadFrom;
+          setJumpToUnread(r.fromAnchor && !!r.unreadFrom);
         })
         .catch(() => {});
     }, 150);
@@ -189,14 +192,16 @@ export function ChatView({ chatId, main }: { chatId: string; main: boolean }) {
   const bookmarkedIds = useMemo(() => new Set(bookmarks.map((b) => b.messageId)), [bookmarks]);
   const bookmarked = useCallback((id: string) => bookmarkedIds.has(id), [bookmarkedIds]);
   const onMarkUnreadFrom = useCallback((messageId: string) => {
-    // Marked during this visit: keep until leave + reopen, not scroll-to-bottom.
+    // Marked during this visit: divider only — don't jump or clear on scroll.
     openedWithUnread.current = false;
+    setJumpToUnread(false);
     setUnreadFrom(messageId);
   }, []);
   const onCaughtUp = useCallback(() => {
     if (!openedWithUnread.current || catchingUp.current) return;
     catchingUp.current = true;
     openedWithUnread.current = false;
+    setJumpToUnread(false);
     setUnreadFrom(null);
     api.markRead(chatId).catch(() => {
       catchingUp.current = false;
@@ -471,6 +476,7 @@ export function ChatView({ chatId, main }: { chatId: string; main: boolean }) {
         members={members}
         people={people}
         unreadFrom={unreadFrom}
+        jumpToUnread={jumpToUnread}
         onCaughtUp={onCaughtUp}
         search={search.open && search.debounced.trim() ? { query: search.debounced, hits, index: search.index } : null}
       />

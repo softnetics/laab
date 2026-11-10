@@ -30,6 +30,7 @@ export function Timeline({
   people,
   search,
   unreadFrom,
+  jumpToUnread = false,
   onCaughtUp,
 }: {
   messages: Message[];
@@ -46,6 +47,8 @@ export function Timeline({
   /** The first message that was unread when the chat opened: LINE draws its
    *  unread mark above it and opens the chat there (`lq1/x.java`). */
   unreadFrom?: string | null;
+  /** Scroll to the divider once (persisted reopen). False when marked mid-visit. */
+  jumpToUnread?: boolean;
   /** Discord-style: user scrolled to the bottom after opening with unread_from. */
   onCaughtUp?: () => void;
 }) {
@@ -226,9 +229,16 @@ export function Timeline({
 
   // Open at the unread mark, once, unless a message or search hit was asked
   // for. Fewer than a screen of unread messages leaves the view at the bottom.
+  // `unreadShown` must stay set for the current id so rows.length changes
+  // (incoming messages) do not re-jump or re-call onCaughtUp.
   const unreadShown = useRef<string | null>(null);
   useLayoutEffect(() => {
     if (!unreadFrom || unreadShown.current === unreadFrom || focusId || currentHit) return;
+    // Marked mid-visit: draw the divider only, keep the reader's place.
+    if (!jumpToUnread) {
+      unreadShown.current = unreadFrom;
+      return;
+    }
     const node = scroller.current?.querySelector(`[data-unread-mark]`);
     if (!node) return;
     unreadShown.current = unreadFrom;
@@ -243,7 +253,7 @@ export function Timeline({
       // Already near the bottom: no scroll fires, so clear the persisted anchor.
       onCaughtUp?.();
     }
-  }, [unreadFrom, rows.length, focusId, currentHit, onCaughtUp]);
+  }, [unreadFrom, jumpToUnread, rows.length, focusId, currentHit, onCaughtUp]);
 
   // ⌘K or a deep link asked for a message; in-chat search steps through hits.
   const target = currentHit ?? focusId;

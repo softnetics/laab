@@ -75,7 +75,8 @@ export const api = {
   reads: (chatId: string) => invoke<Record<string, string>>("reads", { chatId }),
   members: (chatId: string, force = false) => invoke<ChatMember[]>("members", { chatId, force }),
   setFocus: (chatId: string | null, active: boolean) => invoke<void>("set_focus", { chatId, active }),
-  openChat: (chatId: string) => invoke<string | null>("open_chat", { chatId }),
+  openChat: (chatId: string) =>
+    invoke<{ unreadFrom: string | null; fromAnchor: boolean }>("open_chat", { chatId }),
   /** `keepUnreadFrom`: ack LINE unread but leave a Discord-style divider. */
   markRead: (chatId: string, keepUnreadFrom = false) =>
     invoke<void>("mark_read", { chatId, keepUnreadFrom }),
@@ -294,6 +295,7 @@ export function useBackendEvents() {
         queryClient.invalidateQueries({ queryKey: ["people"] });
         queryClient.invalidateQueries({ queryKey: ["friends"] });
       }),
+      listen("bookmarks-changed", () => queryClient.invalidateQueries({ queryKey: ["bookmarks"] })),
       listen<{ chatId: string }>("messages-changed", (e) => queryClient.invalidateQueries({ queryKey: ["messages", e.payload.chatId] })),
       listen("mcp-changed", () => {
         queryClient.invalidateQueries({ queryKey: ["mcp"] });

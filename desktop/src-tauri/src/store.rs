@@ -351,6 +351,9 @@ impl Store {
             .execute("DELETE FROM reactions WHERE message_id=?", [message_id])?;
         self.db
             .execute("DELETE FROM bookmarks WHERE message_id=?", [message_id])?;
+        // A Discord-style anchor at this message would leave a stuck unread chat.
+        self.db
+            .execute("UPDATE chats SET unread_from=NULL WHERE unread_from=?", [message_id])?;
         self.db
             .execute("DELETE FROM messages WHERE id=?", [message_id])?;
         Ok(chat)
@@ -392,10 +395,12 @@ impl Store {
         )?;
         self.db
             .execute("DELETE FROM bookmarks WHERE chat_id=?", [chat_id])?;
+        self.db.execute(
+            "UPDATE chats SET unread_from=NULL, preview='' WHERE id=?",
+            [chat_id],
+        )?;
         self.db
             .execute("DELETE FROM messages WHERE chat_id=?", [chat_id])?;
-        self.db
-            .execute("UPDATE chats SET preview='' WHERE id=?", [chat_id])?;
         Ok(())
     }
 
@@ -419,6 +424,12 @@ impl Store {
             .execute(&format!("DELETE FROM reactions WHERE message_id IN ({older})"), p)?;
         self.db.execute(
             &format!("DELETE FROM bookmarks WHERE chat_id=?1 AND message_id IN ({older})"),
+            p,
+        )?;
+        self.db.execute(
+            &format!(
+                "UPDATE chats SET unread_from=NULL WHERE id=?1 AND unread_from IN ({older})"
+            ),
             p,
         )?;
         let gone = self.db.execute(
@@ -711,13 +722,20 @@ impl Store {
             // Personal bookmarks keep a copy of the text — drop it with the message.
             if m.unsent > 0 {
                 tx.execute("DELETE FROM bookmarks WHERE message_id=?", [&m.id])?;
-            }
-            if m.unsent == 0 {
+                tx.execute("UPDATE chats SET unread_from=NULL WHERE unread_from=?", [&m.id])?;
+            } else {
                 // The stored body: an undecrypted copy keeps the text read before.
                 tx.execute(
                     "INSERT INTO message_search(id, body, file_name) SELECT id, body, ? FROM messages WHERE id=?",
                     params![file_name.clone().unwrap_or_default(), m.id],
                 )?;
+                // Bookmark text is a snapshot; refresh it when the message is edited.
+                if m.edited {
+                    tx.execute(
+                        "UPDATE bookmarks SET text=? WHERE message_id=?",
+                        params![m.text, m.id],
+                    )?;
+                }
             }
         }
         tx.commit()?;
@@ -927,6 +945,8 @@ impl Store {
             .execute("DELETE FROM reactions WHERE message_id=?", [message_id])?;
         self.db
             .execute("DELETE FROM bookmarks WHERE message_id=?", [message_id])?;
+        self.db
+            .execute("UPDATE chats SET unread_from=NULL WHERE unread_from=?", [message_id])?;
         Ok(Some((chat, [file, image].into_iter().flatten().collect())))
     }
 
@@ -1127,14 +1147,10 @@ impl Store {
     /// Add or remove a personal bookmark. Returns whether the row exists after.
     pub fn set_bookmark(&self, chat_id: &str, message_id: &str, text: &str, bookmarked: bool) -> Result<bool> {
         if bookmarked {
-            let now = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_secs_f64() * 1000.0)
-                .unwrap_or(0.0);
             self.db.execute(
                 "INSERT INTO bookmarks(chat_id, message_id, text, created_at) VALUES (?,?,?,?)
                  ON CONFLICT(chat_id, message_id) DO UPDATE SET text=excluded.text",
-                params![chat_id, message_id, text, now],
+                params![chat_id, message_id, text, crate::state::now_ms()],
             )?;
             Ok(true)
         } else {
@@ -1823,6 +1839,8 @@ mod tests {
     fn bookmarks_are_personal_and_listable() {
         let s = Store::memory().unwrap();
         assert!(s.set_bookmark("u1", "m1", "hello", true).unwrap());
+        // `now_ms` is whole milliseconds; wait so newest-first order is stable.
+        std::thread::sleep(std::time::Duration::from_millis(2));
         assert!(s.set_bookmark("u1", "m2", "later", true).unwrap());
         assert!(s.set_bookmark("c2", "m3", "other chat", true).unwrap());
         let in_chat = s.bookmarks(Some("u1")).unwrap();
@@ -1855,6 +1873,33 @@ mod tests {
         assert!(s.set_bookmark("u1", "3", "history", true).unwrap());
         s.delete_history("u1").unwrap();
         assert!(s.bookmarks(Some("u1")).unwrap().is_empty());
+    }
+
+    #[test]
+    fn unread_from_clears_when_its_message_goes() {
+        let mut s = Store::memory().unwrap();
+        s.upsert_chats(&[chat("u1", "A")]).unwrap();
+        s.upsert_messages(&[msg("1", "u1", "a", 1.0), msg("2", "u1", "b", 2.0)])
+            .unwrap();
+        assert!(s.set_unread_from("u1", Some("2")).unwrap());
+        s.mark_unsent("2").unwrap();
+        assert!(s.chat("u1").unwrap().unwrap().unread_from.is_none());
+
+        assert!(s.set_unread_from("u1", Some("1")).unwrap());
+        s.delete_message("1").unwrap();
+        assert!(s.chat("u1").unwrap().unwrap().unread_from.is_none());
+    }
+
+    #[test]
+    fn bookmark_text_updates_when_the_message_is_edited() {
+        let mut s = Store::memory().unwrap();
+        s.upsert_chats(&[chat("u1", "A")]).unwrap();
+        s.upsert_messages(&[msg("1", "u1", "old", 1.0)]).unwrap();
+        assert!(s.set_bookmark("u1", "1", "old", true).unwrap());
+        let mut edited = msg("1", "u1", "new text", 1.0);
+        edited.edited = true;
+        s.upsert_messages(&[edited]).unwrap();
+        assert_eq!(s.bookmarks(Some("u1")).unwrap()[0].text, "new text");
     }
 
 }

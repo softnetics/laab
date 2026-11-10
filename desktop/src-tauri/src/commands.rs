@@ -159,21 +159,34 @@ pub fn set_focus(state: S<'_>, chat_id: Option<String>, active: bool) {
     f.active = active;
 }
 
+/// What [`open_chat`] returns for the timeline unread divider.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OpenChatResult {
+    /// Message id for the divider, if any.
+    pub unread_from: Option<String>,
+    /// True when that id was a stored Discord-style anchor (clear on catch-up).
+    pub from_anchor: bool,
+}
+
 /// Opening a chat: clear LINE unread and the chat-list mark, acknowledge,
 /// then fetch fresh history, read status and members in the background.
-/// Returns the timeline unread mark: a Discord-style `unread_from` if set
-/// (kept across reopen), else the first of LINE's unread count.
+/// Prefers a stored Discord-style `unread_from`; else the first of LINE's
+/// unread count (`from_anchor` false).
 #[tauri::command]
-pub async fn open_chat(state: S<'_>, chat_id: String) -> R<Option<String>> {
+pub async fn open_chat(state: S<'_>, chat_id: String) -> R<OpenChatResult> {
     crate::usage::hit(crate::usage::Action::OpenedChat);
     let s = state.inner().clone();
     let row = s.store().chat(&chat_id).ok().flatten();
     let unread = row.as_ref().map_or(0, |c| c.unread);
     let had_unread = unread > 0;
     // Prefer the local Discord-style anchor; it survives this open.
-    let target = match row.and_then(|c| c.unread_from) {
-        Some(id) => Some(id),
-        None => s.store().first_unread(&chat_id, unread).map_err(err)?,
+    let (target, from_anchor) = match row.and_then(|c| c.unread_from) {
+        Some(id) => (Some(id), true),
+        None => (
+            s.store().first_unread(&chat_id, unread).map_err(err)?,
+            false,
+        ),
     };
     let unmarked = s.store().set_marked_unread(&chat_id, false).map_err(err)?;
     if had_unread {
@@ -183,7 +196,10 @@ pub async fn open_chat(state: S<'_>, chat_id: String) -> R<Option<String>> {
         s.chats_changed();
     }
     if s.demo {
-        return Ok(target);
+        return Ok(OpenChatResult {
+            unread_from: target,
+            from_anchor,
+        });
     }
     tokio::spawn(async move {
         let _ = line::fetch_history(&s, &chat_id).await;
@@ -198,7 +214,10 @@ pub async fn open_chat(state: S<'_>, chat_id: String) -> R<Option<String>> {
             let _ = line::load_members(&s, &chat_id, false).await;
         }
     });
-    Ok(target)
+    Ok(OpenChatResult {
+        unread_from: target,
+        from_anchor,
+    })
 }
 
 async fn acknowledge(state: &Arc<AppState>, chat_id: &str) {
@@ -238,6 +257,11 @@ pub async fn mark_read(state: S<'_>, chat_id: String, keep_unread_from: Option<b
 #[tauri::command]
 pub fn mark_unread(state: S<'_>, chat_id: String, message_id: Option<String>) -> R<()> {
     let changed = if let Some(id) = message_id {
+        match state.store().message(&id).map_err(err)? {
+            Some(m) if m.chat_id == chat_id => {}
+            Some(_) => return Err("message is not in that chat".into()),
+            None => return Err(format!("no message {id} in LAAB").into()),
+        }
         let anchored = state
             .store()
             .set_unread_from(&chat_id, Some(&id))
@@ -1081,10 +1105,12 @@ pub fn set_bookmark(
     text: String,
     bookmarked: bool,
 ) -> R<bool> {
-    state
+    let on = state
         .store()
         .set_bookmark(&chat_id, &message_id, &text, bookmarked)
-        .map_err(err)
+        .map_err(err)?;
+    state.bookmarks_changed();
+    Ok(on)
 }
 
 /// The raw LINE message, for the developer inspector.
@@ -2002,6 +2028,7 @@ pub fn delete_message(state: S<'_>, message_id: String) -> R<()> {
     if let Some(chat) = chat {
         line::refresh_preview(&state, &chat);
         state.messages_changed(&chat);
+        state.bookmarks_changed();
     }
     Ok(())
 }

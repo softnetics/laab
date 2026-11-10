@@ -914,6 +914,8 @@ pub fn apply_unsend(state: &AppState, message_id: &str) {
     }
     refresh_preview(state, &chat);
     state.messages_changed(&chat);
+    // Unsend drops a personal bookmark of that message, if any.
+    state.bookmarks_changed();
 }
 
 /// Recompute a chat's preview from its newest stored message.
