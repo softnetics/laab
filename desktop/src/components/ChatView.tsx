@@ -146,11 +146,12 @@ export function ChatView({ chatId, main }: { chatId: string; main: boolean }) {
     if (!main) return;
     const off = listen<boolean>("app-active", (e) => {
       api.setFocus(chatId, e.payload);
-      // Do not wipe a Discord-style unread_from just by alt-tabbing back.
+      // Ack LINE unread on focus; keep a Discord-style divider until catch-up.
       if (e.payload) {
-        const anchored =
-          unreadFromRef.current || listRef.current?.chats.find((c) => c.id === chatId)?.unreadFrom;
-        if (!anchored) api.markRead(chatId).catch(() => {});
+        const anchored = !!(
+          unreadFromRef.current || listRef.current?.chats.find((c) => c.id === chatId)?.unreadFrom
+        );
+        api.markRead(chatId, anchored).catch(() => {});
       }
     });
     return () => {
@@ -412,8 +413,8 @@ export function ChatView({ chatId, main }: { chatId: string; main: boolean }) {
           </Menu.Root>
         )}
       </header>
-      {/* ประกาศ sync via LINE (groups and DMs); bookmarks stay private on this Mac. */}
-      {!search.open && <Announcements chatId={chatId} name={name} />}
+      {/* ประกาศ are groups/rooms only; bookmarks stay private on this Mac. */}
+      {group && !search.open && <Announcements chatId={chatId} name={name} />}
       {!search.open && <Bookmarks chatId={chatId} />}
       {search.open && (
         // LINE for Mac: a bordered field with the count and arrows inside,

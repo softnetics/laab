@@ -213,12 +213,17 @@ async fn acknowledge(state: &Arc<AppState>, chat_id: &str) {
     }
 }
 
+/// Clear LINE unread and the chat-list mark, and send a read receipt.
+/// `keep_unread_from` leaves a Discord-style anchor in place (app came back
+/// to the foreground while the divider is still showing).
 #[tauri::command]
-pub async fn mark_read(state: S<'_>, chat_id: String) -> R<()> {
+pub async fn mark_read(state: S<'_>, chat_id: String, keep_unread_from: Option<bool>) -> R<()> {
     let s = state.inner().clone();
     let _ = s.store().set_unread(&chat_id, 0);
     let _ = s.store().set_marked_unread(&chat_id, false);
-    let _ = s.store().set_unread_from(&chat_id, None);
+    if !keep_unread_from.unwrap_or(false) {
+        let _ = s.store().set_unread_from(&chat_id, None);
+    }
     s.chats_changed();
     if !s.demo {
         acknowledge(&s, &chat_id).await;
@@ -1513,7 +1518,7 @@ pub struct Announcement {
 }
 
 /// Pinned announcements shown as a banner over the chat, newest first.
-/// Synced via LINE for groups, rooms and 1:1 chats.
+/// Groups and rooms only: 1:1 / OA / Keep Memo leave this empty without a request.
 #[tauri::command]
 pub async fn announcements(state: S<'_>, chat_id: String) -> R<Vec<Announcement>> {
     let s = state.inner().clone();
@@ -1529,6 +1534,9 @@ pub async fn announcements(state: S<'_>, chat_id: String) -> R<Vec<Announcement>
         } else {
             vec![]
         });
+    }
+    if chat_id.starts_with('u') {
+        return Ok(vec![]);
     }
     let Some(l) = s.line().await else {
         return Ok(vec![]);

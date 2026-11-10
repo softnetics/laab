@@ -296,7 +296,6 @@ impl Store {
                 CASE WHEN unread_from IS NULL THEN 0 ELSE (
                     SELECT COUNT(*) FROM messages m
                     WHERE m.chat_id = chats.id AND m.mine = 0 AND m.unsent = 0
-                      AND EXISTS (SELECT 1 FROM messages a WHERE a.id = chats.unread_from)
                       AND m.created >= (SELECT created FROM messages WHERE id = chats.unread_from)
                 ) END
              FROM chats {filter} ORDER BY activity DESC"
@@ -351,6 +350,8 @@ impl Store {
         self.db
             .execute("DELETE FROM reactions WHERE message_id=?", [message_id])?;
         self.db
+            .execute("DELETE FROM bookmarks WHERE message_id=?", [message_id])?;
+        self.db
             .execute("DELETE FROM messages WHERE id=?", [message_id])?;
         Ok(chat)
     }
@@ -390,6 +391,8 @@ impl Store {
             [chat_id],
         )?;
         self.db
+            .execute("DELETE FROM bookmarks WHERE chat_id=?", [chat_id])?;
+        self.db
             .execute("DELETE FROM messages WHERE chat_id=?", [chat_id])?;
         self.db
             .execute("UPDATE chats SET preview='' WHERE id=?", [chat_id])?;
@@ -414,6 +417,10 @@ impl Store {
             .execute(&format!("DELETE FROM message_search WHERE id IN ({older})"), p)?;
         self.db
             .execute(&format!("DELETE FROM reactions WHERE message_id IN ({older})"), p)?;
+        self.db.execute(
+            &format!("DELETE FROM bookmarks WHERE chat_id=?1 AND message_id IN ({older})"),
+            p,
+        )?;
         let gone = self.db.execute(
             "DELETE FROM messages WHERE chat_id=?1 AND id GLOB '[0-9]*' AND CAST(id AS INTEGER)<=?2",
             p,
@@ -701,6 +708,10 @@ impl Store {
                 [&m.id],
             )?;
             tx.execute("DELETE FROM message_search WHERE id=?", [&m.id])?;
+            // Personal bookmarks keep a copy of the text — drop it with the message.
+            if m.unsent > 0 {
+                tx.execute("DELETE FROM bookmarks WHERE message_id=?", [&m.id])?;
+            }
             if m.unsent == 0 {
                 // The stored body: an undecrypted copy keeps the text read before.
                 tx.execute(
@@ -914,6 +925,8 @@ impl Store {
             .execute("DELETE FROM message_search WHERE id=?", [message_id])?;
         self.db
             .execute("DELETE FROM reactions WHERE message_id=?", [message_id])?;
+        self.db
+            .execute("DELETE FROM bookmarks WHERE message_id=?", [message_id])?;
         Ok(Some((chat, [file, image].into_iter().flatten().collect())))
     }
 
@@ -1822,6 +1835,26 @@ mod tests {
         // Re-bookmark keeps the newer snapshot text.
         assert!(s.set_bookmark("u1", "m2", "later edited", true).unwrap());
         assert_eq!(s.bookmarks(Some("u1")).unwrap()[0].text, "later edited");
+    }
+
+    #[test]
+    fn bookmarks_drop_when_message_is_unsent_or_deleted() {
+        let mut s = Store::memory().unwrap();
+        s.upsert_chats(&[chat("u1", "A")]).unwrap();
+        s.upsert_messages(&[msg("1", "u1", "keep me", 1.0), msg("2", "u1", "gone", 2.0)])
+            .unwrap();
+        assert!(s.set_bookmark("u1", "1", "keep me", true).unwrap());
+        assert!(s.set_bookmark("u1", "2", "gone", true).unwrap());
+        s.mark_unsent("2").unwrap();
+        assert_eq!(s.bookmarks(Some("u1")).unwrap().len(), 1);
+        assert_eq!(s.bookmarks(Some("u1")).unwrap()[0].message_id, "1");
+        s.delete_message("1").unwrap();
+        assert!(s.bookmarks(Some("u1")).unwrap().is_empty());
+
+        s.upsert_messages(&[msg("3", "u1", "history", 3.0)]).unwrap();
+        assert!(s.set_bookmark("u1", "3", "history", true).unwrap());
+        s.delete_history("u1").unwrap();
+        assert!(s.bookmarks(Some("u1")).unwrap().is_empty());
     }
 
 }

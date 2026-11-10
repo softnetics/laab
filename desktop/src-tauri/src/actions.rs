@@ -379,7 +379,7 @@ pub async fn remove_announcement(state: &Arc<AppState>, chat_id: &str, seq: i64)
     Ok(())
 }
 
-/// Pin a text message as the chat's announcement (synced via LINE), linking back to it.
+/// Pin a text message as the group's announcement, linking back to it.
 pub async fn announce(
     state: &Arc<AppState>,
     chat_id: &str,

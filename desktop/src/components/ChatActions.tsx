@@ -1,7 +1,7 @@
 import { Menu } from "@base-ui/react/menu";
 import { save } from "@tauri-apps/plugin-dialog";
 import { api, errorText, messageLimit, useChatList, usePeople } from "../lib/api";
-import { folderName, folderOf, isGroup } from "../lib/chatList";
+import { folderName, folderOf, isGroup, looksUnread } from "../lib/chatList";
 import { closeChat } from "../lib/nav";
 import { clock, dayHeader } from "../lib/time";
 import type { Chat } from "../lib/types";
@@ -79,7 +79,7 @@ export function ChatActions({ chat }: { chat: Chat }) {
       <Item onClick={() => confirmDelete(chat)}>ลบ</Item>
       <Separator />
       <Item onClick={() => run(api.setMuted(chat.id, !chat.muted))}>{chat.muted ? "เปิดแจ้งเตือน" : "ปิดแจ้งเตือน"}</Item>
-      {chat.unread <= 0 && !chat.markedUnread && (
+      {!looksUnread(chat) && (
         <Item onClick={() => run(api.markUnread(chat.id))}>ทำเครื่องหมายว่ายังไม่ได้อ่าน</Item>
       )}
       <FolderMenu chat={chat} />

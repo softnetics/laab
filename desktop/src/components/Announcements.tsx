@@ -14,7 +14,7 @@ type Announcement = {
   createdTime: number;
 };
 
-/** Pinned announcements synced via LINE (groups and DMs), over the timeline. */
+/** Pinned group/room announcements synced via LINE, over the timeline. */
 export function Announcements({ chatId, name }: { chatId: string; name: (mid: string) => string }) {
   // Wait for the LINE session; asking earlier caches an empty list.
   const state = useSession()?.state;

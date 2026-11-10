@@ -238,8 +238,12 @@ export function Timeline({
       pinned.current = false;
       autoUntil.current = Date.now() + 100;
       el.scrollTop = top;
+      requestAnimationFrame(() => syncDateChip());
+    } else {
+      // Already near the bottom: no scroll fires, so clear the persisted anchor.
+      onCaughtUp?.();
     }
-  }, [unreadFrom, rows.length, focusId, currentHit]);
+  }, [unreadFrom, rows.length, focusId, currentHit, onCaughtUp]);
 
   // ⌘K or a deep link asked for a message; in-chat search steps through hits.
   const target = currentHit ?? focusId;
@@ -251,19 +255,27 @@ export function Timeline({
       previousTarget.current = wanted ?? null;
       focusLoads.current = 0;
     }
-    if (wanted && focusLoads.current < 20 && !loading && !failed && !messages.some((m) => m.id === wanted) && older.state === "idle") {
-      focusLoads.current += 1;
-      loadOlder();
+    if (wanted && !messages.some((m) => m.id === wanted) && !loading && !failed) {
+      if (focusLoads.current < 20 && older.state === "idle") {
+        focusLoads.current += 1;
+        loadOlder();
+      } else if (older.state === "end" || focusLoads.current >= 20) {
+        // Gone (deleted history / unsent bookmark): stop paging.
+        if (focusId && wanted === focusId) setUi({ focusMessageId: null });
+      }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [wanted, loading, failed, messages, older.state]);
+  }, [wanted, loading, failed, messages, older.state, focusId]);
   useLayoutEffect(() => {
     if (!target) return;
     const node = scroller.current?.querySelector(`[data-message="${CSS.escape(target)}"]`);
     if (!node) return;
     pinned.current = false;
     // ⌘G / Return steps through hits: jump, don't smooth-scroll.
+    autoUntil.current = Date.now() + 100;
     node.scrollIntoView({ block: "center" });
+    // Programmatic jumps skip onScroll's chip update; sync after layout.
+    requestAnimationFrame(() => syncDateChip());
     if (focusId && target === focusId) {
       node.animate([{ background: "color-mix(in srgb, var(--color-line-green) 18%, transparent)" }, { background: "transparent" }], {
         duration: 1400,

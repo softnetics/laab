@@ -76,7 +76,9 @@ export const api = {
   members: (chatId: string, force = false) => invoke<ChatMember[]>("members", { chatId, force }),
   setFocus: (chatId: string | null, active: boolean) => invoke<void>("set_focus", { chatId, active }),
   openChat: (chatId: string) => invoke<string | null>("open_chat", { chatId }),
-  markRead: (chatId: string) => invoke<void>("mark_read", { chatId }),
+  /** `keepUnreadFrom`: ack LINE unread but leave a Discord-style divider. */
+  markRead: (chatId: string, keepUnreadFrom = false) =>
+    invoke<void>("mark_read", { chatId, keepUnreadFrom }),
   /** Chat-list mark when `messageId` is omitted; Discord-style from a message when set. */
   markUnread: (chatId: string, messageId?: string) =>
     invoke<void>("mark_unread", { chatId, messageId: messageId ?? null }),

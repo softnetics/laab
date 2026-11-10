@@ -101,7 +101,7 @@ fn defs() -> Vec<Def> {
         }), &[], true, false),
         d("get_profile", Read, "Get a profile", "Someone's LINE profile: name, status message, whether they are a friend or blocked.", json!({ "mid": s("The person's mid (`u…`).") }), &["mid"], true, false),
         d("find_contact", Read, "Find by LINE ID", "Look someone up by LINE ID or a line.me profile link. Doesn't add them.", json!({ "query": s("LINE ID or link.") }), &["query"], true, false),
-        d("list_announcements", Read, "List announcements", "Announcements pinned in a chat (synced via LINE for groups and DMs).", json!({ "chat_id": s(CHAT) }), &["chat_id"], true, false),
+        d("list_announcements", Read, "List announcements", "Announcements pinned in a group or room (synced via LINE).", json!({ "chat_id": s(CHAT) }), &["chat_id"], true, false),
         d("list_bookmarks", Read, "List bookmarks", "Personal text-message bookmarks on this Mac only (not shared like announcements). Omit chat_id for every chat.", json!({
             "chat_id": s("Limit to this chat."),
         }), &[], true, false),
@@ -190,7 +190,7 @@ fn defs() -> Vec<Def> {
         d("list_message_requests", Manage, "List message requests", "Chats in LINE's message request box: from people who are not friends, kept out of the chat list until the user accepts them. Each has its id, name, kind, unread count and last activity.", json!({}), &[], true, false),
         d("accept_message_request", Manage, "Accept a message request", "Move a chat out of the message request box into the chat list, as accepting it in LINE does.", json!({ "chat_id": s("Chat id from list_message_requests.") }), &["chat_id"], false, false),
         d("hide_chat", Manage, "Hide a chat", "Hide a chat from the list until a new message arrives.", json!({ "chat_id": s(CHAT) }), &["chat_id"], false, false),
-        d("announce", Manage, "Announce a message", "Pin a message as a chat announcement (synced via LINE for groups and DMs).", json!({
+        d("announce", Manage, "Announce a message", "Pin a message as a chat announcement (synced via LINE for groups and rooms).", json!({
             "chat_id": s(CHAT), "message_id": s(MSG), "text": s("Announcement text (default: the message's text)."),
         }), &["chat_id", "message_id"], false, false),
         d("remove_announcement", Manage, "Remove an announcement", "Remove a chat announcement.", json!({ "chat_id": s(CHAT), "seq": n("Its seq from list_announcements.") }), &["chat_id", "seq"], false, true),
@@ -729,7 +729,11 @@ async fn run(ctx: &Ctx, name: &str, args: &Value, trace: &mut Trace) -> R<Vec<Va
                     || query.as_ref().is_some_and(|q| !c.name.to_lowercase().contains(q))
                     || kind.as_ref().is_some_and(|k| *k != c.kind)
                     || folder.as_ref().is_some_and(|f| !dir.folders_of.get(&c.id).is_some_and(|fs| fs.contains(f)))
-                    || (unread_only && c.unread <= 0)
+                    // Match `looksUnread`: LINE unread, chat-list mark, or anchor.
+                    || (unread_only
+                        && c.unread <= 0
+                        && !c.marked_unread
+                        && c.unread_from.is_none())
                     || (pinned_only && !dir.pinned.contains(&c.id))
                 {
                     continue;
@@ -980,9 +984,11 @@ async fn run(ctx: &Ctx, name: &str, args: &Value, trace: &mut Trace) -> R<Vec<Va
                 any_read(&settings, trace, "ดูบุ๊กมาร์กทั้งหมด")?;
             }
             let list = commands::bookmarks(st(), chat)?;
+            // Bookmarks carry message text: only On, never Ask (search keeps
+            // Ask chats to name-only hits).
             let out: Vec<Value> = list
                 .into_iter()
-                .filter(|b| readable(&settings, &dir.scope(&b.chat_id)) != Access::Off)
+                .filter(|b| readable(&settings, &dir.scope(&b.chat_id)) == Access::On)
                 .map(|b| {
                     json!({
                         "chatId": b.chat_id,
@@ -1235,7 +1241,7 @@ async fn run(ctx: &Ctx, name: &str, args: &Value, trace: &mut Trace) -> R<Vec<Va
         "mark_as_read" => {
             let chat = arg_str(args, "chat_id")?;
             gate(ctx, trace, Send, &[dir.scope(&chat)], format!("ทำเครื่องหมายว่าอ่านแล้วใน {}", dir.quoted(&chat))).await?;
-            commands::mark_read(st(), chat).await?;
+            commands::mark_read(st(), chat, None).await?;
             done("marked as read")
         }
         "tap_postback" => {
@@ -1404,6 +1410,15 @@ async fn run(ctx: &Ctx, name: &str, args: &Value, trace: &mut Trace) -> R<Vec<Va
         "bookmark_message" => {
             let chat = arg_str(args, "chat_id")?;
             let id = arg_str(args, "message_id")?;
+            // Gate before lookup so Off access cannot probe whether an id exists.
+            gate(
+                ctx,
+                trace,
+                Manage,
+                &[dir.scope(&chat)],
+                format!("บุ๊กมาร์กข้อความใน {}", dir.quoted(&chat)),
+            )
+            .await?;
             let (m, _) = message(state, &dir, &id)?;
             if m.chat_id != chat {
                 return Err("message is not in that chat".into());
@@ -1412,14 +1427,6 @@ async fn run(ctx: &Ctx, name: &str, args: &Value, trace: &mut Trace) -> R<Vec<Va
             if t.is_empty() {
                 return Err("only text messages can be bookmarked".into());
             }
-            gate(
-                ctx,
-                trace,
-                Manage,
-                &[dir.scope(&chat)],
-                format!("บุ๊กมาร์กข้อความใน {}: “{}”", dir.quoted(&chat), clip(t, 200)),
-            )
-            .await?;
             commands::set_bookmark(st(), chat, id, t.to_string(), true)?;
             done("bookmarked")
         }
