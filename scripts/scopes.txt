@@ -6,6 +6,7 @@ chat=Chats
 group=Groups
 friends=Friends
 keep=Keep Memo
+bookmark=Bookmarks
 album=Albums
 note=Notes
 media=Photos and videos

@@ -5,6 +5,7 @@ import { notice, setUi, useUi } from "../lib/ui";
 import { Avatar } from "./Avatar";
 import { CreateGroup, GroupMembers, useSheetChat } from "./GroupSheets";
 import { Spinner } from "./kit";
+import { BookmarksSheet } from "./Bookmarks";
 import { McpSheet } from "./McpSheet";
 import { DatePicker, TimeField } from "./DateTimePicker";
 import { joinPicker, outOfRange, pickerLabel, splitPicker } from "../lib/datetimePicker";
@@ -228,6 +229,9 @@ export function Sheets() {
       </Sheet>
       <Sheet open={sheet?.kind === "mcp"} onClose={close} className="h-[min(680px,calc(100vh-48px))] w-[min(760px,calc(100vw-48px))]">
         {sheet?.kind === "mcp" && <McpSheet onDone={close} />}
+      </Sheet>
+      <Sheet open={sheet?.kind === "bookmarks"} onClose={close} className="h-[min(560px,calc(100vh-48px))] w-[420px]">
+        {sheet?.kind === "bookmarks" && <BookmarksSheet onDone={close} />}
       </Sheet>
     </>
   );

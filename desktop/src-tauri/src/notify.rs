@@ -252,6 +252,20 @@ pub fn setup(identifier: &str) {
     let _ = identifier;
 }
 
+/// How many unread a chat contributes to the Dock / Rail total: LINE count,
+/// else the Discord-style anchor count, else 1 for a mark/anchor with no count.
+fn badge_unread(c: &crate::model::Chat) -> i64 {
+    if c.unread > 0 {
+        c.unread
+    } else if c.unread_from_count > 0 {
+        c.unread_from_count
+    } else if c.marked_unread || c.unread_from.is_some() {
+        1
+    } else {
+        0
+    }
+}
+
 /// The Dock badge is the sum of unread counts, "99+" above 99.
 pub fn update_badge(state: &AppState) {
     if state.demo {
@@ -260,7 +274,7 @@ pub fn update_badge(state: &AppState) {
     let total: i64 = state
         .store()
         .chats()
-        .map(|c| c.iter().map(|c| c.unread.max(0)).sum())
+        .map(|c| c.iter().map(badge_unread).sum())
         .unwrap_or(0);
     let label = match total {
         0 => None,

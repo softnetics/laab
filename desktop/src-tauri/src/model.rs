@@ -4,6 +4,10 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
+fn i64_is_zero(n: &i64) -> bool {
+    *n == 0
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct Chat {
@@ -25,6 +29,13 @@ pub struct Chat {
     /// never sent, leaves `unread` alone, and clears when the chat is opened.
     #[serde(default)]
     pub marked_unread: bool,
+    /// Discord-style local unread: first unread message id. Survives reopen
+    /// until the user catches up; never sent to LINE.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unread_from: Option<String>,
+    /// How many messages from others sit at/after `unread_from` (list badge).
+    #[serde(default, skip_serializing_if = "i64_is_zero")]
+    pub unread_from_count: i64,
     /// A group we are invited to and have not joined.
     #[serde(default)]
     pub invited: bool,

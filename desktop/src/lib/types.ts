@@ -19,6 +19,10 @@ export interface Chat {
   request?: boolean;
   /** LAAB's own "mark as unread": shown as a dot, never sent to LINE. */
   markedUnread?: boolean;
+  /** Discord-style local unread: first unread message id. Survives reopen. */
+  unreadFrom?: string | null;
+  /** Messages from others at/after `unreadFrom` (list badge when LINE unread is 0). */
+  unreadFromCount?: number;
 }
 
 export interface ChatMember {
@@ -188,6 +192,14 @@ export interface DraftMention {
 export interface Draft {
   text: string;
   mentions: DraftMention[];
+}
+
+/** Personal text-message bookmark. Local to this Mac; not shared like ประกาศ. */
+export interface Bookmark {
+  chatId: string;
+  messageId: string;
+  text: string;
+  createdAt: number;
 }
 
 export interface NotePost {

@@ -116,6 +116,10 @@ impl AppState {
         crate::notify::update_badge(self);
     }
 
+    pub fn bookmarks_changed(&self) {
+        let _ = self.app.emit("bookmarks-changed", ());
+    }
+
     pub fn messages_changed(&self, chat_id: &str) {
         let _ = self.app.emit("messages-changed", ChatEvent { chat_id });
     }

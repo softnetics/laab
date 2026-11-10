@@ -95,8 +95,12 @@ export function adjacentChat(ids: string[], current: string | null, step: 1 | -1
   return j < 0 || j >= ids.length ? null : ids[j];
 }
 
-/** Unread on LINE, or marked unread in LAAB. */
-export const looksUnread = (c: Chat) => c.unread > 0 || !!c.markedUnread;
+/** Unread on LINE, or marked unread in LAAB (dot or Discord-style from a message). */
+export const looksUnread = (c: Chat) => c.unread > 0 || !!c.markedUnread || !!c.unreadFrom;
+
+/** Count for Dock / Rail totals: LINE unread, else anchor count, else 1 for a mark. */
+export const unreadBadgeCount = (c: Chat) =>
+  c.unread > 0 ? c.unread : (c.unreadFromCount ?? 0) > 0 ? (c.unreadFromCount ?? 0) : c.markedUnread || c.unreadFrom ? 1 : 0;
 
 export const unreadLabel = (n: number) => (n > 999 ? "999+" : String(n));
 

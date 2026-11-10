@@ -194,6 +194,12 @@ export const BookmarkIcon = (p: P) => (
     <path d="M6.5 3.5h11a1 1 0 0 1 1 1V20l-6.5-4.2L5.5 20V4.5a1 1 0 0 1 1-1Z" />
   </svg>
 );
+/** Filled bookmark for saved state — pairs with outline BookmarkIcon. */
+export const BookmarkFilledIcon = (p: P) => (
+  <svg {...base(p)}>
+    <path d="M6.5 3.5h11a1 1 0 0 1 1 1V20l-6.5-4.2L5.5 20V4.5a1 1 0 0 1 1-1Z" />
+  </svg>
+);
 export const SlidersIcon = (p: P) => (
   <svg {...base(p)} fill="none" stroke="currentColor" strokeWidth={1.9} strokeLinecap="round">
     <path d="M4 8h9M17 8h3M4 16h3M11 16h9" />

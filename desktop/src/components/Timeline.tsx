@@ -30,6 +30,8 @@ export function Timeline({
   people,
   search,
   unreadFrom,
+  jumpToUnread = false,
+  onCaughtUp,
 }: {
   messages: Message[];
   /** The first page is still loading (nothing cached yet). */
@@ -45,13 +47,18 @@ export function Timeline({
   /** The first message that was unread when the chat opened: LINE draws its
    *  unread mark above it and opens the chat there (`lq1/x.java`). */
   unreadFrom?: string | null;
+  /** Scroll to the divider once (persisted reopen). False when marked mid-visit. */
+  jumpToUnread?: boolean;
+  /** Discord-style: user scrolled to the bottom after opening with unread_from. */
+  onCaughtUp?: () => void;
 }) {
   const scroller = useRef<HTMLDivElement>(null);
   const focusId = useUi((s) => s.focusMessageId);
   const rows = useMemo(() => buildRows(messages, ctx.name), [messages, ctx.name]);
-  // Each day starts with its date chip, as in LINE. While scrolling, a
-  // floating copy at the top also names the day under the top edge, then
-  // fades.
+  // Each day starts with its date chip in the stream. One sticky copy lives
+  // inside the scroller at `top-2` (same content box as the stream chips) and
+  // stays there — in-flow chips that enter that band are hidden so two pills
+  // never stack or drift sideways from the scrollbar.
   const days = useMemo(() => {
     const groups: { id: string; label: string; rows: typeof rows }[] = [];
     for (const r of rows) {
@@ -84,27 +91,50 @@ export function Timeline({
   const [away, setAway] = useState(false);
   const [dateLabel, setDateLabel] = useState("");
   const [dateShown, setDateShown] = useState(false);
-  const dateHide = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [coveredDays, setCoveredDays] = useState<ReadonlySet<string>>(() => new Set());
+  const dateRaf = useRef(0);
   const syncDateChip = () => {
     const el = scroller.current;
     if (!el) return;
     const top = el.getBoundingClientRect().top;
+    // Sticky slot matches the floating chip at `top-2` (8px). One fixed
+    // position owns that slot — never hand off to the in-flow pill, or the
+    // label jumps between `top-2` and the stream's `pt-[18px]`.
+    const bandTop = top + 8;
+    const bandBottom = bandTop + 28;
     let label = "";
     for (const section of el.querySelectorAll<HTMLElement>("[data-day-label]")) {
       if (section.getBoundingClientRect().top <= top + 12) label = section.dataset.dayLabel ?? "";
       else break;
     }
-    if (label) setDateLabel(label);
+    const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
+    const floatingOwns = !!label && !atBottom;
+    const covered = new Set<string>();
+    if (floatingOwns) {
+      for (const chip of el.querySelectorAll<HTMLElement>("[data-day-chip]")) {
+        const id = chip.dataset.dayChip;
+        if (!id) continue;
+        const r = chip.getBoundingClientRect();
+        if (r.bottom > bandTop && r.top < bandBottom) covered.add(id);
+      }
+    }
+    setDateLabel(label);
+    setCoveredDays((prev) => {
+      if (prev.size === covered.size && [...covered].every((id) => prev.has(id))) return prev;
+      return covered;
+    });
+    setDateShown(floatingOwns);
   };
-  const showDate = () => {
-    syncDateChip();
-    setDateShown(true);
-    if (dateHide.current) clearTimeout(dateHide.current);
-    dateHide.current = setTimeout(() => setDateShown(false), 700);
+  const scheduleDateChip = () => {
+    if (dateRaf.current) return;
+    dateRaf.current = requestAnimationFrame(() => {
+      dateRaf.current = 0;
+      syncDateChip();
+    });
   };
   useEffect(
     () => () => {
-      if (dateHide.current) clearTimeout(dateHide.current);
+      if (dateRaf.current) cancelAnimationFrame(dateRaf.current);
     },
     [],
   );
@@ -132,6 +162,7 @@ export function Timeline({
     pinned.current = true;
     setDateShown(false);
     setDateLabel("");
+    setCoveredDays(new Set());
     if (!focusId) toBottom();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ctx.chatId]);
@@ -163,13 +194,16 @@ export function Timeline({
     const el = scroller.current;
     if (!el) return;
     const fromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
-    if (fromBottom < 40) pinned.current = true;
-    else if (Date.now() > autoUntil.current) pinned.current = false;
+    if (fromBottom < 40) {
+      pinned.current = true;
+      // Caught up: clear a Discord-style unread_from that survived reopen.
+      if (unreadFrom && Date.now() > autoUntil.current) onCaughtUp?.();
+    } else if (Date.now() > autoUntil.current) pinned.current = false;
     setAway(fromBottom > 400);
     if (el.scrollTop < 300) loadOlder();
     // Skip our own scrolls (pin-to-bottom, load-older, jump) so the chip
     // does not flash on every incoming message.
-    if (Date.now() > autoUntil.current) showDate();
+    if (Date.now() > autoUntil.current) scheduleDateChip();
   };
   // A message that arrives while scrolled up shows as a strip over the
   // composer, as in LINE ("O Finally Human…").
@@ -195,9 +229,16 @@ export function Timeline({
 
   // Open at the unread mark, once, unless a message or search hit was asked
   // for. Fewer than a screen of unread messages leaves the view at the bottom.
+  // `unreadShown` must stay set for the current id so rows.length changes
+  // (incoming messages) do not re-jump or re-call onCaughtUp.
   const unreadShown = useRef<string | null>(null);
   useLayoutEffect(() => {
     if (!unreadFrom || unreadShown.current === unreadFrom || focusId || currentHit) return;
+    // Marked mid-visit: draw the divider only, keep the reader's place.
+    if (!jumpToUnread) {
+      unreadShown.current = unreadFrom;
+      return;
+    }
     const node = scroller.current?.querySelector(`[data-unread-mark]`);
     if (!node) return;
     unreadShown.current = unreadFrom;
@@ -207,8 +248,12 @@ export function Timeline({
       pinned.current = false;
       autoUntil.current = Date.now() + 100;
       el.scrollTop = top;
+      requestAnimationFrame(() => syncDateChip());
+    } else {
+      // Already near the bottom: no scroll fires, so clear the persisted anchor.
+      onCaughtUp?.();
     }
-  }, [unreadFrom, rows.length, focusId, currentHit]);
+  }, [unreadFrom, jumpToUnread, rows.length, focusId, currentHit, onCaughtUp]);
 
   // ⌘K or a deep link asked for a message; in-chat search steps through hits.
   const target = currentHit ?? focusId;
@@ -220,19 +265,27 @@ export function Timeline({
       previousTarget.current = wanted ?? null;
       focusLoads.current = 0;
     }
-    if (wanted && focusLoads.current < 20 && !loading && !failed && !messages.some((m) => m.id === wanted) && older.state === "idle") {
-      focusLoads.current += 1;
-      loadOlder();
+    if (wanted && !messages.some((m) => m.id === wanted) && !loading && !failed) {
+      if (focusLoads.current < 20 && older.state === "idle") {
+        focusLoads.current += 1;
+        loadOlder();
+      } else if (older.state === "end" || focusLoads.current >= 20) {
+        // Gone (deleted history / unsent bookmark): stop paging.
+        if (focusId && wanted === focusId) setUi({ focusMessageId: null });
+      }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [wanted, loading, failed, messages, older.state]);
+  }, [wanted, loading, failed, messages, older.state, focusId]);
   useLayoutEffect(() => {
     if (!target) return;
     const node = scroller.current?.querySelector(`[data-message="${CSS.escape(target)}"]`);
     if (!node) return;
     pinned.current = false;
     // ⌘G / Return steps through hits: jump, don't smooth-scroll.
+    autoUntil.current = Date.now() + 100;
     node.scrollIntoView({ block: "center" });
+    // Programmatic jumps skip onScroll's chip update; sync after layout.
+    requestAnimationFrame(() => syncDateChip());
     if (focusId && target === focusId) {
       node.animate([{ background: "color-mix(in srgb, var(--color-line-green) 18%, transparent)" }, { background: "transparent" }], {
         duration: 1400,
@@ -250,6 +303,23 @@ export function Timeline({
   return (
     <div className="relative flex min-h-0 flex-1 flex-col">
       <div ref={scroller} className="min-h-0 flex-1 overflow-y-auto px-[18px] pb-4" onScroll={onScroll}>
+        {/* Inside the scroller so the sticky chip shares the same content box
+            as in-flow chips (scrollbar no longer shifts it sideways). h-0
+            keeps it out of the document flow. */}
+        <div className="pointer-events-none sticky top-2 z-10 h-0">
+          <div
+            aria-hidden={!dateShown}
+            className={`flex justify-center motion-safe:transition-opacity motion-safe:duration-150 motion-safe:ease-out ${
+              dateShown ? "opacity-100" : "opacity-0"
+            }`}
+          >
+            {dateLabel && (
+              <span className="chip-text rounded-full bg-date-chip px-3 py-[5px] text-[12px] leading-[15px]">
+                {dateLabel}
+              </span>
+            )}
+          </div>
+        </div>
         <div ref={inner}>
           {rows.length === 0 && !failed && (
             <div className="grid place-items-center pt-24 text-[13px] text-secondary">
@@ -264,10 +334,18 @@ export function Timeline({
             </div>
           )}
           {days.map((day) => (
-            <section key={day.id} data-day-label={day.label}>
+            <section key={day.id} data-day-id={day.id} data-day-label={day.label}>
               {day.rows[0]?.dayStart && (
                 <div className="flex justify-center pt-[18px]">
-                  <span className="chip-text rounded-full bg-date-chip px-3 py-[5px] text-[12px] leading-[15px]">{day.label}</span>
+                  <span
+                    data-day-chip={day.id}
+                    aria-hidden={coveredDays.has(day.id)}
+                    className={`chip-text rounded-full bg-date-chip px-3 py-[5px] text-[12px] leading-[15px] ${
+                      coveredDays.has(day.id) ? "opacity-0" : "opacity-100"
+                    }`}
+                  >
+                    {day.label}
+                  </span>
                 </div>
               )}
               {day.rows.map((r) => (
@@ -300,18 +378,6 @@ export function Timeline({
             </section>
           ))}
         </div>
-      </div>
-      <div
-        aria-hidden={!dateShown}
-        className={`pointer-events-none absolute inset-x-0 top-2 z-10 flex justify-center transition-opacity duration-200 ease-out ${
-          dateShown ? "opacity-100" : "opacity-0"
-        }`}
-      >
-        {dateLabel && (
-          <span className="chip-text rounded-full bg-date-chip px-3 py-[5px] text-[12px] leading-[15px] shadow-[0_1px_2px_rgba(0,0,0,0.12)]">
-            {dateLabel}
-          </span>
-        )}
       </div>
       {older.state === "loading" && (
         <div className="pointer-events-none absolute inset-x-0 top-3 flex justify-center">
