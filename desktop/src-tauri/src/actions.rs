@@ -1765,18 +1765,24 @@ pub async fn album_photos(
     let l = line(state).await?;
     let moa = l.client.base.moa();
     let mut out = Vec::new();
-    let mut cursor = None;
+    let mut cursor: Option<String> = None;
     while (out.len() as u32) < limit {
         let reply = moa
             .get_photos(GetPhotosOptions {
                 chat_id: chat_id.into(),
                 album_id: album_id.into(),
-                cursor: cursor.take(),
+                cursor: cursor.clone(),
                 page_size: Some((limit - out.len() as u32).min(100)),
                 ..Default::default()
             })
             .await?;
         let Some(page) = reply.result else { break };
+        // LINE can hand back a cursor on the last page too, the same one or
+        // one that only leads to an empty page: stop there, or the album
+        // never finishes loading.
+        if page.photos.is_empty() {
+            break;
+        }
         for photo in page.photos {
             let Some(oid) = photo
                 .oid
@@ -1806,8 +1812,8 @@ pub async fn album_photos(
             });
         }
         match page.next_cursor.filter(|c| !c.is_empty()) {
-            Some(next) => cursor = Some(next),
-            None => break,
+            Some(next) if cursor.as_deref() != Some(next.as_str()) => cursor = Some(next),
+            _ => break,
         }
     }
     out.truncate(limit as usize);
