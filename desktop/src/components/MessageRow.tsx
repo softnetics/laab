@@ -351,13 +351,13 @@ function PostNotice({ m, tail, chatId }: { m: Message; tail: boolean; chatId: st
   const url = m.metadata.postEndUrl;
   // The card opens the note or album in LAAB's albums/notes window, as LINE
   // opens its own.
+  // An album link becomes an album card; anything else is a note card.
   const target = url ? postTarget(url) : null;
   const card = albumCard(m.metadata);
-  const album = target?.kind === "album" || !!card;
   const ids = target?.ids.length ? target.ids : card?.albumId ? [card.albumId] : [];
   const view = () =>
     target || card
-      ? api.openAuxWindow("albums", chatId, "", album ? "albums" : "notes", ids.join(",") || undefined).catch((e) => notice(errorText(e)))
+      ? api.openAuxWindow("albums", chatId, "", card ? "albums" : "notes", ids.join(",") || undefined).catch((e) => notice(errorText(e)))
       : url && openUrl(url);
   const line = m.mine ? "border-black/15" : "border-secondary/30";
   if (card) {
@@ -368,6 +368,7 @@ function PostNotice({ m, tail, chatId }: { m: Message; tail: boolean; chatId: st
         {card.oid && card.albumId && (
           <button
             onClick={view}
+            aria-label="ดูอัลบั้ม"
             className="relative mx-[13px] block h-[180px] max-w-[calc(100%-26px)] overflow-hidden bg-black/10"
             style={{ aspectRatio: card.aspect ? String(card.aspect) : "3 / 4" }}
           >
@@ -393,7 +394,7 @@ function PostNotice({ m, tail, chatId }: { m: Message; tail: boolean; chatId: st
       <div className="px-[13px] pt-[6px] pb-[5px]">{m.metadata.text || "โพสต์ในกลุ่ม"}</div>
       {url && (
         <button onClick={view} className={`flex w-full items-center justify-between border-t px-[13px] py-[5px] text-left ${line}`}>
-          {album ? "ดูอัลบั้ม" : "ดูโน้ต"} <span className="opacity-60">›</span>
+          ดูโน้ต <span className="opacity-60">›</span>
         </button>
       )}
     </Bubble>
