@@ -5,7 +5,7 @@ import { callBubbleLabel, chatEventText, noticeFor, readCall, readChatEvent, isB
 import { buildRows } from "../timeline";
 import { bigSticonSize, isAnimated, sticons } from "../media";
 import { findHits, ranges } from "../inChatSearch";
-import { linkify, liffId, previewUrl } from "../links";
+import { albumCard, linkify, liffId, postTarget, previewUrl } from "../links";
 import { adjacentChat, filterChats, folderName, groupRows, listPreview, requestBox } from "../chatList";
 import { nextReaction, paidEmoji, topTypes } from "../reactions";
 import { dayHeader, fullStamp, listLabel } from "../time";
@@ -407,5 +407,68 @@ describe("sticons", () => {
     expect(bigSticonSize("hi (a)", at([3, 6]))).toBeNull();
     expect(bigSticonSize("(a) hi", at([0, 3]))).toBeNull();
     expect(bigSticonSize("hi", [])).toBeNull();
+  });
+});
+
+describe("postTarget", () => {
+  it("reads album cards, keeping long ids exact", () => {
+    expect(postTarget("line://group/home/albums/album?homeId=c1&albumId=1234567890123456789")).toEqual({
+      kind: "album",
+      ids: ["1234567890123456789"],
+    });
+    expect(postTarget("line://group/home/albums/album?albumId=1&albumIdV2=2")).toEqual({ kind: "album", ids: ["1", "2"] });
+    expect(postTarget("line://group/home/albums/album?albumId=7&albumIdV2=0")).toEqual({ kind: "album", ids: ["7"] });
+    expect(postTarget("line://group/home/albums?homeId=c1")).toEqual({ kind: "album", ids: [] });
+  });
+  it("reads https card links", () => {
+    expect(postTarget("https://line.me/R/group/home/posts/post?homeId=c1&postId=42&noteEntryType=post_noti")).toEqual({
+      kind: "note",
+      ids: ["42"],
+    });
+    expect(postTarget("https://line.me/R/group/home/albums/album?homeId=c1&albumId=7")).toEqual({ kind: "album", ids: ["7"] });
+  });
+  it("reads note cards", () => {
+    expect(postTarget("line://group/home/note/post?homeId=c1&postId=1169000000000000001")).toEqual({
+      kind: "note",
+      ids: ["1169000000000000001"],
+    });
+  });
+  it("leaves other links alone", () => {
+    expect(postTarget("line://nv/chat")).toBeNull();
+    expect(postTarget("https://example.com/")).toBeNull();
+  });
+});
+
+describe("albumCard", () => {
+  const meta = {
+    albumName: "trip",
+    locKey: "BA",
+    mediaCount: "1",
+    mediaOid: "abc.1",
+    mediaType: "I",
+    width: "1108",
+    height: "1477",
+    cafeId: "9",
+    postEndUrl: "line://group/home/albums/album?albumId=7&homeId=c1&albumIdV2=7",
+  };
+  it("reads a new album card", () => {
+    expect(albumCard(meta)).toEqual({
+      title: 'สร้างอัลบั้ม "trip"',
+      albumId: "7",
+      oid: "abc.1",
+      video: false,
+      count: 2,
+      aspect: 1108 / 1477,
+    });
+  });
+  it("reads photos added to an album", () => {
+    expect(albumCard({ ...meta, locKey: "BB", mediaCount: "0", mediaType: "V" })).toMatchObject({
+      title: 'เพิ่มรูปในอัลบั้ม "trip"',
+      video: true,
+      count: 1,
+    });
+  });
+  it("leaves note cards alone", () => {
+    expect(albumCard({ text: "hi", postEndUrl: "https://line.me/R/group/home/posts/post?homeId=c1&postId=1" })).toBeNull();
   });
 });

@@ -13,6 +13,7 @@ import { clock } from "../lib/time";
 import { setTranslateTarget, translateLanguages, translateTarget } from "../lib/translate";
 import type { MentionSpan, Message, ReactionName } from "../lib/types";
 import { notice, setUi, ui, useUi } from "../lib/ui";
+import { albumCard, postTarget } from "../lib/links";
 import { openUrl } from "../lib/open";
 import { viewMessage } from "../lib/viewer";
 import { Avatar } from "./Avatar";
@@ -344,22 +345,55 @@ function ReplyQuote({ id, ctx, mine }: { id: string; ctx: RowContext; mine: bool
   );
 }
 
-/** A group note/post notice ("ดูโน้ต"). */
+/** A group note/post notice ("ดูโน้ต"), or an album card with its first
+ *  photo ("ดูอัลบั้ม"). */
 function PostNotice({ m, tail, chatId }: { m: Message; tail: boolean; chatId: string }) {
   const url = m.metadata.postEndUrl;
-  // "ดูโน้ต" opens the note in LAAB's notes window, as LINE opens its own.
-  const postId = url ? new URL(url.replace(/^line:\/\//, "https://x/")).searchParams.get("postId") : null;
+  // The card opens the note or album in LAAB's albums/notes window, as LINE
+  // opens its own.
+  const target = url ? postTarget(url) : null;
+  const card = albumCard(m.metadata);
+  const album = target?.kind === "album" || !!card;
+  const ids = target?.ids.length ? target.ids : card?.albumId ? [card.albumId] : [];
   const view = () =>
-    postId ? api.openAuxWindow("albums", chatId, "", "notes", postId).catch((e) => notice(errorText(e))) : url && openUrl(url);
+    target || card
+      ? api.openAuxWindow("albums", chatId, "", album ? "albums" : "notes", ids.join(",") || undefined).catch((e) => notice(errorText(e)))
+      : url && openUrl(url);
+  const line = m.mine ? "border-black/15" : "border-secondary/30";
+  if (card) {
+    return (
+      <Bubble mine={m.mine} tail={tail} className="w-[210px] overflow-hidden px-0! py-0!">
+        <div className="px-[13px] pt-[7px] pb-[6px]">{card.title}</div>
+        {/* LINE keeps the photo at one height, its own width, inside the card's padding. */}
+        {card.oid && card.albumId && (
+          <button
+            onClick={view}
+            className="relative mx-[13px] block h-[180px] max-w-[calc(100%-26px)] overflow-hidden bg-black/10"
+            style={{ aspectRatio: card.aspect ? String(card.aspect) : "3 / 4" }}
+          >
+            <img
+              src={mediaUrl.album(chatId, card.albumId, card.oid)}
+              alt=""
+              decoding="async"
+              draggable={false}
+              className="h-full w-full object-cover"
+            />
+            {card.video && <PlayIcon size={20} className="absolute right-1.5 bottom-1.5 text-white drop-shadow" />}
+          </button>
+        )}
+        {card.count > 0 && <div className="px-[13px] pt-[5px] pb-[5px] text-[12.5px] opacity-60">ทั้งหมด {card.count} รายการ</div>}
+        <button onClick={view} className={`flex w-full items-center justify-between border-t px-[13px] py-[5px] text-left ${line}`}>
+          ดูอัลบั้ม <span className="opacity-60">›</span>
+        </button>
+      </Bubble>
+    );
+  }
   return (
     <Bubble mine={m.mine} tail={tail} className="min-w-[220px] px-0! py-0!">
       <div className="px-[13px] pt-[6px] pb-[5px]">{m.metadata.text || "โพสต์ในกลุ่ม"}</div>
       {url && (
-        <button
-          onClick={view}
-          className={`flex w-full items-center justify-between border-t px-[13px] py-[5px] text-left ${m.mine ? "border-black/15" : "border-secondary/30"}`}
-        >
-          ดูโน้ต <span className="opacity-60">›</span>
+        <button onClick={view} className={`flex w-full items-center justify-between border-t px-[13px] py-[5px] text-left ${line}`}>
+          {album ? "ดูอัลบั้ม" : "ดูโน้ต"} <span className="opacity-60">›</span>
         </button>
       )}
     </Bubble>
