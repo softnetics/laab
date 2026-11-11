@@ -249,6 +249,41 @@ pub fn seed(store: &mut Store, paths: &Paths) -> Result<()> {
             "ฝั่ง payment ใช้ตามสเปกเดิมได้เลยครับ",
             t + 51.0 * minute,
         ),
+        // Album cards from other members: a new album, then photos added
+        // to it. Their photo is the whiteboard (`album_photo_file`).
+        Message {
+            content_type: "POSTNOTIFICATION".into(),
+            metadata: meta(&[
+                ("albumName", "Workshop ไวท์บอร์ด"),
+                ("locKey", "BA"),
+                ("mediaCount", "3"),
+                ("mediaOid", "demo-whiteboard"),
+                ("mediaType", "I"),
+                ("width", "520"),
+                ("height", "340"),
+                (
+                    "postEndUrl",
+                    "line://group/home/albums/album?albumId=a_demo&homeId=c_harvest&albumIdV2=a_demo",
+                ),
+            ]),
+            ..msg("al1", "c_harvest", "u_kanya", "", t + 52.0 * minute)
+        },
+        Message {
+            content_type: "POSTNOTIFICATION".into(),
+            metadata: meta(&[
+                ("albumName", "Workshop ไวท์บอร์ด"),
+                ("locKey", "BB"),
+                ("mediaOid", "demo-whiteboard"),
+                ("mediaType", "I"),
+                ("width", "340"),
+                ("height", "520"),
+                (
+                    "postEndUrl",
+                    "line://group/home/albums/album?albumId=a_demo&homeId=c_harvest&albumIdV2=a_demo",
+                ),
+            ]),
+            ..msg("al2", "c_harvest", "u_arm", "", t + 53.0 * minute)
+        },
         Message {
             unsent: 1,
             ..msg("m7b", "c_harvest", "u_kanya", "", t + 55.0 * minute)

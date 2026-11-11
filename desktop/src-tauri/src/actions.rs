@@ -1839,6 +1839,10 @@ pub async fn album_photo_file(
     oid: &str,
     video: bool,
 ) -> Result<std::path::PathBuf> {
+    if state.demo {
+        // Demo albums show the demo chat's whiteboard photo.
+        return Ok(state.paths.media().join("photo.svg"));
+    }
     let dest = album_photo_path(state, oid, video);
     if dest.exists() {
         return Ok(dest);

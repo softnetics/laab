@@ -418,10 +418,21 @@ function AlbumCover({ chatId, albumId }: { chatId: string; albumId: string }) {
   );
 }
 
-function Albums({ chatId }: { chatId: string }) {
+function Albums({ chatId, album, at }: { chatId: string; album: string | null; at: string }) {
   const key = ["albums", chatId];
   const { data, isLoading, error } = useQuery({ queryKey: key, queryFn: () => api.listAlbums(chatId), staleTime: 0 });
   const [open, setOpen] = useState<{ id: string; title: string; count: number } | null>(null);
+  // An album card in the chat asked for this album (by any of its ids,
+  // comma-separated): open it once the list has it, else stay on the list.
+  const [wanted, setWanted] = useState(album);
+  useEffect(() => setWanted(album), [album, at]);
+  useEffect(() => {
+    if (!wanted || !data) return;
+    const ids = wanted.split(",");
+    const a = data.find((x) => ids.includes(x.id));
+    if (a) setOpen({ id: a.id, title: a.title, count: a.photoCount });
+    setWanted(null);
+  }, [wanted, data]);
   const [naming, setNaming] = useState<{ id: string | null; title: string } | null>(null);
   const photos = useQuery({ queryKey: ["album", chatId, open?.id], queryFn: () => api.albumPhotos(chatId, open!.id), enabled: !!open });
   const refresh = () => queryClient.invalidateQueries({ queryKey: key });
@@ -590,7 +601,11 @@ export function AlbumsNotesWindow({ chatId, tab, post, at }: { chatId: string; t
         value={current}
         onChange={setCurrent}
       />
-      {current === "albums" ? <Albums chatId={chatId} /> : <Notes chatId={chatId} post={post} at={at} />}
+      {current === "albums" ? (
+        <Albums chatId={chatId} album={tab === "albums" ? post : null} at={at} />
+      ) : (
+        <Notes chatId={chatId} post={tab === "notes" ? post : null} at={at} />
+      )}
       <ConfirmDialog />
     </div>
   );
