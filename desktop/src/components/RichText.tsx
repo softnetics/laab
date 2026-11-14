@@ -101,7 +101,7 @@ export function RichText({
           return (
             <span
               key={`m${p.start}`}
-              className={`cursor-pointer${ofMe ? " font-semibold" : ""}`}
+              className={`cursor-pointer${ofMe ? " font-bold" : ""}`}
               style={{ color: mine ? "#0B3D91" : "var(--color-mention)" }}
               onClick={(e) => onMention?.(m, e.currentTarget)}
             >
