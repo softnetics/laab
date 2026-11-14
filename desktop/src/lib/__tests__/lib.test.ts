@@ -10,6 +10,7 @@ import { adjacentChat, filterChats, folderName, groupRows, listPreview, requestB
 import { nextReaction, paidEmoji, topTypes } from "../reactions";
 import { dayHeader, fullStamp, listLabel } from "../time";
 import { joinPicker, outOfRange, pickerNow, splitPicker } from "../datetimePicker";
+import { splitFileName } from "../../components/DropTray";
 import type { ChatList, Message } from "../types";
 
 const msg = (p: Partial<Message>): Message => ({
@@ -470,5 +471,14 @@ describe("albumCard", () => {
   });
   it("leaves note cards alone", () => {
     expect(albumCard({ text: "hi", postEndUrl: "https://line.me/R/group/home/posts/post?homeId=c1&postId=1" })).toBeNull();
+  });
+});
+
+describe("file names in the drop tray", () => {
+  it("keeps the extension while the start truncates", () => {
+    expect(splitFileName("naval availability.xlsx")).toEqual({ head: "naval availability", tail: ".xlsx" });
+    expect(splitFileName("สรุปรายงาน.pdf")).toEqual({ head: "สรุปรายงาน", tail: ".pdf" });
+    expect(splitFileName("README")).toEqual({ head: "README", tail: "" });
+    expect(splitFileName(".gitignore")).toEqual({ head: ".gitignore", tail: "" });
   });
 });

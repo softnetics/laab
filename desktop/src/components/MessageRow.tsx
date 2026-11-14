@@ -126,6 +126,13 @@ function useOpener(m: Message, ctx: RowContext) {
     setState("loading");
     try {
       const path = await api.download(ctx.chatId, m.id, m.fileName);
+      // Backend remembers file_path in SQLite but does not emit messages-changed,
+      // so patch the query so the caption and Finder button update immediately.
+      if (!m.filePath) {
+        queryClient.setQueryData<Message[]>(q.messages(ctx.chatId).queryKey, (old) =>
+          old?.map((msg) => (msg.id === m.id ? { ...msg, filePath: path } : msg)),
+        );
+      }
       setState("idle");
       await (reveal ? api.revealPath(path) : api.openPath(path));
     } catch (e) {
@@ -521,6 +528,7 @@ function Content({
         text={m.text || (m.contentType !== "NONE" ? m.contentType.toLowerCase() : "")}
         mentions={m.mentions}
         mine={m.mine}
+        me={ctx.me}
         highlight={highlight}
         current={current}
         chatId={ctx.chatId}

@@ -803,6 +803,8 @@ pub async fn download_file(
     state
         .store()
         .remember_download(id, &path.to_string_lossy(), Some(&name))?;
+    // So file bubbles flip from "คลิกเพื่อดาวน์โหลด" to "คลิกเพื่อเปิด" / Finder.
+    state.messages_changed(chat);
     Ok(path)
 }
 

@@ -138,6 +138,7 @@ export function ChatView({ chatId, main }: { chatId: string; main: boolean }) {
         .catch(() => {});
     }, 150);
     setStickers(false);
+    setMentioning(false);
     setSearch({ open: false, query: "", debounced: "", index: 0 });
     setUi({ bookmarksOpen: false });
     return () => {
@@ -266,24 +267,30 @@ export function ChatView({ chatId, main }: { chatId: string; main: boolean }) {
     return () => window.removeEventListener("keydown", onKey, true);
   });
 
-  // Files dropped on the chat are sent one by one, through the composer so
-  // a failure shows there with Retry. Files sent while an upload runs
-  // wait for it, in the order they came.
+  // Files from the tray go through the composer (with any text). While an
+  // upload runs, further ones wait, in the order they came.
   const uploadQueue = useRef(Promise.resolve());
   const pendingUploads = useRef(0);
-  const sendDropped = useRef((_: string[]) => {});
-  sendDropped.current = (paths: string[]) => {
-    if (!paths.length) return;
+  const uploadPendingFiles = useCallback((paths: string[]) => {
+    if (!paths.length) return Promise.resolve(true);
     pendingUploads.current += 1;
     setUploading(true);
-    uploadQueue.current = uploadQueue.current
-      .then(() => composer.current?.sendFiles(paths))
-      .catch((err) => notice(errorText(err)))
+    const done = uploadQueue.current
+      .then(() => composer.current?.sendFiles(paths) ?? false)
+      .catch((err) => {
+        notice(errorText(err));
+        return false;
+      })
       .finally(() => {
         pendingUploads.current -= 1;
         if (!pendingUploads.current) setUploading(false);
       });
-  };
+    uploadQueue.current = done.then(
+      () => {},
+      () => {},
+    );
+    return done;
+  }, []);
 
   // Dragged files show in a dock on the message box; dropped ones wait in a
   // tray above it until they are sent, so a file dropped on the wrong chat
@@ -291,6 +298,7 @@ export function ChatView({ chatId, main }: { chatId: string; main: boolean }) {
   const [dragCount, setDragCount] = useState<number | null>(null);
   const [dragFiles, setDragFiles] = useState<DroppedFile[] | null>(null);
   const [tray, setTray] = useState<DroppedFile[]>([]);
+  const [mentioning, setMentioning] = useState(false);
   const dragSeq = useRef(0);
   const letTrayGo = useCallback(() => {
     setTray([]);
@@ -489,12 +497,10 @@ export function ChatView({ chatId, main }: { chatId: string; main: boolean }) {
           <DropDock count={dragCount} files={dragFiles} />
           <DropTray
             files={tray}
-            onSend={() => {
-              sendDropped.current(tray.map((f) => f.path));
-              letTrayGo();
-            }}
+            onSend={() => composer.current?.send()}
             onCancel={letTrayGo}
             onRemove={removeFromTray}
+            obscured={mentioning}
           />
           <Composer
             ref={composer}
@@ -507,6 +513,10 @@ export function ChatView({ chatId, main }: { chatId: string; main: boolean }) {
             onToggleStickers={() => setStickers((v) => !v)}
             name={name}
             picture={picture}
+            pendingFilePaths={tray.map((f) => f.path)}
+            onConsumePendingFiles={letTrayGo}
+            uploadPendingFiles={uploadPendingFiles}
+            onMentionPickerChange={setMentioning}
             toolbarExtra={chat?.kind === "bot" ? <RichMenu key={chatId} chatId={chatId} /> : undefined}
             onStep={
               main
