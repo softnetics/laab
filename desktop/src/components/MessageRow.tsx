@@ -528,6 +528,7 @@ function Content({
         text={m.text || (m.contentType !== "NONE" ? m.contentType.toLowerCase() : "")}
         mentions={m.mentions}
         mine={m.mine}
+        me={ctx.me}
         highlight={highlight}
         current={current}
         chatId={ctx.chatId}

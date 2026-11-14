@@ -70,7 +70,7 @@ To build the `.app`, run `./scripts/build-desktop.sh` (it takes the version from
 - In a group, click the reader avatars to see everyone who read a message
 - Escape closes the newest thing first: a popover, then the mention picker, in-chat search, the sticker panel, and finally the chat
 - In-chat search with ⌘F, ⌘G and ⇧⌘G, with highlighted results
-- A keyboard-driven mention picker; mentions show in blue in the composer and in bubbles, and Backspace deletes a whole tag
+- A keyboard-driven mention picker; mentions show in blue in the composer and in bubbles, @You / @All are bold when someone mentions you, and Backspace deletes a whole tag
 - ⌥↑ and ⌥↓ switch chats, and so do ↑ and ↓ when the list has focus; a chat loads after you've rested on it for 150 ms
 - Rows for unsent messages; silent unsends stay hidden, and the cached files of unsent messages are deleted
 - Reactions: pick, change, remove, and see who reacted

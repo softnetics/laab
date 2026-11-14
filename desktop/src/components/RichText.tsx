@@ -12,6 +12,7 @@ export function RichText({
   text,
   mentions,
   mine,
+  me,
   highlight,
   current,
   onMention,
@@ -21,6 +22,8 @@ export function RichText({
   text: string;
   mentions: MentionSpan[];
   mine: boolean;
+  /** Mid of the signed-in user: @You / @All are bold, as in LINE for Mac. */
+  me?: string;
   highlight?: [number, number][];
   current?: boolean;
   onMention?: (m: MentionSpan, el: HTMLElement) => void;
@@ -92,10 +95,13 @@ export function RichText({
         }
         if (p.mention) {
           const m = p.mention;
+          // LINE for Mac: every @Name is blue; when it addresses you (@You or
+          // @All) it is also bold so it stands out in a busy chat.
+          const ofMe = !!me && (m.all || m.mid === me);
           return (
             <span
               key={`m${p.start}`}
-              className="cursor-pointer"
+              className={`cursor-pointer${ofMe ? " font-semibold" : ""}`}
               style={{ color: mine ? "#0B3D91" : "var(--color-mention)" }}
               onClick={(e) => onMention?.(m, e.currentTarget)}
             >
