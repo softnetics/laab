@@ -188,7 +188,7 @@ fn defs() -> Vec<Def> {
         d("rename_folder", Manage, "Rename a folder", "Rename a LAAB folder.", json!({ "folder_id": s("Folder id."), "name": s("New name.") }), &["folder_id", "name"], false, false),
         d("delete_folder", Manage, "Delete a folder", "Delete a LAAB folder; its chats go back to the list.", json!({ "folder_id": s("Folder id.") }), &["folder_id"], false, true),
         d("list_message_requests", Manage, "List message requests", "Chats in LINE's message request box: from people who are not friends, kept out of the chat list until the user accepts them. Each has its id, name, kind, unread count and last activity.", json!({}), &[], true, false),
-        d("accept_message_request", Manage, "Accept a message request", "Move a chat out of the message request box into the chat list, as accepting it in LINE does.", json!({ "chat_id": s("Chat id from list_message_requests.") }), &["chat_id"], false, false),
+        d("accept_message_request", Manage, "Accept a message request", "Move a chat out of the message request box into the chat list. For a 1:1 request this also adds them as a friend (LINE's updateChatStatusBulk rejects those mids).", json!({ "chat_id": s("Chat id from list_message_requests.") }), &["chat_id"], false, false),
         d("hide_chat", Manage, "Hide a chat", "Hide a chat from the list until a new message arrives.", json!({ "chat_id": s(CHAT) }), &["chat_id"], false, false),
         d("announce", Manage, "Announce a message", "Pin a message as a chat announcement (synced via LINE for groups and rooms).", json!({
             "chat_id": s(CHAT), "message_id": s(MSG), "text": s("Announcement text (default: the message's text)."),
