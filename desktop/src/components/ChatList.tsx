@@ -1,6 +1,7 @@
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { Menu } from "@base-ui/react/menu";
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { AnimatePresence, motion, useReducedMotion } from "motion/react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { api, errorText, mediaUrl, useChatList, useSession } from "../lib/api";
 import { clickEndsDrag, isRecent, markRecent, moving, pressChat, useChatDrag } from "../lib/chatDrag";
 import { filterChats, folderName, folderOf, groupRows, isKeepMemo, type ListRow, listPreview, looksUnread, requestBox } from "../lib/chatList";
@@ -11,11 +12,13 @@ import { type ChatFilter, notice, setUi, ui, useUi } from "../lib/ui";
 import { installAndRestart, useReadyVersion } from "../lib/updater";
 import { Avatar } from "./Avatar";
 import { ChatActions } from "./ChatActions";
+import { ChatPeek } from "./ChatPeek";
 import {
   BellSlashIcon,
   BookmarkIcon,
   ChevronIcon,
   FolderIcon,
+  PeekIcon,
   PhoneOutlineIcon,
   PinIcon,
   PlusBubbleIcon,
@@ -24,6 +27,10 @@ import {
   SortIcon,
 } from "./Icons";
 import { Badge, Ctx, CtxItem, itemClass, popupClass, Separator, Spinner } from "./kit";
+
+const PEEK_TIP_KEY = "peekTipSeen";
+const peekTipSeen = () => localStorage.getItem(PEEK_TIP_KEY) === "1";
+const markPeekTipSeen = () => localStorage.setItem(PEEK_TIP_KEY, "1");
 
 export function ChatListColumn({ selected }: { selected: string | null }) {
   const list = useChatList();
@@ -45,6 +52,9 @@ export function ChatListColumn({ selected }: { selected: string | null }) {
   const visible = useMemo(() => rows.flatMap((r) => (r.kind === "chat" ? [r.chat] : [])), [rows]);
   const pinned = useMemo(() => new Set(list?.pins.main ?? []), [list]);
   const scroller = useRef<HTMLDivElement>(null);
+  const column = useRef<HTMLDivElement>(null);
+  const hoveredId = useRef<string | null>(null);
+  const [peekId, setPeekId] = useState<string | null>(null);
   // Rows on screen last render: only rows that just appeared animate in.
   const shownKeys = useRef(new Set<string>());
   const rowKey = (r: ListRow) => (r.kind === "folder" ? `f:${r.folder.id}` : `${r.folder ?? ""}:${r.chat.id}`);
@@ -72,9 +82,95 @@ export function ChatListColumn({ selected }: { selected: string | null }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selected]);
 
+  const peekChat = peekId ? (visible.find((c) => c.id === peekId) ?? list?.chats.find((c) => c.id === peekId) ?? null) : null;
+  const [peekTip, setPeekTip] = useState(false);
+  const hasChats = !!list && list.chats.some((c) => !c.request);
+  useEffect(() => {
+    if (peekTipSeen() || !hasChats) return;
+    const t = window.setTimeout(() => setPeekTip(true), 700);
+    return () => clearTimeout(t);
+  }, [hasChats]);
+  const dismissPeekTip = useCallback(() => {
+    markPeekTipSeen();
+    setPeekTip(false);
+  }, []);
+  const startPeek = useCallback((id: string) => {
+    markPeekTipSeen();
+    setPeekTip(false);
+    setPeekId(id);
+  }, []);
+  const closePeek = useCallback(() => setPeekId(null), []);
+  const togglePeek = useCallback(
+    (id: string) => {
+      setPeekId((cur) => {
+        if (cur === id) return null;
+        markPeekTipSeen();
+        setPeekTip(false);
+        return id;
+      });
+    },
+    [],
+  );
+  const openPeeked = useCallback(() => {
+    setPeekId((id) => {
+      if (id) openChat(id, { focusComposer: false });
+      return null;
+    });
+  }, []);
+
+  // Space while a row is hovered peeks even if the list is not focused
+  // (e.g. composer has focus) — skip when typing in a field.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.repeat || e.altKey || e.metaKey || e.ctrlKey || e.code !== "Space") return;
+      const t = e.target as HTMLElement | null;
+      if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable)) return;
+      if (peekId) return;
+      const id = hoveredId.current;
+      if (!id) return;
+      e.preventDefault();
+      startPeek(id);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [peekId, startPeek]);
+
   const onKey = (e: React.KeyboardEvent) => {
     // Plain ↑/↓ switch chats while the list has focus; Return moves to the composer.
+    // Space toggles a peek that does not mark the chat as read.
     if (e.altKey || e.metaKey || e.ctrlKey || e.target !== e.currentTarget) return;
+    if (e.key === " " || e.code === "Space") {
+      e.preventDefault();
+      if (e.repeat) return;
+      if (peekId) {
+        setPeekId(null);
+        return;
+      }
+      const id = hoveredId.current ?? selected ?? visible[0]?.id ?? null;
+      if (id) startPeek(id);
+      return;
+    }
+    if (peekId) {
+      if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+        e.preventDefault();
+        const i = visible.findIndex((c) => c.id === peekId);
+        const j = i < 0 ? (e.key === "ArrowDown" ? 0 : visible.length - 1) : i + (e.key === "ArrowDown" ? 1 : -1);
+        const next = visible[j];
+        if (next) setPeekId(next.id);
+        return;
+      }
+      if (e.key === "Enter") {
+        e.preventDefault();
+        openChat(peekId, { focusComposer: false });
+        setPeekId(null);
+        return;
+      }
+      if (e.key === "Escape") {
+        e.preventDefault();
+        setPeekId(null);
+        return;
+      }
+    }
     if (e.key === "ArrowDown" || e.key === "ArrowUp") {
       e.preventDefault();
       const i = visible.findIndex((c) => c.id === selected);
@@ -87,7 +183,7 @@ export function ChatListColumn({ selected }: { selected: string | null }) {
   };
 
   return (
-    <div className="flex h-full flex-col bg-list">
+    <div ref={column} className="flex h-full flex-col bg-list">
       <Tabs />
       <div className="flex items-center gap-2 px-4 pt-[8px] pb-2">
         <label className="flex h-[35px] flex-1 items-center gap-2 rounded-[6px] bg-field px-2.5 text-secondary">
@@ -193,10 +289,15 @@ export function ChatListColumn({ selected }: { selected: string | null }) {
                       <ChatRow
                         chat={row.chat}
                         selected={row.chat.id === selected}
+                        peeking={row.chat.id === peekId}
                         pinned={pinned.has(row.chat.id)}
                         folder={row.folder}
                         scroller={scroller}
                         draggable={grouped}
+                        onHover={(id) => {
+                          hoveredId.current = id;
+                        }}
+                        onPeek={() => togglePeek(row.chat.id)}
                       />
                     )}
                   </div>
@@ -205,6 +306,7 @@ export function ChatListColumn({ selected }: { selected: string | null }) {
             </div>
           )}
         </div>
+        <PeekCoachTip open={peekTip && !peekId} onDismiss={dismissPeekTip} />
         {/* Pinned to the list's bottom-right corner, however short the list. */}
         <button
           className="absolute right-4 bottom-4 grid h-13 w-13 place-items-center rounded-full bg-line-green text-white shadow-[0_3px_12px_rgba(0,0,0,0.25)] transition-transform duration-150 ease-out active:scale-[0.96]"
@@ -217,7 +319,41 @@ export function ChatListColumn({ selected }: { selected: string | null }) {
       <UpdateBar />
       <StatusBar />
       <DragGhost list={list} />
+      {peekChat && <ChatPeek chat={peekChat} anchor={column.current} onClose={closePeek} onOpen={openPeeked} />}
     </div>
+  );
+}
+
+/** One-time tip so Space-peek is discoverable; gone after dismiss or first peek. */
+function PeekCoachTip({ open, onDismiss }: { open: boolean; onDismiss: () => void }) {
+  const reduce = useReducedMotion();
+  return (
+    <AnimatePresence>
+      {open && (
+        <motion.div
+          role="status"
+          initial={reduce ? { opacity: 0 } : { opacity: 0, y: 8, scale: 0.98 }}
+          animate={{ opacity: 1, y: 0, scale: 1 }}
+          exit={reduce ? { opacity: 0 } : { opacity: 0, y: 4, scale: 0.98, transition: { duration: 0.12 } }}
+          transition={{ duration: 0.22, ease: [0.32, 0.72, 0, 1] }}
+          className="absolute right-3 bottom-20 left-3 z-20 rounded-[12px] bg-popover px-3.5 py-3 text-primary shadow-[0_10px_28px_rgba(0,0,0,0.28)] ring-1 ring-black/10"
+        >
+          <div className="text-[13px] font-semibold leading-snug">แอบดูแชทโดยยังไม่อ่าน</div>
+          <p className="mt-1 text-[12px] leading-snug text-secondary">
+            ใช้ได้ทั้งแชทส่วนตัวและกลุ่ม — วางเมาส์บนแชทแล้วกด{" "}
+            <kbd className="rounded border border-separator bg-field px-1.5 py-0.5 font-sans text-[11px] font-semibold text-primary">Space</kbd>{" "}
+            หรือปุ่มตา
+          </p>
+          <button
+            type="button"
+            onClick={onDismiss}
+            className="mt-2.5 h-7 rounded-md bg-line-green px-2.5 text-[12px] font-medium text-white transition-transform duration-150 ease-out active:scale-[0.97]"
+          >
+            เข้าใจแล้ว
+          </button>
+        </motion.div>
+      )}
+    </AnimatePresence>
   );
 }
 
@@ -534,19 +670,26 @@ function DragGhost({ list }: { list: ChatList | undefined }) {
 export function ChatRow({
   chat,
   selected,
+  peeking = false,
   pinned,
   folder = null,
   scroller,
   draggable = false,
+  onHover,
+  onPeek,
 }: {
   chat: Chat;
   selected: boolean;
+  /** Highlighted while Space-peek is open on this row. */
+  peeking?: boolean;
   pinned: boolean;
   /** The open folder this row is listed in. */
   folder?: string | null;
   scroller?: React.RefObject<HTMLDivElement | null>;
   /** Drag onto another chat to make a folder ("ทั้งหมด" tab). */
   draggable?: boolean;
+  onHover?: (id: string | null) => void;
+  onPeek?: () => void;
 }) {
   const [hover, setHover] = useState(false);
   const query = useUi((s) => s.listQuery);
@@ -555,17 +698,33 @@ export function ChatRow({
   const merge = useChatDrag((d) => d?.target?.kind === "merge" && d.target.chatId === chat.id);
   const intoFolder = useChatDrag((d) => !!folder && d?.target?.kind === "folder" && d.target.id === folder);
   return (
-    <Ctx menu={<ChatActions chat={chat} />} className="block">
+    <Ctx menu={<ChatActions chat={chat} onPeek={onPeek} />} className="block">
       <div
         data-drop="chat"
         data-id={chat.id}
         data-folder={folder ?? undefined}
-        onMouseEnter={() => setHover(true)}
-        onMouseLeave={() => setHover(false)}
+        onMouseEnter={() => {
+          setHover(true);
+          onHover?.(chat.id);
+        }}
+        onMouseLeave={() => {
+          setHover(false);
+          onHover?.(null);
+        }}
         onPointerDown={draggable ? (e) => pressChat(e, chat, folder, scroller?.current ?? null) : undefined}
         onClick={() => !clickEndsDrag() && openChat(chat.id)}
-        className={`flex h-[72px] cursor-default items-center gap-3 px-4 transition-opacity duration-150 ease-out active:bg-row-selected ${folder ? "pl-7" : ""} ${dragged ? "opacity-40" : ""} ${
-          merge || intoFolder ? "bg-line-green/12" : selected ? "bg-row-selected" : hover ? "bg-row-hover" : folder ? "bg-row-hover/60" : ""
+        className={`flex h-[72px] cursor-default items-center gap-3 px-4 transition-[opacity,background-color] duration-200 ease-[cubic-bezier(0.32,0.72,0,1)] motion-reduce:transition-none active:bg-row-selected ${folder ? "pl-7" : ""} ${dragged ? "opacity-40" : ""} ${
+          merge || intoFolder
+            ? "bg-line-green/12"
+            : peeking
+              ? "bg-line-green/10"
+              : selected
+                ? "bg-row-selected"
+                : hover
+                  ? "bg-row-hover"
+                  : folder
+                    ? "bg-row-hover/60"
+                    : ""
         }`}
       >
         {/* The chat it would share a folder with grows a little, as in Discord. */}
@@ -619,6 +778,24 @@ export function ChatRow({
             })()}
           </div>
         </div>
+        {onPeek && (hover || peeking) && (
+          <button
+            type="button"
+            title="แอบดู (Space)"
+            aria-label="แอบดูโดยยังไม่อ่าน"
+            aria-pressed={peeking}
+            className={`grid h-8 w-8 shrink-0 place-items-center rounded-full transition-colors duration-150 ${
+              peeking ? "bg-line-green/20 text-line-green" : "bg-field text-secondary hover:bg-separator hover:text-primary"
+            }`}
+            onClick={(e) => {
+              e.stopPropagation();
+              onPeek();
+            }}
+            onPointerDown={(e) => e.stopPropagation()}
+          >
+            <PeekIcon size={16} />
+          </button>
+        )}
       </div>
     </Ctx>
   );

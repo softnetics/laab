@@ -346,3 +346,10 @@ export const RepeatIcon = (p: P) => (
     <path d="M20 13v1.5a3.5 3.5 0 0 1-3.5 3.5H5m0 0 3 3m-3-3 3-3" />
   </svg>
 );
+/** Peek a chat without marking it read. */
+export const PeekIcon = (p: P) => (
+  <svg {...outline(p)}>
+    <path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12Z" />
+    <circle cx="12" cy="12" r="3" />
+  </svg>
+);

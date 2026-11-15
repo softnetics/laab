@@ -66,13 +66,19 @@ function confirmDelete(chat: Chat) {
 }
 
 /** Right-click on a chat row, in LINE for Mac's order: เปิดในหน้าต่างใหม่ ─
- *  ปักหมุด, ซ่อน, ลบ ─ ปิดแจ้งเตือน, then LAAB's folders. */
-export function ChatActions({ chat }: { chat: Chat }) {
+ *  แอบดู ─ ปักหมุด, ซ่อน, ลบ ─ ปิดแจ้งเตือน, then LAAB's folders. */
+export function ChatActions({ chat, onPeek }: { chat: Chat; onPeek?: () => void }) {
   const list = useChatList();
   const pinned = list?.pins.main?.includes(chat.id) ?? false;
   return (
     <>
       <Item onClick={() => run(api.openChatWindow(chat.id, chat.name))}>เปิดในหน้าต่างใหม่</Item>
+      {onPeek && (
+        <Item onClick={onPeek}>
+          แอบดู
+          <span className="ml-auto text-[12px] opacity-50">Space</span>
+        </Item>
+      )}
       <Separator />
       <Item onClick={() => run(api.setPinned(chat.id, "main", !pinned))}>{pinned ? "เลิกปักหมุด" : "ปักหมุด"}</Item>
       <Item onClick={() => run(api.hideChat(chat.id))}>ซ่อน</Item>
