@@ -72,6 +72,7 @@ To build the `.app`, run `./scripts/build-desktop.sh` (it takes the version from
 - In-chat search with ⌘F, ⌘G and ⇧⌘G, with highlighted results
 - A keyboard-driven mention picker; mentions show in blue in the composer and in bubbles, @You / @All are bold when someone mentions you, and Backspace deletes a whole tag
 - ⌥↑ and ⌥↓ switch chats, and so do ↑ and ↓ when the list has focus; a chat loads after you've rested on it for 150 ms
+- Space on the chat list toggles a peek without marking the chat read (also via right-click → แอบดู); scroll inside, Enter opens it for real, Space or Esc closes
 - Rows for unsent messages; silent unsends stay hidden, and the cached files of unsent messages are deleted
 - Reactions: pick, change, remove, and see who reacted
 - The smile button opens stickers and an อิโมจิ (Emoji) tab with 211 basic LINE emoji; click one to send it immediately as a standalone native LINE emoji. The emoji tab also works in demo mode.
