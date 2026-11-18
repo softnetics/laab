@@ -8,7 +8,6 @@ import { openChat } from "../lib/nav";
 import { listLabel } from "../lib/time";
 import type { Chat, ChatList, Workspace } from "../lib/types";
 import { type ChatFilter, notice, setUi, ui, useUi } from "../lib/ui";
-import { installAndRestart, useReadyVersion } from "../lib/updater";
 import { Avatar } from "./Avatar";
 import { ChatActions } from "./ChatActions";
 import {
@@ -24,6 +23,7 @@ import {
   SortIcon,
 } from "./Icons";
 import { Badge, Ctx, CtxItem, itemClass, popupClass, Separator, Spinner } from "./kit";
+import { UpdateBar } from "./UpdateBar";
 
 export function ChatListColumn({ selected }: { selected: string | null }) {
   const list = useChatList();
@@ -621,31 +621,6 @@ export function ChatRow({
         </div>
       </div>
     </Ctx>
-  );
-}
-
-function UpdateBar() {
-  const version = useReadyVersion();
-  const [busy, setBusy] = useState(false);
-  if (!version) return null;
-  const restart = () => {
-    setBusy(true);
-    installAndRestart().catch((e) => {
-      setBusy(false);
-      notice(errorText(e));
-    });
-  };
-  return (
-    <div className="flex items-center gap-2 border-t border-separator bg-rail px-3 py-1.5 text-[12px] motion-safe:animate-row-in">
-      <span className="min-w-0 flex-1 truncate text-primary">LAAB {version} พร้อมติดตั้งแล้ว</span>
-      <button
-        className="h-6 shrink-0 rounded-md bg-line-green px-2.5 text-[12px] font-medium text-white transition-transform duration-150 ease-out active:scale-[0.96] disabled:opacity-50"
-        disabled={busy}
-        onClick={restart}
-      >
-        {busy ? "กำลังติดตั้ง…" : "รีสตาร์ต"}
-      </button>
-    </div>
   );
 }
 

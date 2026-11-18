@@ -1,10 +1,12 @@
 import { motion } from "motion/react";
 import QRCode from "qrcode";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { api, errorText, useSession } from "../lib/api";
 import { notice } from "../lib/ui";
+import { installAndRestart, useReadyVersion } from "../lib/updater";
 import { BubbleIcon } from "./Icons";
 import { Spinner } from "./kit";
+import { UpdateBar } from "./UpdateBar";
 
 /** Email or phone number and password. LINE asks the phone to confirm with
  *  a PIN, shown below like the QR flow's. */
@@ -69,8 +71,19 @@ export function LoginView() {
     QRCode.toDataURL(s.qrUrl, { errorCorrectionLevel: "M", margin: 1, width: 440 }).then(setQr);
   }, [s?.qrUrl]);
   const busy = s?.state === "logging_in" || s?.state === "starting";
+  // Signed out, nothing is lost by restarting: install a downloaded update
+  // by itself, in case it is what fixes signing in. Not while a QR code or
+  // PIN is up. Once per version; the bar below can try again.
+  const version = useReadyVersion();
+  const tried = useRef<string | null>(null);
+  const idle = s?.state === "signed_out" && !s.qrUrl && !s.pin;
+  useEffect(() => {
+    if (!version || !idle || tried.current === version) return;
+    tried.current = version;
+    installAndRestart().catch(() => {});
+  }, [version, idle]);
   return (
-    <div className="flex h-full flex-col items-center justify-center gap-4 px-8 text-center">
+    <div className="relative flex h-full flex-col items-center justify-center gap-4 px-8 text-center">
       <BubbleIcon size={52} className="text-line-green" />
       <h1 className="text-[22px] font-bold">เข้าสู่ระบบ LINE</h1>
       <p className="text-[13px] text-secondary">{s?.status}</p>
@@ -119,6 +132,10 @@ export function LoginView() {
       <p className="mt-6 max-w-sm text-[11px] leading-relaxed text-secondary">
         ไคลเอนต์นี้ใช้ line-rs (LINEJS เวอร์ชัน Rust) ซึ่งไม่ใช่ของ LINE อย่างเป็นทางการ การใช้งานอาจขัดกับเงื่อนไขบริการของ LINE
       </p>
+      {/* A failed sign-in may be fixed by an update, so offer it here too. */}
+      <div className="absolute inset-x-0 bottom-0">
+        <UpdateBar />
+      </div>
     </div>
   );
 }
