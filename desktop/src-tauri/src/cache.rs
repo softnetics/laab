@@ -153,9 +153,47 @@ pub fn plain_copy(path: &Path) -> Result<PathBuf> {
     Ok(dest)
 }
 
-/// A plain copy in Downloads (made unique), for "show in Finder".
-pub fn export_to_downloads(path: &Path) -> Result<PathBuf> {
-    let dir = dirs::download_dir().ok_or_else(|| anyhow!("ไม่พบโฟลเดอร์ดาวน์โหลด"))?;
+/// kv: absolute path of the user's download folder, or absent for the system one.
+const DOWNLOAD_DIR: &str = "download-dir";
+
+/// The folder "บันทึก" and "แสดงใน Finder" write into: a saved custom path
+/// when it still exists, else the system Downloads folder.
+pub fn download_dir(state: &AppState) -> Result<PathBuf> {
+    if let Some(p) = custom_download_dir(state) {
+        return Ok(p);
+    }
+    dirs::download_dir().ok_or_else(|| anyhow!("ไม่พบโฟลเดอร์ดาวน์โหลด"))
+}
+
+/// The custom path when set and still a directory.
+pub fn custom_download_dir(state: &AppState) -> Option<PathBuf> {
+    state
+        .store()
+        .get_kv(DOWNLOAD_DIR)
+        .ok()
+        .flatten()
+        .map(PathBuf::from)
+        .filter(|p| p.is_dir())
+}
+
+/// Set a custom download folder, or `None` to use the system Downloads again.
+pub fn set_download_dir(state: &AppState, dir: Option<&str>) -> Result<()> {
+    match dir.filter(|p| !p.is_empty()) {
+        None => state.store().delete_kv(DOWNLOAD_DIR)?,
+        Some(p) => {
+            let path = PathBuf::from(p);
+            if !path.is_dir() {
+                return Err(anyhow!("ไม่ใช่โฟลเดอร์"));
+            }
+            state.store().set_kv(DOWNLOAD_DIR, p)?;
+        }
+    }
+    Ok(())
+}
+
+/// A plain copy in the download folder (made unique), for "show in Finder".
+pub fn export_to_downloads(state: &AppState, path: &Path) -> Result<PathBuf> {
+    let dir = download_dir(state)?;
     let dest = unique(&dir.join(display_name(path)?));
     vault::export(path, &dest)?;
     Ok(dest)

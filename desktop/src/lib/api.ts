@@ -13,6 +13,7 @@ import type {
   AnalyticsStatus,
   Bookmark,
   McpActivity,
+  DownloadDirInfo,
   McpSettings,
   McpSetup,
   AlbumPhoto,
@@ -238,6 +239,9 @@ export const api = {
   revealPath: (path: string) => invoke<void>("reveal_path", { path }),
   cacheSize: () => invoke<number>("cache_size"),
   clearCache: () => invoke<void>("clear_cache"),
+  downloadDir: () => invoke<DownloadDirInfo>("download_dir"),
+  /** `null` clears a custom folder and uses the system Downloads again. */
+  setDownloadDir: (path: string | null) => invoke<void>("set_download_dir", { path }),
   mcpSettings: () => invoke<McpSettings>("mcp_settings"),
   setMcpSettings: (settings: McpSettings) => invoke<void>("set_mcp_settings", { settings }),
   mcpActivity: () => invoke<McpActivity[]>("mcp_activity"),

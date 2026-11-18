@@ -42,7 +42,9 @@ export interface ComposerHandle {
   /** Close the mention picker; false if it was not open. */
   dismissPicker: () => boolean;
   /** Send files (dropped on the chat), with Retry for those that fail. */
-  sendFiles: (paths: string[]) => Promise<void>;
+  sendFiles: (paths: string[]) => Promise<boolean>;
+  /** Send attachments in the tray / pending images, then any text. */
+  send: (silent?: boolean) => void;
 }
 
 /** The message field. A transparent textarea sits over a mirror that colours
@@ -63,8 +65,34 @@ export const Composer = forwardRef<
     onStep?: (step: 1 | -1) => void;
     /** Left of the sticker button — OA rich-menu chip, etc. */
     toolbarExtra?: ReactNode;
+    /** Dropped files waiting in the tray; Return sends them with any text. */
+    pendingFilePaths?: string[];
+    onConsumePendingFiles?: () => void;
+    /** Parent upload queue / spinner; defaults to sending through this composer. */
+    uploadPendingFiles?: (paths: string[]) => Promise<boolean>;
+    /** So ChatView can hide the DropTray while @-mentioning. */
+    onMentionPickerChange?: (open: boolean) => void;
   }
->(function Composer({ chatId, group, disabled, members, loadMembers, stickerOpen, onToggleStickers, name, picture, onStep, toolbarExtra }, ref) {
+>(function Composer(
+  {
+    chatId,
+    group,
+    disabled,
+    members,
+    loadMembers,
+    stickerOpen,
+    onToggleStickers,
+    name,
+    picture,
+    onStep,
+    toolbarExtra,
+    pendingFilePaths = [],
+    onConsumePendingFiles,
+    uploadPendingFiles,
+    onMentionPickerChange,
+  },
+  ref,
+) {
   const area = useRef<HTMLTextAreaElement>(null);
   const mirror = useRef<HTMLDivElement>(null);
   const [text, setText] = useState("");
@@ -199,6 +227,10 @@ export const Composer = forwardRef<
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pickerOpen]);
+  useEffect(() => {
+    onMentionPickerChange?.(pickerOpen);
+    return () => onMentionPickerChange?.(false);
+  }, [pickerOpen, onMentionPickerChange]);
   const candidates = useMemo(() => (query == null ? [] : matching([ALL_MEMBER, ...(members ?? [])], query)), [members, query]);
 
   useImperativeHandle(ref, () => ({
@@ -209,6 +241,9 @@ export const Composer = forwardRef<
       return true;
     },
     sendFiles: (paths) => sendFiles(paths),
+    send: (silent) => {
+      void send(silent);
+    },
   }));
   useEffect(() => (pickerOpen ? pushDismiss(() => setDismissedAt(`${caret}:${query}`)) : undefined), [pickerOpen, caret, query]);
 
@@ -237,13 +272,16 @@ export const Composer = forwardRef<
   // a way of sending one message, not a mode, so it can't be mistaken for
   // muting the chat.
   const send = async (silent = false) => {
-    if (pendingImages.length && !sending && !disabled) {
+    const filePaths = pendingFilePaths;
+    if ((pendingImages.length || filePaths.length) && !sending && !disabled) {
       const images = pendingImages;
       const caption = text.replace(/\s+$/, "");
       const captionMentions = targets(caption, mentions);
+      const keptMentions = mentions;
       setSending(true);
       setText("");
       setMentions([]);
+      if (filePaths.length) onConsumePendingFiles?.();
       try {
         const sent = new Set<number>();
         let error: unknown = null;
@@ -260,6 +298,11 @@ export const Composer = forwardRef<
         // Drop only the ones that went out; keep anything pasted while sending.
         setPendingImages((now) => now.filter((i) => !sent.has(i.id)));
         if (error) throw error;
+        if (filePaths.length && !(await (uploadPendingFiles ?? sendFiles)(filePaths))) {
+          setText(caption);
+          setMentions(keptMentions);
+          return;
+        }
         if (caption.trim()) {
           if (mode?.kind === "edit") await api.editMessage(chatId, mode.message.id, caption);
           else await api.sendText(chatId, caption, captionMentions, mode?.kind === "reply" ? mode.message.id : null, null, silent);
@@ -268,7 +311,7 @@ export const Composer = forwardRef<
         setFailure(null);
       } catch (e) {
         setText(caption);
-        setMentions(mentions);
+        setMentions(keptMentions);
         setFailure({ title: "ส่งรูปหรือข้อความไม่สำเร็จ", detail: errorText(e), retry: () => sendLatest.current(silent) });
       } finally {
         setSending(false);
@@ -314,20 +357,30 @@ export const Composer = forwardRef<
     sendFiles(paths);
   };
   // Files go one by one and a failure doesn't stop the rest; Retry sends
-  // only the ones that failed.
-  const sendFiles = (paths: string[]) =>
-    api.sendFiles(chatId, paths).then(
-      (failed) => {
-        if (!failed.length) return setFailure(null);
-        const again = failed.map((f) => f.path);
-        setFailure({
-          title: paths.length > 1 ? `ส่งแล้ว ${paths.length - failed.length} จาก ${paths.length} ไฟล์` : "ยังไม่ได้ส่งไฟล์นี้",
-          detail: failed.map((f) => f.error).join("\n"),
-          retry: () => sendFiles(again),
-        });
-      },
-      (e) => setFailure({ title: paths.length > 1 ? "ยังไม่ได้ส่งไฟล์เหล่านี้" : "ยังไม่ได้ส่งไฟล์นี้", detail: errorText(e), retry: () => sendFiles(paths) }),
-    );
+  // only the ones that failed. Resolves true when every file went out.
+  const sendFiles = async (paths: string[]) => {
+    try {
+      const failed = await api.sendFiles(chatId, paths);
+      if (!failed.length) {
+        setFailure(null);
+        return true;
+      }
+      const again = failed.map((f) => f.path);
+      setFailure({
+        title: paths.length > 1 ? `ส่งแล้ว ${paths.length - failed.length} จาก ${paths.length} ไฟล์` : "ยังไม่ได้ส่งไฟล์นี้",
+        detail: failed.map((f) => f.error).join("\n"),
+        retry: () => void sendFiles(again),
+      });
+      return false;
+    } catch (e) {
+      setFailure({
+        title: paths.length > 1 ? "ยังไม่ได้ส่งไฟล์เหล่านี้" : "ยังไม่ได้ส่งไฟล์นี้",
+        detail: errorText(e),
+        retry: () => void sendFiles(paths),
+      });
+      return false;
+    }
+  };
   useEffect(() => (failure ? pushDismiss(() => setFailure(null)) : undefined), [failure]);
 
   const onPaste = (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
@@ -362,7 +415,12 @@ export const Composer = forwardRef<
     if (e.nativeEvent.isComposing || e.keyCode === 229) return;
     const plain = !e.metaKey && !e.ctrlKey && !e.altKey && !e.shiftKey;
     const silent = e.altKey && !e.metaKey && !e.ctrlKey && !e.shiftKey;
-    if (pendingImages.length && !(pickerOpen && candidates.length) && e.key === "Enter" && (plain || silent || (e.metaKey && !e.shiftKey))) {
+    if (
+      (pendingImages.length || pendingFilePaths.length) &&
+      !(pickerOpen && candidates.length) &&
+      e.key === "Enter" &&
+      (plain || silent || (e.metaKey && !e.shiftKey))
+    ) {
       e.preventDefault();
       void send(silent);
       return;
@@ -437,8 +495,8 @@ export const Composer = forwardRef<
   return (
     <div className="relative border-t border-separator bg-chat px-[14px] pt-3 pb-1.5" onClick={() => area.current?.focus()}>
       {pickerOpen && (
-        // Opens while typing "@": no animation.
-        <div className="absolute right-4 bottom-full left-4 mb-1 overflow-hidden rounded-xl bg-popover shadow-[0_8px_28px_rgba(0,0,0,0.22)] ring-1 ring-black/10">
+        // Opens while typing "@": no animation. Above the DropTray (z-30).
+        <div className="absolute right-4 bottom-full left-4 z-40 mb-1 overflow-hidden rounded-xl bg-popover shadow-[0_8px_28px_rgba(0,0,0,0.22)] ring-1 ring-black/10">
           {members === undefined ? (
             <div className="px-4 py-3 text-[13px] text-secondary">กำลังโหลดสมาชิก…</div>
           ) : candidates.length === 0 ? (
@@ -577,7 +635,7 @@ export const Composer = forwardRef<
         <span
           aria-hidden
           className={`mr-2 flex min-w-0 items-center gap-1.5 overflow-hidden text-[11px] whitespace-nowrap text-secondary transition-opacity duration-150 ${
-            (text.trim() || pendingImages.length) && mode?.kind !== "edit" ? "opacity-100" : "opacity-0"
+            (text.trim() || pendingImages.length || pendingFilePaths.length) && mode?.kind !== "edit" ? "opacity-100" : "opacity-0"
           }`}
         >
           <kbd className={kbd}>⏎</kbd> ส่ง

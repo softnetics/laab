@@ -1510,12 +1510,12 @@ pub fn open_path(state: S<'_>, path: String) -> R<()> {
 }
 
 /// Show an attachment in Finder. An encrypted cache file means nothing in
-/// Finder, so a plain copy is saved to Downloads and shown there.
+/// Finder, so a plain copy is saved to the download folder and shown there.
 #[tauri::command]
 pub fn reveal_path(state: S<'_>, path: String) -> R<()> {
     let p = inside_data(&state, &path)?;
     let shown = if crate::vault::is_encrypted(&p) {
-        crate::cache::export_to_downloads(&p).map_err(err)?
+        crate::cache::export_to_downloads(&state, &p).map_err(err)?
     } else {
         p
     };
@@ -1531,6 +1531,31 @@ pub fn cache_size(state: S<'_>) -> u64 {
 #[tauri::command]
 pub fn clear_cache(state: S<'_>) -> R<()> {
     crate::cache::clear(&state).map_err(err)
+}
+
+/// Where "บันทึก" and "แสดงใน Finder" write: resolved path, and whether it
+/// is a folder the user chose (vs the system Downloads).
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DownloadDirInfo {
+    pub path: String,
+    pub custom: bool,
+}
+
+#[tauri::command]
+pub fn download_dir(state: S<'_>) -> R<DownloadDirInfo> {
+    let custom = crate::cache::custom_download_dir(&state).is_some();
+    let path = crate::cache::download_dir(&state).map_err(err)?;
+    Ok(DownloadDirInfo {
+        path: path.to_string_lossy().into_owned(),
+        custom,
+    })
+}
+
+/// `path` None clears the custom folder and uses the system Downloads again.
+#[tauri::command]
+pub fn set_download_dir(state: S<'_>, path: Option<String>) -> R<()> {
+    crate::cache::set_download_dir(&state, path.as_deref()).map_err(err)
 }
 
 #[derive(Serialize)]
@@ -2137,7 +2162,7 @@ pub fn save_text(path: String, text: String) -> R<()> {
     std::fs::write(&path, text).map_err(err)
 }
 
-/// Save an attachment: to Downloads (`dest` empty) or to the chosen path.
+/// Save an attachment: to the download folder (`dest` empty) or to the chosen path.
 #[tauri::command]
 pub async fn save_attachment(
     state: S<'_>,
@@ -2151,8 +2176,8 @@ pub async fn save_attachment(
         Some(d) => std::path::PathBuf::from(d),
         None => {
             let name = crate::media::save_name(m.file_name.as_deref(), &message_id, &src);
-            dirs::download_dir()
-                .ok_or("ไม่พบโฟลเดอร์ดาวน์โหลด")?
+            crate::cache::download_dir(&s)
+                .map_err(err)?
                 .join(name)
         }
     };

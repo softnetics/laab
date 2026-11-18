@@ -314,6 +314,8 @@ pub fn run() {
             commands::reveal_path,
             commands::cache_size,
             commands::clear_cache,
+            commands::download_dir,
+            commands::set_download_dir,
             commands::announcements,
             commands::rich_menu,
             commands::official_badge,

@@ -1,5 +1,6 @@
 import { Menu } from "@base-ui/react/menu";
 import { useQuery } from "@tanstack/react-query";
+import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { useState } from "react";
 import { setAnalytics } from "../lib/analytics";
 import { api, errorText, q, queryClient, useChatList, useSession } from "../lib/api";
@@ -38,6 +39,9 @@ function RailButton({
 
 const megabytes = (n: number) => (n >= 1024 ** 3 ? `${(n / 1024 ** 3).toFixed(1)} GB` : `${Math.round(n / 1024 ** 2)} MB`);
 
+/** Last path segment, for the Rail menu's narrow width. */
+const folderLabel = (path: string) => path.replace(/\/+$/, "").split("/").pop() || path;
+
 /** LINE for Mac's left bar, without what LAAB does not have (VOOM,
  *  OpenChat, LINE services, screenshots). */
 export function Rail() {
@@ -52,6 +56,17 @@ export function Rail() {
   const [menuOpen, setMenuOpen] = useState(false);
   const { data: analytics } = useQuery(q.analytics);
   const { data: cacheBytes } = useQuery({ queryKey: ["cache-size"], queryFn: api.cacheSize, enabled: menuOpen, staleTime: 0 });
+  const { data: downloadDir } = useQuery({ queryKey: ["download-dir"], queryFn: api.downloadDir, enabled: menuOpen, staleTime: 0 });
+  const pickDownloadDir = () =>
+    openDialog({ directory: true, title: "เลือกโฟลเดอร์ดาวน์โหลด" })
+      .then((dir) => (typeof dir === "string" ? api.setDownloadDir(dir) : undefined))
+      .then(() => queryClient.invalidateQueries({ queryKey: ["download-dir"] }))
+      .catch((e) => notice(errorText(e)));
+  const resetDownloadDir = () =>
+    api
+      .setDownloadDir(null)
+      .then(() => queryClient.invalidateQueries({ queryKey: ["download-dir"] }))
+      .catch((e) => notice(errorText(e)));
   const clearCache = () =>
     setUi({
       confirm: {
@@ -131,6 +146,15 @@ export function Rail() {
                 ล้าง cache
                 {cacheBytes != null && <span className="ml-auto text-secondary">{megabytes(cacheBytes)}</span>}
               </Menu.Item>
+              <Menu.Item className={itemClass} onClick={pickDownloadDir} title={downloadDir?.path}>
+                โฟลเดอร์ดาวน์โหลด…
+                {downloadDir && <span className="ml-auto max-w-[7rem] truncate text-secondary">{folderLabel(downloadDir.path)}</span>}
+              </Menu.Item>
+              {downloadDir?.custom && (
+                <Menu.Item className={itemClass} onClick={resetDownloadDir}>
+                  ใช้โฟลเดอร์ดาวน์โหลดของระบบ
+                </Menu.Item>
+              )}
               <Menu.Item className={itemClass} onClick={() => checkNow(notice)}>
                 ตรวจหาอัปเดต
               </Menu.Item>

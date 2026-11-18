@@ -17,15 +17,19 @@ export function formatSize(bytes: number) {
 
 const totalSize = (files: DroppedFile[]) => formatSize(files.reduce((n, f) => n + f.size, 0));
 
-/** A long name keeps its start and its extension: "สรุปรายงาน…ครั้งที่ 4).pdf". */
-function MiddleName({ name, className = "" }: { name: string; className?: string }) {
+/** Start truncates; the extension stays. Avoids mid-word tails like "…bility.xlsx". */
+export function splitFileName(name: string): { head: string; tail: string } {
   const dot = name.lastIndexOf(".");
-  const tail = dot > 0 ? name.slice(Math.max(dot - 6, 0)) : name.slice(-6);
-  const head = name.slice(0, name.length - tail.length);
+  if (dot <= 0) return { head: name, tail: "" };
+  return { head: name.slice(0, dot), tail: name.slice(dot) };
+}
+
+function MiddleName({ name, className = "" }: { name: string; className?: string }) {
+  const { head, tail } = splitFileName(name);
   return (
     <span className={`flex min-w-0 ${className}`} title={name}>
       <span className="truncate">{head}</span>
-      <span className="shrink-0 whitespace-pre">{tail}</span>
+      <span className="shrink-0">{tail}</span>
     </span>
   );
 }
@@ -97,28 +101,40 @@ export function DropDock({ count, files }: { count: number | null; files: Droppe
 }
 
 /** Dropped files waiting above the message box until they are sent or let
- *  go, so a file dropped on the wrong chat is not sent. Return sends; the
- *  chat's Escape handling lets them go. */
+ *  go, so a file dropped on the wrong chat is not sent. Return (or the
+ *  send button) sends them with any text in the box; Escape lets them go. */
 export function DropTray({
   files,
   onSend,
   onCancel,
   onRemove,
+  /** Hide while the @-mention picker is open so the tray does not cover it. */
+  obscured = false,
 }: {
   files: DroppedFile[];
   onSend: () => void;
   onCancel: () => void;
   onRemove: (path: string) => void;
+  obscured?: boolean;
 }) {
   const reduce = useReducedMotion();
   const send = useRef<HTMLButtonElement>(null);
   const open = files.length > 0;
+  // Focus Send when files first land — not again after the tray was hidden
+  // for the @-mention picker, or the caret leaves the message box.
+  const focusedFor = useRef(false);
   useEffect(() => {
-    if (open) send.current?.focus();
-  }, [open]);
+    if (!open) {
+      focusedFor.current = false;
+      return;
+    }
+    if (obscured || focusedFor.current) return;
+    focusedFor.current = true;
+    send.current?.focus();
+  }, [open, obscured]);
   return (
     <AnimatePresence>
-      {open && (
+      {open && !obscured && (
         <motion.section
           key="tray"
           aria-label="ไฟล์ที่จะส่ง"

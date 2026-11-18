@@ -120,9 +120,9 @@ fn defs() -> Vec<Def> {
             "limit": n("At most this many (default 50)."),
         }), &["chat_id", "kind"], true, false),
         d("view_image", Read, "View a photo", "Returns a photo message (or a video's preview) as an image you can look at.", json!({ "message_id": s(MSG) }), &["message_id"], true, false),
-        d("save_attachment", Read, "Save an attachment", "Save a message's photo, video, audio or file to Downloads (or a folder you name) and return its path, e.g. to read a PDF.", json!({
+        d("save_attachment", Read, "Save an attachment", "Save a message's photo, video, audio or file to the user's download folder (or a folder you name) and return its path, e.g. to read a PDF.", json!({
             "message_id": s(MSG),
-            "directory": s("Folder to save into (default Downloads). It must exist."),
+            "directory": s("Folder to save into (default: the user's download folder in LAAB). It must exist."),
         }), &["message_id"], false, false),
         d("list_stickers", Read, "List stickers", "Sticker packs the user owns, for send_sticker.", json!({ "limit": n("At most this many packs (default 20).") }), &[], true, false),
         d("translate", Read, "Translate", "Translate text with LINE's translator.", json!({
@@ -188,7 +188,7 @@ fn defs() -> Vec<Def> {
         d("rename_folder", Manage, "Rename a folder", "Rename a LAAB folder.", json!({ "folder_id": s("Folder id."), "name": s("New name.") }), &["folder_id", "name"], false, false),
         d("delete_folder", Manage, "Delete a folder", "Delete a LAAB folder; its chats go back to the list.", json!({ "folder_id": s("Folder id.") }), &["folder_id"], false, true),
         d("list_message_requests", Manage, "List message requests", "Chats in LINE's message request box: from people who are not friends, kept out of the chat list until the user accepts them. Each has its id, name, kind, unread count and last activity.", json!({}), &[], true, false),
-        d("accept_message_request", Manage, "Accept a message request", "Move a chat out of the message request box into the chat list, as accepting it in LINE does.", json!({ "chat_id": s("Chat id from list_message_requests.") }), &["chat_id"], false, false),
+        d("accept_message_request", Manage, "Accept a message request", "Move a chat out of the message request box into the chat list. For a 1:1 request this also adds them as a friend (LINE's updateChatStatusBulk rejects those mids).", json!({ "chat_id": s("Chat id from list_message_requests.") }), &["chat_id"], false, false),
         d("hide_chat", Manage, "Hide a chat", "Hide a chat from the list until a new message arrives.", json!({ "chat_id": s(CHAT) }), &["chat_id"], false, false),
         d("announce", Manage, "Announce a message", "Pin a message as a chat announcement (synced via LINE for groups and rooms).", json!({
             "chat_id": s(CHAT), "message_id": s(MSG), "text": s("Announcement text (default: the message's text)."),
@@ -1083,11 +1083,10 @@ async fn run(ctx: &Ctx, name: &str, args: &Value, trace: &mut Trace) -> R<Vec<Va
                     if !d.is_dir() {
                         return Err(format!("not a folder: {}", d.display()));
                     }
-                    Some(d)
+                    d
                 }
-                None => dirs::download_dir(),
-            }
-            .ok_or("ไม่พบโฟลเดอร์ดาวน์โหลด")?;
+                None => crate::cache::download_dir(state).map_err(err)?,
+            };
             // Download first: an unnamed photo or video is named by its content.
             let cached = commands::download(st(), m.chat_id.clone(), m.id.clone(), m.file_name.clone()).await?;
             let name = crate::media::save_name(m.file_name.as_deref(), &m.id, Path::new(&cached));

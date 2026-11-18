@@ -727,18 +727,72 @@ pub async fn join_group_link(state: &Arc<AppState>, url: &str) -> Result<String>
     Ok(mid)
 }
 
-/// Accept a chat from LINE's message request box
-/// (`updateChatStatusBulk` with `trusted`).
+/// Accept a chat from LINE's message request box.
+///
+/// Prefer `updateChatStatusBulk` with `trusted`. That call returns
+/// `INVALID_MID` for every peer mid the box lists (and `getChats` returns
+/// none for them), so for 1:1 requests we fall back to adding them via a
+/// stranger message — which clears the box.
 pub async fn accept_message_request(state: &Arc<AppState>, chat_id: &str) -> Result<()> {
     let l = line(state).await?;
-    l.client
+    match l
+        .client
         .base
         .talk()
         .update_chat_status_bulk(&[chat_id.to_string()], true)
-        .await?;
+        .await
+    {
+        Ok(_) => {}
+        Err(e)
+            if e.error_code() == Some(line_rs::ErrorCode::InvalidMid) && chat_id.starts_with('u') =>
+        {
+            accept_peer_request_by_friend(&l, chat_id).await?;
+        }
+        Err(e) => return Err(e.into()),
+    }
     state.store().set_request(chat_id, false)?;
     state.chats_changed();
+    let s = state.clone();
+    tokio::spawn(async move {
+        let _ = line::refresh_chats(&s, false).await;
+    });
     Ok(())
+}
+
+/// Clear a 1:1 message request by adding them from a message they sent.
+async fn accept_peer_request_by_friend(l: &Line, chat_id: &str) -> Result<()> {
+    let msg_id = stranger_message_id(l, chat_id).await?;
+    let options = AddFriendByMidOptions::new(
+        chat_id,
+        AddFriendVia::StrangerMessage {
+            message_id: msg_id,
+            chat_mid: chat_id.into(),
+        },
+    );
+    l.client.base.relation().add_friend_by_mid(options).await?;
+    Ok(())
+}
+
+/// A recent message id from the other person in this 1:1 chat (or any
+/// recent one if theirs are gone).
+async fn stranger_message_id(l: &Line, chat_id: &str) -> Result<String> {
+    let msgs = l
+        .client
+        .base
+        .talk()
+        .get_recent_messages_v2(chat_id, 20)
+        .await?;
+    let list = msgs.as_list().unwrap_or_default();
+    let from_them = list.iter().rev().find(|m| {
+        m["from"]
+            .as_str()
+            .is_some_and(|f| !f.is_empty() && f != l.me)
+    });
+    from_them
+        .or_else(|| list.last())
+        .and_then(|m| m["id"].as_str())
+        .map(str::to_string)
+        .ok_or_else(|| anyhow!("no message to accept this request with"))
 }
 
 /// Delete a chat from LINE's message request box: its history goes

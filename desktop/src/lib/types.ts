@@ -109,6 +109,11 @@ export interface McpSettings {
   defaults: McpLevels;
   rules: McpRule[];
 }
+/** Where บันทึก / แสดงใน Finder write. `custom` means the user picked it. */
+export interface DownloadDirInfo {
+  path: string;
+  custom: boolean;
+}
 export interface McpActivity {
   time: number;
   client: string;
