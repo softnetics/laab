@@ -450,7 +450,8 @@ struct PickerRequest {
 }
 
 /// Open a LIFF view in its own window.
-pub fn open_window(state: &Arc<AppState>, view: &LiffView, chat: Option<String>) -> Result<()> {
+/// Returns the new window's label.
+pub fn open_window(state: &Arc<AppState>, view: &LiffView, chat: Option<String>) -> Result<String> {
     open_window_at(state, view, chat, None)
 }
 
@@ -461,7 +462,7 @@ fn open_window_at(
     view: &LiffView,
     chat: Option<String>,
     frame: Option<(tauri::PhysicalPosition<i32>, tauri::PhysicalSize<u32>)>,
-) -> Result<()> {
+) -> Result<String> {
     let app = state.app.clone();
     let label = format!("liff-{}", crate::state::now_ms() as u64);
     let url: tauri::Url = view.url.parse()?;
@@ -633,7 +634,7 @@ fn open_window_at(
     }
     crate::liff_titlebar::add(&window);
     crate::liff_devtools::opened(&app, &label, view, chat_for_log);
-    Ok(())
+    Ok(label)
 }
 
 fn close(app: &tauri::AppHandle, label: &str) {
@@ -750,7 +751,7 @@ fn open_liff(state: &Arc<AppState>, url: &str, chat: Option<String>, window: Opt
         }
         let frame = old.outer_position().ok().zip(old.inner_size().ok());
         match open_window_at(&s, &view, chat, frame) {
-            Ok(()) => {
+            Ok(_) => {
                 let _ = old.close();
             }
             Err(e) => s.status(format!("เปิด LIFF ไม่สำเร็จ: {e}")),

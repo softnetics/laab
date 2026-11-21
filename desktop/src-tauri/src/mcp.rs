@@ -55,6 +55,9 @@ pub enum Group {
     Manage,
     /// Delete history, leave groups, block, add friends, join groups.
     Account,
+    /// Open LIFF pages signed in as the user, read them, click, type and run
+    /// scripts in them.
+    Liff,
 }
 
 impl Group {
@@ -64,6 +67,7 @@ impl Group {
             Group::Send => "ส่งข้อความ",
             Group::Manage => "จัดการแชทและข้อความ",
             Group::Account => "ทำสิ่งที่ย้อนกลับยาก",
+            Group::Liff => "ใช้หน้า LIFF",
         }
     }
 }
@@ -75,6 +79,7 @@ pub struct Levels {
     pub send: Access,
     pub manage: Access,
     pub account: Access,
+    pub liff: Access,
 }
 
 impl Default for Levels {
@@ -84,6 +89,7 @@ impl Default for Levels {
             send: Access::Ask,
             manage: Access::Ask,
             account: Access::Off,
+            liff: Access::Ask,
         }
     }
 }
@@ -95,6 +101,7 @@ impl Levels {
             Group::Send => self.send,
             Group::Manage => self.manage,
             Group::Account => self.account,
+            Group::Liff => self.liff,
         }
     }
 }
@@ -107,6 +114,7 @@ pub struct Overrides {
     pub send: Option<Access>,
     pub manage: Option<Access>,
     pub account: Option<Access>,
+    pub liff: Option<Access>,
 }
 
 impl Overrides {
@@ -116,6 +124,7 @@ impl Overrides {
             Group::Send => self.send,
             Group::Manage => self.manage,
             Group::Account => self.account,
+            Group::Liff => self.liff,
         }
     }
 
@@ -125,6 +134,7 @@ impl Overrides {
             Group::Send => &mut self.send,
             Group::Manage => &mut self.manage,
             Group::Account => &mut self.account,
+            Group::Liff => &mut self.liff,
         };
         *slot = Some(a);
     }
@@ -451,7 +461,7 @@ pub async fn authorize(ctx: &Ctx, g: Group, scopes: &[Scope], what: &str) -> Res
     }
 }
 
-async fn ask(ctx: &Ctx, g: Group, chat: Option<String>, what: &str) -> Result<(), String> {
+pub async fn ask(ctx: &Ctx, g: Group, chat: Option<String>, what: &str) -> Result<(), String> {
     use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind, MessageDialogResult};
     let _turn = RT.asking.lock().await;
     let state = &ctx.state;
@@ -765,6 +775,13 @@ mod tests {
         assert_eq!(s.rules[0].levels.read, Some(Access::Off));
         let back: Settings = serde_json::from_str(&serde_json::to_string(&s).unwrap()).unwrap();
         assert_eq!(back, s);
+    }
+
+    #[test]
+    fn settings_saved_before_the_liff_group_ask_for_liff() {
+        let s: Settings = serde_json::from_str(r#"{"enabled":true,"defaults":{"read":"on","send":"on","manage":"ask","account":"off"},"rules":[]}"#).unwrap();
+        assert_eq!(s.defaults.send, Access::On);
+        assert_eq!(s.defaults.liff, Access::Ask);
     }
 
     #[test]

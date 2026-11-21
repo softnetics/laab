@@ -93,7 +93,7 @@ export type SearchKind = "chat" | "message" | "file";
 export type AnalyticsStatus = "unavailable" | "unasked" | "on" | "off";
 
 export type McpAccess = "off" | "ask" | "on";
-export type McpGroup = "read" | "send" | "manage" | "account";
+export type McpGroup = "read" | "send" | "manage" | "account" | "liff";
 export type McpLevels = Record<McpGroup, McpAccess>;
 /** A rule's levels; null (or missing) follows the next rule down. */
 export type McpOverrides = Partial<Record<McpGroup, McpAccess | null>>;

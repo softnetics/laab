@@ -20,6 +20,9 @@ type R<T> = Result<T, String>;
 /// Photos larger than this aren't returned inline.
 const MAX_IMAGE: usize = 5 * 1024 * 1024;
 
+/// Messages capture_messages draws in one picture.
+const MAX_CAPTURE: usize = 20;
+
 // ---------------------------------------------------------------- definitions
 
 struct Def {
@@ -49,6 +52,7 @@ fn strings(desc: &str) -> Value {
 
 const CHAT: &str = "Chat id (`u…`, `c…` or `r…`) from list_chats or search.";
 const MSG: &str = "Message id from read_messages or search.";
+const LIFF: &str = "LIFF window id from open_liff or list_liff_windows.";
 
 fn defs() -> Vec<Def> {
     use Group::*;
@@ -120,6 +124,10 @@ fn defs() -> Vec<Def> {
             "limit": n("At most this many (default 50)."),
         }), &["chat_id", "kind"], true, false),
         d("view_image", Read, "View a photo", "Returns a photo message (or a video's preview) as an image you can look at.", json!({ "message_id": s(MSG) }), &["message_id"], true, false),
+        d("capture_messages", Read, "Capture messages as an image", "A PNG of messages as LAAB draws them: bubbles, flex cards, photos and stickers, with the sender's picture, name and time, like a screenshot of the chat. Give one message id, or several from the same chat to capture them together in that order.", json!({
+            "message_ids": strings("Message ids from read_messages or search, all in one chat (at most 20)."),
+            "directory": s("Also save the PNG in this folder and return its path. It must exist."),
+        }), &["message_ids"], false, false),
         d("save_attachment", Read, "Save an attachment", "Save a message's photo, video, audio or file to Downloads (or a folder you name) and return its path, e.g. to read a PDF.", json!({
             "message_id": s(MSG),
             "directory": s("Folder to save into (default Downloads). It must exist."),
@@ -129,6 +137,16 @@ fn defs() -> Vec<Def> {
             "text": s("Text to translate."), "target": s("Language code, e.g. `en`, `th`, `ja`."),
         }), &["text", "target"], true, false),
         d("get_rich_menu", Read, "Get a bot's menu", "The rich menu of an official account chat: its scenes, each with images and tap areas. An area's action is `web` (uri), `postback` (data, send it with tap_postback without message_id), `sendMessage` (text, send it with send_message), `transition` (another scene) or `clipboard`.", json!({ "chat_id": s(CHAT) }), &["chat_id"], true, false),
+        d("list_liff_windows", Liff, "List LIFF windows", "LIFF pages open in LAAB, with the window_id the liff_* tools take.", json!({}), &[], true, false),
+        d("read_liff", Liff, "Read a LIFF page", "What a LIFF window shows: its text, with each element you can click or type into numbered as [n] (pass n as ref to liff_click or liff_type), and a screenshot. Numbers change when the page does; read it again after it changes.", json!({
+            "window_id": s(LIFF),
+            "screenshot": b("Include a screenshot (default true)."),
+        }), &["window_id"], true, false),
+        d("liff_log", Liff, "LIFF page log", "The LIFF page's console messages, network requests, LIFF SDK calls and navigations, newest last, as LIFF DevTools shows them.", json!({
+            "window_id": s(LIFF),
+            "kinds": { "type": "array", "items": { "type": "string", "enum": ["console", "network", "bridge", "nav", "error", "page"] }, "description": "Only these kinds (default all)." },
+            "limit": n("The last this many (default 100, max 1000)."),
+        }), &["window_id"], true, false),
         d("write_draft", Read, "Write a draft", "Put text in a chat's message box in LAAB for the user to check and send themselves. Nothing is sent.", json!({
             "chat_id": s(CHAT),
             "text": s("The draft. Write @Name for each mention."),
@@ -175,6 +193,33 @@ fn defs() -> Vec<Def> {
         d("comment_on_note", Send, "Comment on a note", "Add a comment to a note post.", json!({
             "chat_id": s(CHAT), "post_id": s("Post id."), "text": s("The comment."),
         }), &["chat_id", "post_id", "text"], false, false),
+        d("open_liff", Liff, "Open a LIFF page", "Open a LIFF link (liff.line.me/…, line.me/R/app/…) in a LAAB window, signed in as the user like the LINE app does, and return the page as read_liff does. If the LIFF app wants permissions the user hasn't granted, LAAB asks the user first.", json!({
+            "url": s("The LIFF link."),
+            "chat_id": s("The chat it was shared in, if any; some LIFF apps need it."),
+        }), &["url"], false, false),
+        d("liff_click", Liff, "Click in a LIFF page", "Click an element of a LIFF page, given its ref from read_liff, a CSS selector, or its text. Returns the page afterwards.", json!({
+            "window_id": s(LIFF),
+            "ref": n("The element's [n] from read_liff."),
+            "selector": s("Or a CSS selector."),
+            "text": s("Or the element's text."),
+        }), &["window_id"], false, false),
+        d("liff_type", Liff, "Type in a LIFF page", "Fill a text field, text area or editable element (or pick a select's option by its text) in a LIFF page. Returns the page afterwards.", json!({
+            "window_id": s(LIFF),
+            "ref": n("The field's [n] from read_liff."),
+            "selector": s("Or a CSS selector."),
+            "text": s("Or the field's label or placeholder text."),
+            "value": s("What to type (or the option to pick)."),
+            "append": b("Add to what is there instead of replacing it."),
+            "submit": b("Press Enter afterwards, submitting its form."),
+        }), &["window_id"], false, false),
+        d("liff_run_js", Liff, "Run JavaScript in a LIFF page", "Run a script in the LIFF page and return its value (a promise is awaited, 30s at most). The page has the LIFF SDK as `liff` if it loaded it.", json!({
+            "window_id": s(LIFF),
+            "script": s("An expression, or statements whose last value is returned."),
+        }), &["window_id", "script"], false, false),
+        d("liff_navigate", Liff, "Move around a LIFF page", "Go back, forward, reload, scroll, or close a LIFF window.", json!({
+            "window_id": s(LIFF),
+            "action": { "type": "string", "enum": ["back", "forward", "reload", "scroll_down", "scroll_up", "scroll_to_top", "close"] },
+        }), &["window_id", "action"], false, false),
         // ------------------------------------------------------------ manage
         d("edit_message", Manage, "Edit a message", "Change the text of a message the user sent.", json!({ "message_id": s(MSG), "text": s("The new text.") }), &["message_id", "text"], false, false),
         d("unsend_message", Manage, "Unsend a message", "Unsend a message the user sent, for everyone.", json!({ "message_id": s(MSG) }), &["message_id"], false, true),
@@ -628,6 +673,66 @@ fn file_names(paths: &[String]) -> String {
         .join(", ")
 }
 
+// ---------------------------------------------------------------- LIFF
+
+/// The LIFF window `window_id` names, the chat it was opened from (whose
+/// rules apply), and a name for it in dialogs.
+fn liff_window(state: &AppState, dir: &Directory, args: &Value) -> R<(tauri::WebviewWindow, Scope, String)> {
+    let label = arg_str(args, "window_id")?;
+    let w = crate::liff_control::window(&state.app, &label)?;
+    let session = crate::liff_devtools::session(&label);
+    let chat = session.as_ref().and_then(|s| s.chat_id.clone());
+    let scope = chat.as_ref().map(|c| dir.scope(c)).unwrap_or(Scope::Global);
+    let app = session
+        .as_ref()
+        .and_then(|s| s.info["app"]["name"].as_str().or(s.info["appName"].as_str()).map(String::from))
+        .or_else(|| w.title().ok())
+        .unwrap_or_else(|| label.clone());
+    let name = match chat {
+        Some(c) => format!("“{app}” (จาก {})", dir.quoted(&c)),
+        None => format!("“{app}”"),
+    };
+    Ok((w, scope, name))
+}
+
+fn describe_target(t: &Value) -> String {
+    if let Some(n) = t["ref"].as_i64() {
+        format!("[{n}]")
+    } else if let Some(s) = t["selector"].as_str() {
+        s.to_string()
+    } else {
+        format!("“{}”", t["text"].as_str().unwrap_or_default())
+    }
+}
+
+/// The page as text (and a screenshot), for the AI to act on.
+async fn liff_page(w: &tauri::WebviewWindow, name: &str, screenshot: bool) -> R<Vec<Value>> {
+    let mut page = crate::liff_control::outline(w).await?;
+    page["windowId"] = json!(w.label());
+    let _ = name;
+    let mut out = text(page);
+    if screenshot {
+        match crate::liff_control::screenshot(w).await {
+            Ok(png) => out.insert(0, json!({ "type": "image", "data": base64::engine::general_purpose::STANDARD.encode(png), "mimeType": "image/png" })),
+            Err(e) => out.push(json!({ "type": "text", "text": e })),
+        }
+    }
+    Ok(out)
+}
+
+/// What an action did, then the page it left.
+async fn liff_after(w: &tauri::WebviewWindow, name: &str, did: Value) -> R<Vec<Value>> {
+    let mut out = vec![json!({ "type": "text", "text": did.as_str().map(String::from).unwrap_or_else(|| did.to_string()) })];
+    out.extend(liff_page(w, name, true).await?);
+    Ok(out)
+}
+
+async fn nav_then(w: &tauri::WebviewWindow, name: &str, r: tauri::Result<()>) -> R<Vec<Value>> {
+    r.map_err(err)?;
+    crate::liff_control::settle(w).await;
+    liff_page(w, name, true).await
+}
+
 // ---------------------------------------------------------------- dispatch
 
 /// What the call did, for the activity list.
@@ -1073,6 +1178,35 @@ async fn run(ctx: &Ctx, name: &str, args: &Value, trace: &mut Trace) -> R<Vec<Va
             let from = if m.mine { "me".to_string() } else { m.sender_id.as_ref().and_then(|s| dir.names.get(s).cloned()).unwrap_or_default() };
             image(&data, &path, format!("{} from {from} in {}, {}", kind_of(&m.content_type), dir.name(&m.chat_id), time(m.created_time)))
         }
+        "capture_messages" => {
+            let ids = str_list(args, "message_ids");
+            if ids.is_empty() || ids.len() > MAX_CAPTURE {
+                return Err(format!("give 1 to {MAX_CAPTURE} message ids"));
+            }
+            let mut list = Vec::new();
+            for id in &ids {
+                let (m, _) = message(state, &dir, id)?;
+                if list.first().is_some_and(|f: &Message| f.chat_id != m.chat_id) {
+                    return Err("the messages must be in the same chat".into());
+                }
+                list.push(m);
+            }
+            let chat = list[0].chat_id.clone();
+            let scope = dir.scope(&chat);
+            let dest = match opt_str(args, "directory") {
+                Some(d) if !Path::new(&d).is_dir() => return Err(format!("not a folder: {d}")),
+                d => d.map(PathBuf::from),
+            };
+            gate(ctx, trace, Read, &[scope], format!("ถ่ายรูปข้อความใน {}", dir.quoted(&chat))).await?;
+            let png = crate::capture::messages(&state.app, &chat, &list).await?;
+            let mut caption = format!("{} message(s) in {}", ids.len(), dir.name(&chat));
+            if let Some(d) = dest {
+                let path = unique_path(&d, &format!("LAAB {}.png", ids[0]));
+                std::fs::write(&path, &png).map_err(err)?;
+                caption.push_str(&format!(", saved to {}", path.display()));
+            }
+            image(&png, Path::new("capture.png"), caption)
+        }
         "save_attachment" => {
             let id = arg_str(args, "message_id")?;
             let (m, scope) = message(state, &dir, &id)?;
@@ -1121,6 +1255,51 @@ async fn run(ctx: &Ctx, name: &str, args: &Value, trace: &mut Trace) -> R<Vec<Va
             let chat = arg_str(args, "chat_id")?;
             gate(ctx, trace, Read, &[dir.scope(&chat)], format!("ดูเมนูของ {}", dir.quoted(&chat))).await?;
             Ok(text(json!({ "menu": commands::rich_menu(st(), chat).await? })))
+        }
+        "list_liff_windows" => {
+            trace.what = "ดูหน้าต่าง LIFF".into();
+            if settings.most(Group::Liff) == Access::Off {
+                trace.denied = true;
+                return Err("ผู้ใช้ไม่อนุญาตให้ MCP ใช้หน้า LIFF (ตั้งได้ที่ LAAB เมนู ⋯ > MCP)".into());
+            }
+            let list: Vec<Value> = crate::liff_devtools::sessions()
+                .into_iter()
+                .filter(|w| !w.closed && state.app.get_webview_window(&w.label).is_some())
+                .filter(|w| w.chat_id.as_ref().is_none_or(|c| readable(&settings, &dir.scope(c)) != Access::Off))
+                .map(|w| {
+                    json!({
+                        "windowId": w.label,
+                        "liffId": w.liff_id,
+                        "app": w.info["app"]["name"].as_str().or(w.info["appName"].as_str()),
+                        "url": w.url,
+                        "chat": w.chat_id.as_ref().map(|c| json!({ "id": c, "name": dir.name(c) })),
+                        "signedIn": w.mode == "client",
+                        "openedAt": time(w.opened_at),
+                    })
+                })
+                .collect();
+            Ok(text(json!({ "windows": list })))
+        }
+        "read_liff" => {
+            let (w, scope, name) = liff_window(state, &dir, args)?;
+            gate(ctx, trace, Liff, &[scope], format!("อ่านหน้า LIFF {name}")).await?;
+            liff_page(&w, &name, opt_bool(args, "screenshot").unwrap_or(true)).await
+        }
+        "liff_log" => {
+            let (w, scope, name) = liff_window(state, &dir, args)?;
+            gate(ctx, trace, Liff, &[scope], format!("ดู log ของ LIFF {name}")).await?;
+            let kinds = str_list(args, "kinds");
+            let n = limit(args, 100, 1000);
+            let session = crate::liff_devtools::session(w.label()).ok_or("no log for this window")?;
+            let mut events: Vec<Value> = session
+                .events
+                .iter()
+                .filter(|e| kinds.is_empty() || kinds.contains(&e.kind))
+                .map(|e| json!({ "time": time(e.t), "kind": e.kind, "level": e.level, "text": clip(&e.text, 2000) }))
+                .collect();
+            let skip = events.len().saturating_sub(n);
+            events.drain(..skip);
+            Ok(text(json!({ "events": events })))
         }
         "write_draft" => {
             let chat = arg_str(args, "chat_id")?;
@@ -1271,6 +1450,104 @@ async fn run(ctx: &Ctx, name: &str, args: &Value, trace: &mut Trace) -> R<Vec<Va
             gate(ctx, trace, Send, &[dir.scope(&chat)], format!("แสดงความคิดเห็นในโน้ตของ {}:\n\n{}", dir.quoted(&chat), t)).await?;
             commands::add_comment(st(), chat, post, t, None).await?;
             done("comment posted")
+        }
+        "open_liff" => {
+            let url = arg_str(args, "url")?;
+            if crate::liff::parse_link(&url).is_none() {
+                return Err("not a LIFF link (liff.line.me/… or line.me/R/app/…)".into());
+            }
+            let chat = opt_str(args, "chat_id");
+            let scope = chat.as_ref().map(|c| dir.scope(c)).unwrap_or(Scope::Global);
+            let what = match &chat {
+                Some(c) => format!("เปิด LIFF จาก {}:\n\n{url}", dir.quoted(c)),
+                None => format!("เปิด LIFF:\n\n{url}"),
+            };
+            let view = if state.demo {
+                gate(ctx, trace, Liff, &[scope], what).await?;
+                let link = crate::liff::parse_link(&url).unwrap();
+                crate::liff::LiffView {
+                    liff_id: link.id.clone(),
+                    url: link.web_url(),
+                    mode: "web".into(),
+                    reason: Some("โหมด demo".into()),
+                    info: json!({ "requestedUrl": url }),
+                }
+            } else {
+                let consent = crate::liff::consent_info(state, &url, chat.clone()).await.map_err(err)?;
+                if consent.permissions.is_empty() {
+                    gate(ctx, trace, Liff, &[scope], what).await?;
+                } else {
+                    // Granting a LIFF app access is the user's call, whatever
+                    // the settings allow without asking.
+                    let asks: Vec<String> = consent.permissions.iter().map(|p| format!("• {}", p.label)).collect();
+                    trace.what = format!("{what}\n\nและยินยอมให้แอปนี้:\n{}", asks.join("\n"));
+                    if settings.access(Liff, &scope) == Access::Off {
+                        trace.denied = true;
+                        return Err("ผู้ใช้ไม่อนุญาตให้ MCP ใช้หน้า LIFF ในส่วนนี้ (ตั้งได้ที่ LAAB เมนู ⋯ > MCP)".into());
+                    }
+                    crate::mcp::ask(ctx, Liff, None, &trace.what).await.inspect_err(|_| trace.denied = true)?;
+                }
+                crate::liff::issue(state, &url, chat.clone(), !consent.permissions.is_empty()).await.map_err(err)?
+            };
+            crate::usage::hit(crate::usage::Action::OpenedLiff);
+            let label = crate::liff::open_window(state, &view, chat).map_err(err)?;
+            let w = crate::liff_control::window(&state.app, &label)?;
+            crate::liff_control::settle(&w).await;
+            let mut out = liff_page(&w, &label, true).await?;
+            if view.mode != "client" {
+                out.push(json!({ "type": "text", "text": format!("Opened as a plain web page, not signed in to LINE: {}", view.reason.unwrap_or_default()) }));
+            }
+            Ok(out)
+        }
+        "liff_click" => {
+            let (w, scope, name) = liff_window(state, &dir, args)?;
+            let target = crate::liff_control::target(args)?;
+            gate(ctx, trace, Liff, &[scope], format!("คลิกในหน้า LIFF {name}: {}", describe_target(&target))).await?;
+            let did = crate::liff_control::click(&w, &target).await?;
+            crate::liff_control::settle(&w).await;
+            liff_after(&w, &name, did).await
+        }
+        "liff_type" => {
+            let (w, scope, name) = liff_window(state, &dir, args)?;
+            let target = crate::liff_control::target(args)?;
+            let submit = opt_bool(args, "submit").unwrap_or(false);
+            let value = arg_str(args, "value")?;
+            gate(ctx, trace, Liff, &[scope], format!("พิมพ์ในหน้า LIFF {name} ช่อง {}:\n\n{}{}", describe_target(&target), value, if submit { "\n\nแล้วกด Enter" } else { "" })).await?;
+            trace.what = format!("พิมพ์ในหน้า LIFF {name}: {}", clip(&value, 80));
+            let did = crate::liff_control::type_text(&w, &target, &value, opt_bool(args, "append").unwrap_or(false), submit).await?;
+            crate::liff_control::settle(&w).await;
+            liff_after(&w, &name, did).await
+        }
+        "liff_run_js" => {
+            let (w, scope, name) = liff_window(state, &dir, args)?;
+            let script = arg_str(args, "script")?;
+            gate(ctx, trace, Liff, &[scope], format!("รัน JavaScript ในหน้า LIFF {name}:\n\n{}", clip(&script, 600))).await?;
+            trace.what = format!("รัน JavaScript ในหน้า LIFF {name}: {}", clip(&script, 80));
+            crate::liff_devtools::push(&state.app, w.label(), "console", "info", format!("> (MCP) {script}"));
+            let value = crate::liff_control::run_script(&w, &script).await?;
+            Ok(text(json!({ "value": value })))
+        }
+        "liff_navigate" => {
+            let (w, scope, name) = liff_window(state, &dir, args)?;
+            let action = arg_str(args, "action")?;
+            gate(ctx, trace, Liff, &[scope], format!("{action} หน้า LIFF {name}")).await?;
+            use crate::liff_devtools::{Nav, navigate};
+            let js = match action.as_str() {
+                "back" => return nav_then(&w, &name, navigate(&state.app, w.label(), Nav::Back)).await,
+                "forward" => return nav_then(&w, &name, navigate(&state.app, w.label(), Nav::Forward)).await,
+                "reload" => return nav_then(&w, &name, navigate(&state.app, w.label(), Nav::Reload)).await,
+                "close" => {
+                    w.close().map_err(err)?;
+                    return done("closed");
+                }
+                "scroll_down" => "function(){scrollBy(0, innerHeight * 0.8)}",
+                "scroll_up" => "function(){scrollBy(0, -innerHeight * 0.8)}",
+                "scroll_to_top" => "function(){scrollTo(0, 0)}",
+                other => return Err(format!("unknown action {other}")),
+            };
+            crate::liff_control::call(&w, js, crate::liff_control::SCRIPT).await?;
+            tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+            liff_page(&w, &name, true).await
         }
         // ------------------------------------------------------------ manage
         "edit_message" => {
