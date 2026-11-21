@@ -5,6 +5,7 @@ import { open as openDialog, save } from "@tauri-apps/plugin-dialog";
 import { memo, useState } from "react";
 import { api, errorText, mediaUrl, q, queryClient } from "../lib/api";
 import { copyImage } from "../lib/clipboardImage";
+import { captureMessages } from "./CaptureHost";
 import { performFlexAction } from "../lib/flexActions";
 import { callBubbleLabel, isBlank, noticeFor, readCall } from "../lib/notices";
 import { nextReaction } from "../lib/reactions";
@@ -279,7 +280,7 @@ function MediaLinks({ items, ctx }: { items: Message[]; ctx: RowContext }) {
   };
   const link = "hover:text-primary";
   return (
-    <div className="mt-1 flex gap-1.5 text-[11.5px] text-secondary">
+    <div data-capture-skip className="mt-1 flex gap-1.5 text-[11.5px] text-secondary">
       <button className={link} onClick={() => run(each((m) => api.saveAttachment(ctx.chatId, m.id)), saved)}>
         บันทึก
       </button>
@@ -584,6 +585,9 @@ function rowMenu(m: Message, dev: boolean, ctx?: RowContext) {
         "คัดลอก",
         () => (copyPhoto ? run(api.messageBytes(ctx.chatId, m.id).then(copyImage), "คัดลอกรูปแล้ว") : writeText(copyText)),
         !copyText && !copyPhoto,
+      )}
+      {item("คัดลอกเป็นรูปภาพ", () =>
+        run(captureMessages(ctx.chatId, [m]).then((png) => copyImage(png.buffer as ArrayBuffer)), "คัดลอกรูปข้อความแล้ว"),
       )}
       {m.mine &&
         live &&

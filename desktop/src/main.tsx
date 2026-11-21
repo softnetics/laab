@@ -2,6 +2,7 @@ import { QueryClientProvider } from "@tanstack/react-query";
 import { HotkeysProvider } from "@tanstack/react-hotkeys";
 import { RouterProvider } from "@tanstack/react-router";
 import { MotionConfig } from "motion/react";
+import { CaptureHost } from "./components/CaptureHost";
 import React from "react";
 import ReactDOM from "react-dom/client";
 import { reportUncaughtErrors } from "./lib/analytics";
@@ -11,7 +12,12 @@ import "./index.css";
 
 function App() {
   useBackendEvents();
-  return <RouterProvider router={router} />;
+  return (
+    <>
+      <RouterProvider router={router} />
+      <CaptureHost />
+    </>
+  );
 }
 
 reportUncaughtErrors();

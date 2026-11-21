@@ -3,6 +3,7 @@
 mod actions;
 mod analytics;
 mod cache;
+mod capture;
 mod commands;
 mod convert;
 mod crash;
@@ -11,6 +12,7 @@ mod emoji;
 mod fold;
 mod keychain;
 mod liff;
+mod liff_control;
 mod liff_devtools;
 mod liff_titlebar;
 mod line;
@@ -238,6 +240,9 @@ pub fn run() {
             }
         })
         .invoke_handler(tauri::generate_handler![
+            capture::capture_done,
+            capture::capture_failed,
+            capture::capture_image,
             fold::resize_window,
             fold::release_web_view,
             commands::session,
