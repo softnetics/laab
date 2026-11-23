@@ -210,7 +210,8 @@ export function ChatView({ chatId, main }: { chatId: string; main: boolean }) {
       catchingUp.current = false;
     });
   }, [chatId]);
-  const letterSealingStale = session?.letterSealing?.state === "stale";
+  // Scanning a QR code may fix it, unless LAAB already had the user do that.
+  const letterSealingStale = session?.letterSealing?.state === "stale" && !session.letterSealing.reloginTried;
   const ctx: RowContext = useMemo(
     () => ({
       chatId,

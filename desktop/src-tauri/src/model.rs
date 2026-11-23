@@ -211,4 +211,7 @@ pub struct LetterSealing {
     pub state: String,
     pub held_key_id: Option<i64>,
     pub newest_key_id: Option<i64>,
+    /// LAAB already signed out once for this newest key and the sign-in
+    /// after it still brought no such key: scanning again won't help.
+    pub relogin_tried: bool,
 }

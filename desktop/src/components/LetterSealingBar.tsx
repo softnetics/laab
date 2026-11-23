@@ -18,7 +18,9 @@ export function LetterSealingBar() {
       <LockIcon size={12} className="mt-0.5 shrink-0 text-badge-red" />
       <span className="min-w-0 flex-1">
         {none ? "เครื่องนี้ยังไม่มีกุญแจ Letter Sealing ของบัญชี" : "เครื่องนี้ยังไม่มีกุญแจ Letter Sealing ล่าสุด"} ข้อความที่เข้ารหัสจะถอดรหัสไม่สำเร็จ
-        <span className="text-secondary">{none ? " · ลองสแกน QR อีกครั้ง" : " · สแกน QR อีกครั้งเพื่อแก้"}</span>
+        <span className="text-secondary">
+          {ls.reloginTried ? " · ตรวจว่าเปิด Letter Sealing ใน LINE บนโทรศัพท์" : none ? " · ลองสแกน QR อีกครั้ง" : " · สแกน QR อีกครั้งเพื่อแก้"}
+        </span>
       </span>
     </div>
   );

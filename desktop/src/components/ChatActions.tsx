@@ -134,7 +134,8 @@ async function exportChat(chat: Chat, name: (mid: string) => string) {
 /** The chat header's ⋮ menu, in LINE for Mac's order, without what LAAB
  *  cannot do (โหวต, ตั้งค่า, รายงานปัญหา). สมาชิก invites and removes. */
 export function HeaderMenu({ chat, secure, unreadable }: { chat: Chat; secure: boolean; unreadable: number }) {
-  const stale = useSession()?.letterSealing?.state === "stale";
+  const ls = useSession()?.letterSealing;
+  const stale = ls?.state === "stale" && !ls.reloginTried;
   const people = usePeople();
   const list = useChatList();
   const group = isGroup(chat);

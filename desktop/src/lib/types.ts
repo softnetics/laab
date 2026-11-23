@@ -188,6 +188,8 @@ export interface LetterSealing {
   state: "current" | "stale" | "off";
   heldKeyId: number | null;
   newestKeyId: number | null;
+  /** LAAB signed out once for this key and the sign-in after still lacks it. */
+  reloginTried: boolean;
 }
 
 export interface Person {
