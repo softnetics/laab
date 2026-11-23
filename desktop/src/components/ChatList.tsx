@@ -23,6 +23,7 @@ import {
   SortIcon,
 } from "./Icons";
 import { Badge, Ctx, CtxItem, itemClass, popupClass, Separator, Spinner } from "./kit";
+import { LetterSealingBar } from "./LetterSealingBar";
 import { UpdateBar } from "./UpdateBar";
 
 export function ChatListColumn({ selected }: { selected: string | null }) {
@@ -215,6 +216,7 @@ export function ChatListColumn({ selected }: { selected: string | null }) {
         </button>
       </div>
       <UpdateBar />
+      <LetterSealingBar />
       <StatusBar />
       <DragGhost list={list} />
     </div>

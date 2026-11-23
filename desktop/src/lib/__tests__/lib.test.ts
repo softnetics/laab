@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { compareIds, later, placement, readersOf } from "../reads";
 import { backspaceMention, composingQuery, fromSpans, insertMention, matching, present, targets, ALL_MEMBER } from "../mentions";
-import { callBubbleLabel, chatEventText, noticeFor, readCall, readChatEvent, isBlank } from "../notices";
+import { callBubbleLabel, chatEventText, noticeFor, readCall, readChatEvent, isBlank, isSealedUnreadable } from "../notices";
 import { buildRows } from "../timeline";
 import { bigSticonSize, isAnimated, sticons } from "../media";
 import { findHits, ranges } from "../inChatSearch";
@@ -121,6 +121,12 @@ describe("notices", () => {
     expect(noticeFor(msg({ unsent: 1, senderId: "u2" }), name)?.text).toBe("O ยกเลิกข้อความ");
     expect(noticeFor(msg({ unsent: 1, mine: true }), name)?.text).toBe("ยกเลิกข้อความแล้ว");
     expect(isBlank(msg({ text: "  " }))).toBe(true);
+    // Letter Sealing: the backend flag, or a blank sealed text stored before it.
+    expect(isSealedUnreadable(msg({ undecrypted: true, contentType: "LOCATION" }))).toBe(true);
+    expect(isSealedUnreadable(msg({ text: "", metadata: { e2eeVersion: "2" } }))).toBe(true);
+    expect(isSealedUnreadable(msg({ text: "", metadata: {} }))).toBe(false);
+    expect(isSealedUnreadable(msg({ text: "hi", metadata: { e2eeVersion: "2" } }))).toBe(false);
+    expect(isSealedUnreadable(msg({ undecrypted: true, unsent: 1 }))).toBe(false);
   });
   it("groups by sender and minute, as LINE does", () => {
     const t = new Date(2026, 9, 21, 14, 57, 5).getTime();

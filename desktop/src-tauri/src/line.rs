@@ -20,7 +20,7 @@ use tokio::task::AbortHandle;
 
 use crate::analytics;
 use crate::convert::{self, num_of, str_of};
-use crate::model::{Chat, ChatMember, Message, Profile};
+use crate::model::{Chat, ChatMember, LetterSealing, Message, Profile};
 use crate::reads;
 use crate::session::{self, SessionStorage};
 use crate::state::{AppState, now_ms};
@@ -393,6 +393,8 @@ async fn connected(state: Arc<AppState>, client: Client, device: Device) {
     state.update_session(|s| {
         s.state = "signed_in".into();
         s.status = "เชื่อม LINE แล้ว".into();
+        // Unknown until this login's key check answers.
+        s.letter_sealing = None;
         s.qr_url = None;
         s.pin = None;
         s.profile = Some(Profile {
@@ -405,6 +407,10 @@ async fn connected(state: Arc<AppState>, client: Client, device: Device) {
 
     spawn_forwarders(&state, &line);
     tokio::spawn(load_notification_settings(client.clone()));
+    {
+        let (s, l) = (state.clone(), line.clone());
+        tokio::spawn(async move { check_letter_sealing(&s, &l).await });
+    }
     {
         let (s, c) = (state.clone(), client.clone());
         tokio::spawn(async move {
@@ -458,6 +464,76 @@ async fn load_notification_settings(client: Client) {
         }
         Err(e) => tracing::warn!("account settings: {}", e.full_message()),
     }
+}
+
+/// The newest Letter Sealing key LAAB last signed out for (`kv`).
+const RELOGIN_KEY: &str = "letter_sealing_relogin";
+const RELOGIN_STATUS: &str = "กุญแจ Letter Sealing ของบัญชีเปลี่ยนไป สแกน QR อีกครั้งเพื่ออ่านข้อความที่เข้ารหัส";
+
+/// Ask LINE whether this Mac holds the account's newest Letter Sealing key
+/// and show the answer; sign out once when it doesn't (see below). Run
+/// after a login and when keys change. A failed check keeps the last answer.
+pub async fn check_letter_sealing(state: &Arc<AppState>, line: &Arc<Line>) {
+    use line_rs::e2ee::E2eeKeyStatus;
+    let status = match line.client.base.e2ee_key_status().await {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::warn!("letter sealing key check: {}", e.full_message());
+            return;
+        }
+    };
+    let ls = match status {
+        E2eeKeyStatus::Current { key_id } => LetterSealing {
+            state: "current".into(),
+            held_key_id: Some(key_id),
+            newest_key_id: Some(key_id),
+            relogin_tried: false,
+        },
+        E2eeKeyStatus::Stale { held, newest } => LetterSealing {
+            state: "stale".into(),
+            held_key_id: held,
+            newest_key_id: Some(newest),
+            relogin_tried: false,
+        },
+        E2eeKeyStatus::NoAccountKey => LetterSealing {
+            state: "off".into(),
+            held_key_id: None,
+            newest_key_id: None,
+            relogin_tried: false,
+        },
+    };
+    tracing::info!(
+        "letter sealing key: {} (holding {:?}, newest {:?})",
+        ls.state,
+        ls.held_key_id,
+        ls.newest_key_id
+    );
+    // The session may have ended, or another login replaced it, while LINE
+    // answered: only the current one may act on its answer.
+    let current = state.line.read().await.as_ref().is_some_and(|l| Arc::ptr_eq(l, line));
+    if !current {
+        return;
+    }
+    // A newer key than this Mac holds: only a QR sign-in brings it (the
+    // phone hands over its key chain), so sign out once for it, keeping
+    // the cache, as an expired session does. If the sign-in after that
+    // still lacks the key, the phone has none to give: don't sign out
+    // again for the same key, only show the bar.
+    let mut ls = ls;
+    match status {
+        E2eeKeyStatus::Stale { newest, .. } => {
+            let tried = state.store().get_kv(RELOGIN_KEY).ok().flatten() == Some(newest.to_string());
+            if !tried {
+                logged("saving the Letter Sealing sign-out", state.store().set_kv(RELOGIN_KEY, &newest.to_string()));
+                tracing::warn!("letter sealing: signing out so a QR sign-in can bring key {newest}");
+                session_ended(state.clone(), line.clone(), RELOGIN_STATUS).await;
+                return;
+            }
+            ls.relogin_tried = true;
+        }
+        _ => logged("clearing the Letter Sealing sign-out", state.store().delete_kv(RELOGIN_KEY)),
+    }
+    state.update_session(|s| s.letter_sealing = Some(ls));
 }
 
 /// How many undecrypted messages one pass tries, newest first.
@@ -626,6 +702,12 @@ fn spawn_forwarders(state: &Arc<AppState>, line: &Arc<Line>) {
                     break;
                 }
                 Ok(line_rs::ClientEvent::Log { kind, data }) => {
+                    // Letter Sealing events (keys registered or skipped, group
+                    // keys created, messages that didn't open), so the log
+                    // can tell later why a message shows as unreadable.
+                    if kind == "e2ee" {
+                        tracing::info!("letter sealing: {data}");
+                    }
                     let Some(line) = l.upgrade() else { break };
                     let error = data["error"].as_str().unwrap_or("");
                     if kind == "RefreshError" && token_dead(error) {
@@ -813,7 +895,10 @@ async fn handle_event(state: &Arc<AppState>, line: &Arc<Line>, ev: LineEvent) {
             // Keys changed: messages that could not be decrypted may open now.
             TalkEvent::E2eeKeysChanged { .. } => {
                 let (s, l) = (state.clone(), line.clone());
-                tokio::spawn(async move { retry_undecrypted(&s, &l, None).await });
+                tokio::spawn(async move {
+                    check_letter_sealing(&s, &l).await;
+                    retry_undecrypted(&s, &l, None).await;
+                });
             }
             TalkEvent::ChatUpdated { chat_mid, .. } => refresh_chat_row(state, line, &chat_mid).await,
             _ => {}

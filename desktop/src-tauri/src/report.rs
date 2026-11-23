@@ -52,6 +52,12 @@ pub fn preview(state: &AppState, req: &Request) -> String {
         "app_version": state.app.package_info().version.to_string(),
         "breadcrumbs": crate::usage::crumbs(),
     });
+    // Letter Sealing: key ids and counts only, so a report can tell a
+    // missing key from a message that doesn't open for another reason.
+    report["letter_sealing"] = json!({
+        "key": state.session().letter_sealing,
+        "undecrypted_messages": state.store().undecrypted_count().ok(),
+    });
     if let Some(m) = req.message_id.as_deref().and_then(|id| message_json(state, id)) {
         report["message_shape"] = shape(&m);
         if req.content {

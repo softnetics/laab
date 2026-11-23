@@ -755,7 +755,7 @@ impl Store {
     }
 
     const MESSAGE_COLUMNS: &'static str = "id,chat_id,body,file_name,file_path,image_path,content_type,created,mine,sender_id,sticker_id,mentions,
-        sticker_package,sticker_version,metadata,reply_to,unsent,edited,file_size,duration_ms";
+        sticker_package,sticker_version,metadata,reply_to,unsent,edited,file_size,duration_ms,undecrypted";
 
     fn message_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<Message> {
         let mentions: Option<String> = r.get(11)?;
@@ -788,6 +788,7 @@ impl Store {
             edited: r.get::<_, i64>(17)? != 0,
             file_size: r.get(18)?,
             duration_ms: r.get(19)?,
+            undecrypted: r.get::<_, i64>(20)? != 0,
             ..Default::default()
         })
     }
@@ -873,6 +874,15 @@ impl Store {
             .collect::<rusqlite::Result<_>>()?;
         self.attach_reactions(&mut list)?;
         Ok(list.pop())
+    }
+
+    /// How many stored messages LAAB could not decrypt.
+    pub fn undecrypted_count(&self) -> Result<i64> {
+        Ok(self.db.query_row(
+            "SELECT count(*) FROM messages WHERE undecrypted=1 AND unsent=0",
+            [],
+            |r| r.get(0),
+        )?)
     }
 
     /// `(id, chat_id, raw)` of messages that could not be decrypted, newest
