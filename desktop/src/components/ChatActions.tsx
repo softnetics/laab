@@ -198,7 +198,7 @@ export function HeaderMenu({ chat, secure, unreadable }: { chat: Chat; secure: b
             {unreadable > 0 && (
               <>
                 <br />
-                <span className="text-badge-red">LAAB เปิดไม่ได้ {unreadable} ข้อความที่โหลดอยู่</span>
+                <span className="text-badge-red">ถอดรหัสไม่สำเร็จ {unreadable} ข้อความ</span>
                 <br />
                 {stale ? "ลองสแกน QR อีกครั้ง หรือดูใน LINE บนโทรศัพท์" : "ดูได้ใน LINE บนโทรศัพท์"}
               </>
