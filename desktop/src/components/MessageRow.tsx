@@ -7,7 +7,7 @@ import { api, errorText, mediaUrl, q, queryClient } from "../lib/api";
 import { copyImage } from "../lib/clipboardImage";
 import { captureMessages } from "./CaptureHost";
 import { performFlexAction } from "../lib/flexActions";
-import { callBubbleLabel, isBlank, noticeFor, readCall } from "../lib/notices";
+import { callBubbleLabel, isBlank, isSealedUnreadable, noticeFor, readCall } from "../lib/notices";
 import { nextReaction } from "../lib/reactions";
 import { bigSticonSize, isAnimated, sticons } from "../lib/media";
 import { clock } from "../lib/time";
@@ -20,7 +20,7 @@ import { viewMessage } from "../lib/viewer";
 import { Avatar } from "./Avatar";
 import { FlexCard, parseFlex } from "./FlexCard";
 import { invalidateBookmarks } from "./Bookmarks";
-import { BookmarkFilledIcon, DocIcon, PhoneIcon, PhotoIcon, PlayIcon, VideoIcon } from "./Icons";
+import { BookmarkFilledIcon, DocIcon, LockIcon, PhoneIcon, PhotoIcon, PlayIcon, VideoIcon } from "./Icons";
 import { Ctx, itemClass, pressable, Separator, Spinner } from "./kit";
 import { Popover } from "./Popover";
 import { ReactButton, ReactionBadge } from "./Reactions";
@@ -43,6 +43,8 @@ export interface RowContext {
   bookmarked: (id: string) => boolean;
   /** Discord-style mark unread from this message (local divider + list badge). */
   onMarkUnreadFrom: (messageId: string) => void;
+  /** LINE lists a newer Letter Sealing key than this Mac holds. */
+  letterSealingStale?: boolean;
 }
 
 const TAIL = 8;
@@ -330,7 +332,9 @@ function ReplyQuote({ id, ctx, mine }: { id: string; ctx: RowContext; mine: bool
             ? (o.fileName ?? "ไฟล์")
             : o.contentType === "CONTACT"
               ? `ผู้ติดต่อ: ${o.metadata.displayName ?? ""}`
-              : o.text;
+              : isSealedUnreadable(o)
+                ? "Letter Sealing"
+                : o.text;
   return (
     <button
       onClick={() => setUi({ focusMessageId: o.id })}
@@ -461,6 +465,24 @@ function Content({
 }) {
   const [mention, setMention] = useState<{ span: MentionSpan; el: HTMLElement } | null>(null);
   const marked = ctx.bookmarked(m.id);
+  if (isSealedUnreadable(m)) {
+    // A Letter Sealing message LAAB couldn't decrypt: say so, as LINE does.
+    return (
+      <Bubble mine={m.mine} tail={tail}>
+        <span className="flex flex-col gap-0.5 text-[13px] leading-snug">
+          <span className="flex items-center gap-1 font-medium">
+            <LockIcon size={12} className="shrink-0" />
+            Letter Sealing
+          </span>
+          <span className="opacity-75">
+            {ctx.letterSealingStale
+              ? "LAAB ถอดรหัสข้อความนี้ไม่ได้ อาจเพราะยังไม่มีกุญแจล่าสุดของบัญชี ลองสแกน QR อีกครั้ง หรือดูใน LINE บนโทรศัพท์"
+              : "LAAB ถอดรหัสข้อความนี้ไม่ได้ ดูได้ใน LINE บนโทรศัพท์"}
+          </span>
+        </span>
+      </Bubble>
+    );
+  }
   switch (m.contentType) {
     case "STICKER":
       return <Sticker m={m} />;

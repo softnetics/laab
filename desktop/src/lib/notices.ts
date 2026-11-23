@@ -157,5 +157,10 @@ export function noticeFor(m: Message, name: (mid: string) => string): Notice | n
   return null;
 }
 
+/** A Letter Sealing message LAAB could not decrypt. Rows stored before the
+ *  backend sent the flag are blank texts that still carry e2eeVersion. */
+export const isSealedUnreadable = (m: Message) =>
+  m.unsent === 0 && (m.undecrypted === true || (isBlank(m) && "e2eeVersion" in m.metadata));
+
 /** Text messages LAAB could not read (usually E2EE it cannot decrypt). */
 export const isBlank = (m: Message) => m.unsent === 0 && m.contentType === "NONE" && !m.imagePath && m.text.trim() === "";

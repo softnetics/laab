@@ -51,6 +51,8 @@ export type ReactionName = "NICE" | "LOVE" | "FUN" | "AMAZING" | "SAD" | "OMG" |
 
 export interface Message {
   id: string;
+  /** A Letter Sealing text or location LAAB could not decrypt. */
+  undecrypted?: boolean;
   chatId: string;
   text: string;
   fileName: string | null;
@@ -176,6 +178,16 @@ export interface Session {
   syncTotal: number;
   /** LINE Premium; null until LINE says. Editing needs it. */
   premium: boolean | null;
+  /** This Mac's Letter Sealing key against the account's; null until LINE says. */
+  letterSealing: LetterSealing | null;
+}
+
+export interface LetterSealing {
+  /** current: LAAB holds the newest key. stale: a newer key exists that
+   *  LAAB lacks, so messages sealed to it don't open. off: no key. */
+  state: "current" | "stale" | "off";
+  heldKeyId: number | null;
+  newestKeyId: number | null;
 }
 
 export interface Person {

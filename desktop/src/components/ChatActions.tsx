@@ -1,6 +1,6 @@
 import { Menu } from "@base-ui/react/menu";
 import { save } from "@tauri-apps/plugin-dialog";
-import { api, errorText, messageLimit, useChatList, usePeople } from "../lib/api";
+import { api, errorText, messageLimit, useChatList, usePeople, useSession } from "../lib/api";
 import { folderName, folderOf, isGroup, looksUnread } from "../lib/chatList";
 import { closeChat } from "../lib/nav";
 import { clock, dayHeader } from "../lib/time";
@@ -133,7 +133,8 @@ async function exportChat(chat: Chat, name: (mid: string) => string) {
 
 /** The chat header's ⋮ menu, in LINE for Mac's order, without what LAAB
  *  cannot do (โหวต, ตั้งค่า, รายงานปัญหา). สมาชิก invites and removes. */
-export function HeaderMenu({ chat, secure }: { chat: Chat; secure: boolean }) {
+export function HeaderMenu({ chat, secure, unreadable }: { chat: Chat; secure: boolean; unreadable: number }) {
+  const stale = useSession()?.letterSealing?.state === "stale";
   const people = usePeople();
   const list = useChatList();
   const group = isGroup(chat);
@@ -194,6 +195,14 @@ export function HeaderMenu({ chat, secure }: { chat: Chat; secure: boolean }) {
             ห้องแชทนี้ปลอดภัยด้วย
             <br />
             Letter Sealing
+            {unreadable > 0 && (
+              <>
+                <br />
+                <span className="text-badge-red">LAAB เปิดไม่ได้ {unreadable} ข้อความที่โหลดอยู่</span>
+                <br />
+                {stale ? "ลองสแกน QR อีกครั้ง หรือดูใน LINE บนโทรศัพท์" : "ดูได้ใน LINE บนโทรศัพท์"}
+              </>
+            )}
           </span>
         </div>
       )}

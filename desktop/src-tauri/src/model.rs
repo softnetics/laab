@@ -122,8 +122,9 @@ pub struct Message {
     #[serde(skip)]
     pub raw: Option<String>,
     /// A Letter Sealing (E2EE) text or location LAAB could not decrypt yet;
-    /// its raw message is kept to try again when keys change.
-    #[serde(skip)]
+    /// its raw message is kept to try again when keys change. The chat
+    /// shows it as a Letter Sealing message it couldn't open.
+    #[serde(default)]
     pub undecrypted: bool,
 }
 
@@ -195,4 +196,19 @@ pub struct Session {
     /// Whether the account has LINE Premium; `None` until LINE says.
     /// Editing a message needs it.
     pub premium: Option<bool>,
+    /// Whether this Mac holds the account's newest Letter Sealing key;
+    /// `None` until LINE says.
+    pub letter_sealing: Option<LetterSealing>,
+}
+
+/// This Mac's Letter Sealing key against the account's keys on LINE.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct LetterSealing {
+    /// `current`: LAAB holds the newest key. `stale`: LINE lists a newer key
+    /// than LAAB holds, so messages sealed to it won't open here until the
+    /// user scans a QR code again. `off`: the account has no key.
+    pub state: String,
+    pub held_key_id: Option<i64>,
+    pub newest_key_id: Option<i64>,
 }

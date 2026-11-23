@@ -9,6 +9,7 @@ import { api, errorText, messageLimit, q, queryClient, setMessageLimit, useChatL
 import { adjacentChat, isGroup, isKeepMemo } from "../lib/chatList";
 import { findHits } from "../lib/inChatSearch";
 import { closeChat, openChat } from "../lib/nav";
+import { isSealedUnreadable } from "../lib/notices";
 import { dismissTop, notice, setUi, ui } from "../lib/ui";
 import { Announcements } from "./Announcements";
 import { Bookmarks } from "./Bookmarks";
@@ -182,6 +183,8 @@ export function ChatView({ chatId, main }: { chatId: string; main: boolean }) {
   );
   // Letter Sealing: LINE marks encrypted messages with e2eeVersion.
   const secure = useMemo(() => messages.some((m) => "e2eeVersion" in m.metadata), [messages]);
+  // Sealed messages LAAB could not open, for the header menu.
+  const unreadable = useMemo(() => messages.filter(isSealedUnreadable).length, [messages]);
   const byId = useMemo(() => new Map(messages.map((m) => [m.id, m])), [messages]);
   const find = useCallback((id: string) => byId.get(id), [byId]);
   const { data: bookmarks = [] } = useQuery({
@@ -207,6 +210,7 @@ export function ChatView({ chatId, main }: { chatId: string; main: boolean }) {
       catchingUp.current = false;
     });
   }, [chatId]);
+  const letterSealingStale = session?.letterSealing?.state === "stale";
   const ctx: RowContext = useMemo(
     () => ({
       chatId,
@@ -219,8 +223,9 @@ export function ChatView({ chatId, main }: { chatId: string; main: boolean }) {
       find,
       bookmarked,
       onMarkUnreadFrom,
+      letterSealingStale,
     }),
-    [chatId, group, me, signedIn, session?.state, name, picture, loadMembers, find, bookmarked, onMarkUnreadFrom],
+    [chatId, group, me, signedIn, session?.state, name, picture, loadMembers, find, bookmarked, onMarkUnreadFrom, letterSealingStale],
   );
 
   // Debounce, newest hit first.
@@ -411,7 +416,7 @@ export function ChatView({ chatId, main }: { chatId: string; main: boolean }) {
             <Menu.Portal>
               <Menu.Positioner className="z-50" align="end" sideOffset={4}>
                 <Menu.Popup className={popupClass}>
-                  <HeaderMenu chat={chat} secure={secure} />
+                  <HeaderMenu chat={chat} secure={secure} unreadable={unreadable} />
                 </Menu.Popup>
               </Menu.Positioner>
             </Menu.Portal>
