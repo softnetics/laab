@@ -9,7 +9,7 @@ import { GROUPS, TYPES, accessLabel, resolve, setupSnippets, type McpScope } fro
 import type { ChatList, McpAccess, McpGroup, McpRule, McpSettings } from "../lib/types";
 import { notice } from "../lib/ui";
 import { Avatar } from "./Avatar";
-import { BubbleIcon, ChevronIcon, FolderIcon, GroupIcon, MegaphoneIcon, PersonIcon, PlugIcon, PlusIcon, SendIcon, SlidersIcon, WarningIcon } from "./Icons";
+import { BubbleIcon, ChevronIcon, FolderIcon, GroupIcon, LinkIcon, MegaphoneIcon, PersonIcon, PlugIcon, PlusIcon, SendIcon, SlidersIcon, WarningIcon } from "./Icons";
 import { Switch } from "./kit";
 import { buttonClass } from "./Sheet";
 
@@ -97,6 +97,7 @@ const GROUP_ICON: Record<McpGroup, (p: { size?: number }) => ReactNode> = {
   send: SendIcon,
   manage: SlidersIcon,
   account: WarningIcon,
+  liff: LinkIcon,
 };
 
 /** Tile tint per group, System Settings style. */
@@ -105,6 +106,7 @@ const GROUP_TINT: Record<McpGroup, string> = {
   send: "bg-line-green",
   manage: "bg-[#8b5cf6]",
   account: "bg-[#f97316]",
+  liff: "bg-[#0ea5e9]",
 };
 
 const ACCESS_TEXT: Record<McpAccess, string> = {

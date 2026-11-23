@@ -5,6 +5,7 @@ export const GROUPS: { id: McpGroup; label: string; hint: string }[] = [
   { id: "send", label: "ส่งข้อความ", hint: "ข้อความ สติกเกอร์ ไฟล์ รีแอคชัน และโพสต์โน้ต ในชื่อคุณ" },
   { id: "manage", label: "จัดการแชท", hint: "แก้หรือยกเลิกข้อความ ปักหมุด ปิดเสียง ซ่อน และจัดโฟลเดอร์" },
   { id: "account", label: "ลบ บล็อก เข้าออกกลุ่ม", hint: "ลบประวัติแชท บล็อก เพิ่มเพื่อน ทำแล้วย้อนกลับยาก" },
+  { id: "liff", label: "ใช้หน้า LIFF", hint: "เปิดลิงก์ LIFF ในชื่อคุณ อ่านหน้า กดปุ่ม กรอกข้อมูล และรัน JavaScript ในหน้านั้น" },
 ];
 
 export const ACCESS: { id: McpAccess; label: string }[] = [

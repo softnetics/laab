@@ -1305,7 +1305,7 @@ pub async fn open_liff(state: S<'_>, req: LiffOpen) -> R<()> {
     if let Some(reason) = &view.reason {
         s.status(format!("เปิดเป็นหน้าเว็บ: {reason}"));
     }
-    crate::liff::open_window(&s, &view, req.chat_id).map_err(err)
+    crate::liff::open_window(&s, &view, req.chat_id).map(|_| ()).map_err(err)
 }
 
 /// What LINE's consent page for a LIFF link asks for, to show before the
@@ -1380,7 +1380,7 @@ pub fn liff_dev_action(state: S<'_>, label: String, action: String) -> R<()> {
                 reason: Some("เปิดจาก LIFF DevTools".into()),
                 info: serde_json::json!({ "requestedUrl": requested }),
             };
-            crate::liff::open_window(&s, &view, session.chat_id).map_err(err)
+            crate::liff::open_window(&s, &view, session.chat_id).map(|_| ()).map_err(err)
         }
         _ => Err(format!("unknown action {action}")),
     }

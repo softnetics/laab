@@ -4,7 +4,7 @@ import type { McpSettings } from "../types";
 
 const settings: McpSettings = {
   enabled: true,
-  defaults: { read: "on", send: "ask", manage: "ask", account: "off" },
+  defaults: { read: "on", send: "ask", manage: "ask", account: "off", liff: "ask" },
   rules: [
     { kind: "type", id: "group", levels: { send: "off" } },
     { kind: "folder", id: "work", levels: { send: "on" } },
