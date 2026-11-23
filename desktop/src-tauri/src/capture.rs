@@ -81,7 +81,27 @@ pub async fn capture_image(url: String) -> Result<tauri::ipc::Response, String> 
     if parsed.scheme() != "https" {
         return Err("only https images".into());
     }
-    let res = reqwest::get(parsed).await.map_err(|e| e.to_string())?.error_for_status().map_err(|e| e.to_string())?;
+    // The URL comes from a message, so its sender picks it: follow only
+    // https redirects, never to http (a local or private service).
+    let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::custom(|a| {
+            if a.url().scheme() != "https" {
+                a.error("redirect away from https")
+            } else if a.previous().len() >= 5 {
+                a.stop()
+            } else {
+                a.follow()
+            }
+        }))
+        .build()
+        .map_err(|e| e.to_string())?;
+    let res = client
+        .get(parsed)
+        .send()
+        .await
+        .map_err(|e| e.to_string())?
+        .error_for_status()
+        .map_err(|e| e.to_string())?;
     let image = res
         .headers()
         .get(reqwest::header::CONTENT_TYPE)
